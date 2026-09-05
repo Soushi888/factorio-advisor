@@ -1,0 +1,785 @@
+import { readFileSync } from "node:fs";
+import { formatWatts } from "./energy.ts";
+import { sync, type Manifest } from "./dump.ts";
+import { load, type Data } from "./proto.ts";
+import { RecipeIndex } from "./recipes.ts";
+import { machinesFor, multipliers, parseModules, runOne, type ModuleLoadout } from "./machines.ts";
+import { parseRate, solve } from "./solve.ts";
+import { beltOptions, inserterCeilings } from "./belts.ts";
+import { costOf, dependents, labsFor, researchPath, totalCost, unlocksOf } from "./tech.ts";
+import { decode, flatten, describeKind } from "./blueprint.ts";
+import { audit, byRecipe } from "./audit.ts";
+import { bullet, heading, indent, num, pct, rate, sub, table } from "./render.ts";
+
+/**
+ * The only entry point, and the only place that formats output.
+ *
+ * Every command that reports a game fact prints the snapshot it came from
+ * first, the way wesnoth-advisor prints the save name. A number with no
+ * provenance is not an answer.
+ */
+
+interface Args {
+  positional: string[];
+  flags: Map<string, string>;
+}
+
+function parseArgs(argv: string[]): Args {
+  const positional: string[] = [];
+  const flags = new Map<string, string>();
+  for (const a of argv) {
+    if (a === "--") continue;
+    if (a.startsWith("--")) {
+      const eq = a.indexOf("=");
+      if (eq === -1) flags.set(a.slice(2), "true");
+      else flags.set(a.slice(2, eq), a.slice(eq + 1));
+    } else {
+      positional.push(a);
+    }
+  }
+  return { positional, flags };
+}
+
+function header(manifest: Manifest | null): string {
+  if (!manifest) return "snapshot: (no manifest; run `bun run sync`)";
+  const mods = manifest.mods.map((m) => m.name).join(", ");
+  const when = manifest.dumpedAt.slice(0, 16).replace("T", " ");
+  return `snapshot: Factorio ${manifest.gameVersion} build ${manifest.build} [${mods}] dumped ${when}`;
+}
+
+/** Resolve a name the way a person types it: exact, then unique substring. */
+function resolveProduct(data: Data, query: string): string {
+  if (data.isProduct(query)) return query;
+  const q = query.toLowerCase().replace(/\s+/g, "-");
+  if (data.isProduct(q)) return q;
+
+  const names = [...data.items().keys(), ...Object.keys(data.klass("fluid"))];
+  const exact = names.filter((n) => n.toLowerCase() === q);
+  if (exact.length === 1) return exact[0]!;
+  const hits = names.filter((n) => n.toLowerCase().includes(q));
+  if (hits.length === 0) throw new Error(`No item or fluid matching "${query}".`);
+  if (hits.length === 1) return hits[0]!;
+  hits.sort((a, b) => a.length - b.length || a.localeCompare(b));
+  const shortest = hits[0]!;
+  if (shortest.toLowerCase() === q) return shortest;
+  throw new Error(
+    `"${query}" matches ${hits.length} products. Did you mean one of:\n` +
+      bullet(hits.slice(0, 12)),
+  );
+}
+
+function resolveTech(data: Data, query: string): string {
+  const techs = data.technologies();
+  if (techs.has(query)) return query;
+  const q = query.toLowerCase().replace(/\s+/g, "-");
+  if (techs.has(q)) return q;
+  const hits = [...techs.keys()].filter((n) => n.toLowerCase().includes(q));
+  if (hits.length === 0) throw new Error(`No technology matching "${query}".`);
+  if (hits.length === 1) return hits[0]!;
+  hits.sort((a, b) => a.length - b.length || a.localeCompare(b));
+  if (hits[0]!.toLowerCase() === q) return hits[0]!;
+  throw new Error(
+    `"${query}" matches ${hits.length} technologies. Did you mean one of:\n` +
+      bullet(hits.slice(0, 12)),
+  );
+}
+
+/** Build the module and beacon loadout from the flags. */
+function buildLoadout(data: Data, flags: Map<string, string>): ModuleLoadout {
+  const modules = parseModules(data, flags.get("modules"));
+  const beaconCount = Number(flags.get("beacons") ?? 0);
+  if (!Number.isFinite(beaconCount) || beaconCount <= 0) return { modules, beacons: [] };
+
+  const beaconName = flags.get("beacon") ?? data.beacons()[0]?.name;
+  const beacon = data.beacons().find((b) => b.name === beaconName);
+  if (!beacon) throw new Error(`Unknown beacon: ${beaconName}`);
+
+  const spec = flags.get("beacon-modules");
+  let beaconModules = parseModules(data, spec);
+  if (beaconModules.length === 0) {
+    const slots = typeof beacon.module_slots === "number" ? beacon.module_slots : 0;
+    const fallback = data.module("speed-module-3") ?? data.modules()[0];
+    if (fallback) beaconModules = Array.from({ length: slots }, () => fallback);
+  }
+
+  return {
+    modules,
+    beacons: Array.from({ length: Math.floor(beaconCount) }, () => ({
+      beacon,
+      modules: beaconModules,
+    })),
+  };
+}
+
+function stackList(list: Array<{ name: string; amount: number; probability?: number }>): string {
+  if (list.length === 0) return "(none)";
+  return list
+    .map((s) => {
+      const p = s.probability !== undefined ? ` @ ${num(s.probability * 100, 1)}%` : "";
+      return `${num(s.amount)} ${s.name}${p}`;
+    })
+    .join(", ");
+}
+
+// ---------------------------------------------------------------- commands
+
+async function cmdSync(): Promise<void> {
+  const manifest = await sync();
+  console.log(
+    `\nMods in the snapshot:\n` +
+      bullet(manifest.mods.map((m) => `${m.name} ${m.version}`)),
+  );
+  console.log(
+    "\nThis is a vanilla snapshot by construction: the dump ran against a fresh\n" +
+      "write-data inside this project, so whatever mods you play with were not loaded.",
+  );
+}
+
+function cmdSearch(args: Args): void {
+  const data = load();
+  const query = args.positional.join(" ");
+  if (!query) throw new Error("Usage: bun run search <text>");
+  console.log(header(data.manifest));
+  const hits = data.search(query, Number(args.flags.get("limit") ?? 40));
+  if (hits.length === 0) {
+    console.log(`\nNothing matching "${query}".`);
+    return;
+  }
+  console.log(heading(`${hits.length} prototypes matching "${query}"`));
+  console.log(
+    table(
+      [{ header: "name" }, { header: "class" }],
+      hits.map((h) => [h.name, h.type]),
+    ),
+  );
+}
+
+function cmdRecipe(args: Args): void {
+  const data = load();
+  const index = new RecipeIndex(data);
+  const query = args.positional.join("-");
+  if (!query) throw new Error("Usage: bun run recipe <name>");
+  console.log(header(data.manifest));
+
+  let recipe = index.get(query);
+  if (!recipe) {
+    // Fall back to "the recipe that makes this product".
+    const product = resolveProduct(data, query);
+    const producers = index.productionCandidates(product);
+    if (producers.length === 0) {
+      throw new Error(
+        `Nothing makes ${product}. It is a raw input: you mine it, pump it, or collect it.`,
+      );
+    }
+    recipe = index.defaultFor(product)!;
+    if (producers.length > 1) {
+      console.log(`\n${product} has ${producers.length} recipes; showing the default.`);
+    }
+  }
+
+  console.log(heading(recipe.name));
+  console.log(`category    ${recipe.category}`);
+  console.log(`craft time  ${num(recipe.time)}s at speed 1`);
+  console.log(`ingredients ${stackList(recipe.ingredients)}`);
+  console.log(`results     ${stackList(recipe.results)}`);
+  console.log(`productivity ${recipe.allowProductivity ? "allowed" : "not allowed"}`);
+
+  const unlocks = index.unlockedBy(recipe.name);
+  console.log(
+    `unlocked by ${recipe.enabled ? "available from the start" : unlocks.join(", ") || "nothing (unreachable)"}`,
+  );
+
+  const machines = machinesFor(data, recipe);
+  if (machines.length === 0) {
+    console.log("\nNo machine in this snapshot can run that category.");
+  } else {
+    console.log(sub("Machines that can run it"));
+    console.log(
+      table(
+        [
+          { header: "machine" },
+          { header: "speed", align: "right" },
+          { header: "slots", align: "right" },
+          { header: "power", align: "right" },
+          { header: "out/s", align: "right" },
+        ],
+        machines.map((m) => {
+          const r = runOne(data, recipe!, m);
+          const main = recipe!.mainProduct ?? recipe!.results[0]?.name ?? "";
+          return [
+            m.name,
+            num(m.crafting_speed),
+            String(m.module_slots ?? 0),
+            formatWatts(r.activeWatts),
+            num(r.outputPerSecond.get(main) ?? 0),
+          ];
+        }),
+      ),
+    );
+  }
+
+  const alternatives = recipe.results
+    .flatMap((r) => index.productionCandidates(r.name))
+    .filter((r) => r.name !== recipe!.name);
+  const uniqueAlts = [...new Set(alternatives.map((r) => r.name))];
+  if (uniqueAlts.length > 0) {
+    console.log(sub("Other ways to make the same things"));
+    console.log(bullet(uniqueAlts));
+  }
+
+  const recyclers = recipe.results
+    .flatMap((r) => index.producersOf(r.name))
+    .filter((r) => r.category === "recycling").length;
+  if (recyclers > 0) {
+    console.log(
+      `\n  ${recyclers} recycling recipes also return this item. They are excluded from` +
+        `\n  production planning, because a recycler gives back a quarter of what it ate.`,
+    );
+  }
+}
+
+function cmdRatio(args: Args): void {
+  const data = load();
+  const index = new RecipeIndex(data);
+  const query = args.positional.join("-");
+  if (!query) throw new Error("Usage: bun run ratio <item> --rate=<n[/s|/m|/h]>");
+  console.log(header(data.manifest));
+
+  const target = resolveProduct(data, query);
+  const perSecond = parseRate(args.flags.get("rate") ?? "1");
+  const loadout = buildLoadout(data, args.flags);
+
+  const recipeFor = new Map<string, string>();
+  for (const [k, v] of args.flags) {
+    if (k === "recipe") {
+      // --recipe=product=recipe-name, repeatable via commas
+      for (const pair of v.split(",")) {
+        const [p, r] = pair.split("=");
+        if (p && r) recipeFor.set(p, r);
+      }
+    }
+  }
+  const raw = new Set(
+    (args.flags.get("raw") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s !== ""),
+  );
+
+  const sol = solve(data, index, target, perSecond, {
+    recipeFor,
+    machine: args.flags.get("machine"),
+    loadout,
+    raw,
+  });
+
+  console.log(heading(`${target} at ${rate(perSecond)}`));
+  if (loadout.modules.length > 0 || loadout.beacons.length > 0) {
+    const m = multipliers(loadout);
+    console.log(
+      `loadout: ${loadout.modules.map((x) => x.name).join(", ") || "no machine modules"}` +
+        (loadout.beacons.length > 0
+          ? ` + ${loadout.beacons.length} x ${loadout.beacons[0]!.beacon.name}`
+          : "") +
+        `  ->  speed ${pct(m.speed - 1)}, productivity ${pct(m.productivity - 1)}, power ${pct(m.consumption - 1)}`,
+    );
+  }
+
+  console.log(sub("Production steps"));
+  console.log(
+    table(
+      [
+        { header: "" },
+        { header: "product" },
+        { header: "rate/s", align: "right" },
+        { header: "recipe" },
+        { header: "machine" },
+        { header: "count", align: "right" },
+      ],
+      sol.steps.map((s) => [
+        indent(s.depth),
+        s.product,
+        num(s.ratePerSecond),
+        s.recipe.name === s.product ? "" : s.recipe.name,
+        s.machine?.name ?? "(none can run it)",
+        s.machineCount > 0 ? `${num(s.machineCount)} -> ${Math.ceil(s.machineCount - 1e-9)}` : "-",
+      ]),
+    ),
+  );
+
+  if (sol.raw.size > 0) {
+    console.log(sub("Raw inputs"));
+    console.log(
+      table(
+        [{ header: "input" }, { header: "rate/s", align: "right" }, { header: "per min", align: "right" }],
+        [...sol.raw]
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, v]) => [k, num(v), num(v * 60)]),
+      ),
+    );
+  }
+
+  if (sol.surplus.size > 0) {
+    console.log(sub("Surplus the chain does not consume"));
+    console.log(
+      table(
+        [{ header: "product" }, { header: "rate/s", align: "right" }],
+        [...sol.surplus].sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, num(v)]),
+      ),
+    );
+  }
+
+  console.log(sub("Totals"));
+  console.log(`machines     ${sol.totalMachines} (whole buildings)`);
+  console.log(
+    `power        ${formatWatts(sol.totalWatts)} active + ${formatWatts(sol.totalDrainWatts)} idle drain`,
+  );
+  console.log(`pollution    ${num(sol.pollutionPerMinute)} /min at full load`);
+
+  if (sol.choices.length > 0) {
+    console.log(sub("Recipe choices this made for you"));
+    console.log(
+      bullet(
+        sol.choices.map(
+          (c) =>
+            `${c.product}: using ${c.chosen}, declined ${c.alternatives.join(", ")}` +
+            `   (override with --recipe=${c.product}=${c.alternatives[0]})`,
+        ),
+      ),
+    );
+  }
+
+  if (sol.cycles.length > 0) {
+    console.log(sub("Cycles, not expanded"));
+    console.log(
+      bullet(
+        sol.cycles.map(
+          (c) => `${c.join(" -> ")}  (treated as a raw input where it closes)`,
+        ),
+      ),
+    );
+    console.log(
+      "\n  A loop like coal liquefaction feeds itself, so the numbers above assume the\n" +
+        "  looping input is supplied. Pick the non-looping recipe with --recipe to avoid it.",
+    );
+  }
+
+  if (sol.unresolved.length > 0) {
+    console.log(sub("Unresolved"));
+    console.log(bullet(sol.unresolved));
+  }
+
+  const rejected = [...new Set(sol.steps.flatMap((s) => s.rejectedModules))];
+  if (rejected.length > 0) {
+    console.log(sub("Modules that did not fit"));
+    console.log(bullet(rejected));
+  }
+}
+
+function cmdTech(args: Args): void {
+  const data = load();
+  console.log(header(data.manifest));
+
+  const wantPath = args.flags.has("path");
+  const query = args.flags.get("path") !== "true" && args.flags.get("path")
+    ? args.flags.get("path")!
+    : args.positional.join("-");
+  if (!query) throw new Error("Usage: bun run tech <name> [--path]");
+
+  const name = resolveTech(data, query);
+  const tech = data.technology(name)!;
+
+  console.log(heading(name));
+  const cost = costOf(tech);
+  if (cost.formula) {
+    console.log(`count       formula ${cost.formula} (infinite technology)`);
+  }
+  if (cost.trigger) {
+    console.log(`trigger     ${cost.trigger}`);
+  }
+  console.log(
+    `cost        ${[...cost.packs].map(([k, v]) => `${num(v)} ${k}`).join(", ") || "(no science; unlocked by doing)"}`,
+  );
+  if (cost.labSeconds > 0) console.log(`lab time    ${num(cost.labSeconds)}s at lab speed 1`);
+  const labs = labsFor(data, cost.packs.keys());
+  if (labs.length > 0) console.log(`labs        ${labs.join(", ")}`);
+  console.log(`prerequisites ${(tech.prerequisites ?? []).join(", ") || "(none)"}`);
+
+  const un = unlocksOf(tech);
+  if (un.length > 0) {
+    console.log(sub("Unlocks"));
+    console.log(
+      table(
+        [{ header: "effect" }, { header: "detail" }],
+        un.map((u) => [u.kind, u.detail]),
+      ),
+    );
+  }
+
+  const deps = dependents(data, name);
+  if (deps.length > 0) {
+    console.log(sub("Leads to"));
+    console.log(bullet(deps));
+  }
+
+  if (wantPath) {
+    const path = researchPath(data, name);
+    const totals = totalCost(path);
+    console.log(sub(`Research path: ${path.length} technologies`));
+    console.log(
+      table(
+        [
+          { header: "#", align: "right" },
+          { header: "technology" },
+          { header: "lab s", align: "right" },
+          { header: "packs" },
+        ],
+        path.map((t, i) => {
+          const c = costOf(t);
+          return [
+            String(i + 1),
+            t.name,
+            c.formula ? "formula" : c.trigger && c.packs.size === 0 ? "-" : num(c.labSeconds, 0),
+            c.trigger && c.packs.size === 0
+              ? c.trigger
+              : [...c.packs].map(([k, v]) => `${num(v, 0)} ${shortPack(k)}`).join(" "),
+          ];
+        }),
+      ),
+    );
+    console.log(sub("Path totals"));
+    console.log(
+      table(
+        [{ header: "science pack" }, { header: "count", align: "right" }],
+        [...totals.packs]
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, v]) => [k, num(v, 0)]),
+      ),
+    );
+    console.log(`\nlab time  ${num(totals.labSeconds, 0)}s at lab speed 1`);
+    const biolab = data.klass("lab")["biolab"];
+    if (biolab && typeof biolab["researching_speed"] === "number") {
+      const s = biolab["researching_speed"];
+      console.log(`          ${num(totals.labSeconds / s, 0)}s in one biolab (speed ${num(s)})`);
+    }
+    if (totals.triggered.length > 0) {
+      console.log(
+        `\n${totals.triggered.length} of these cost no science. They unlock when you do the` +
+          `\nthing they name, so they are free but not automatic.`,
+      );
+    }
+    if (totals.infinite.length > 0) {
+      console.log(`\ninfinite technologies on the path, cost not summed: ${totals.infinite.join(", ")}`);
+    }
+  }
+}
+
+function shortPack(name: string): string {
+  return name.replace(/-science-pack$/, "");
+}
+
+function cmdBelt(args: Args): void {
+  const data = load();
+  console.log(header(data.manifest));
+
+  const rateFlag = args.flags.get("rate");
+  const query = args.positional.join("-");
+  const perSecond = rateFlag ? parseRate(rateFlag) : null;
+
+  console.log(heading(perSecond === null ? "Belt throughput" : `Carrying ${rate(perSecond)}`));
+  const options = beltOptions(data, perSecond ?? 1);
+  console.log(
+    table(
+      [
+        { header: "belt" },
+        { header: "items/s", align: "right" },
+        { header: "items/min", align: "right" },
+        ...(perSecond === null
+          ? []
+          : [{ header: "belts needed", align: "right" as const }, { header: "one belt at", align: "right" as const }]),
+      ],
+      options.map((o) => [
+        o.belt.name,
+        num(o.itemsPerSecond),
+        num(o.itemsPerSecond * 60, 0),
+        ...(perSecond === null
+          ? []
+          : [num(o.beltsNeeded), `${num(o.saturation * 100, 0)}%`]),
+      ]),
+    ),
+  );
+
+  if (query) {
+    const product = resolveProduct(data, query);
+    const item = data.item(product);
+    if (item) {
+      const stack = item["stack_size"];
+      console.log(`\n${product}: stack size ${typeof stack === "number" ? stack : "?"}`);
+    } else if (data.fluid(product)) {
+      console.log(
+        `\n${product} is a fluid. Belts do not carry it; pipes and pumps do, and pipe` +
+          `\nthroughput depends on the length of the run, which a prototype cannot tell you.`,
+      );
+    }
+  }
+
+  console.log(sub("Inserter rotation ceiling"));
+  console.log(
+    table(
+      [
+        { header: "inserter" },
+        { header: "swings/s", align: "right" },
+        { header: "bulk" },
+      ],
+      inserterCeilings(data).map((i) => [
+        i.inserter.name,
+        num(i.swingsPerSecond),
+        i.bulk ? "yes" : "",
+      ]),
+    ),
+  );
+  console.log(
+    "\n  Swings per second is derived from rotation_speed alone and is a ceiling, not\n" +
+      "  a prediction. Real throughput depends on belt chasing, the inserter capacity\n" +
+      "  bonus from research, and what sits on each side. None of those are prototype\n" +
+      "  facts, so this tool will not invent them.",
+  );
+}
+
+function cmdBp(args: Args): void {
+  const data = load();
+  const index = new RecipeIndex(data);
+  console.log(header(data.manifest));
+
+  let text: string;
+  const file = args.flags.get("file");
+  const inline = args.flags.get("string") ?? args.positional[0];
+  if (file) {
+    text = readFileSync(file, "utf8");
+  } else if (inline && inline.length > 32) {
+    text = inline;
+  } else {
+    text = readFileSync(0, "utf8");
+  }
+
+  const decoded = decode(text);
+  const prints = flatten(decoded);
+  if (prints.length === 0) {
+    console.log(
+      `\nThat string holds a ${describeKind(decoded)}, which carries no entities to audit.`,
+    );
+    return;
+  }
+
+  for (const { path, bp } of prints) {
+    const result = audit(data, index, bp, bp.label ?? path);
+    printAudit(result, bp.label ?? path);
+  }
+}
+
+function printAudit(result: ReturnType<typeof audit>, label: string): void {
+  console.log(heading(label));
+  const box = result.footprintTiles;
+  const size = box
+    ? `${Math.round(box.x2 - box.x1)} x ${Math.round(box.y2 - box.y1)} tiles`
+    : "empty";
+  console.log(`${result.entityCount} entities, ${result.tileCount} tiles, ${size}`);
+
+  const grouped = byRecipe(result);
+  if (grouped.length > 0) {
+    console.log(sub("What it makes"));
+    console.log(
+      table(
+        [
+          { header: "recipe" },
+          { header: "machine" },
+          { header: "count", align: "right" },
+          { header: "beaconed", align: "right" },
+          { header: "output/s", align: "right" },
+          { header: "product" },
+        ],
+        grouped.map((g) => [
+          g.recipe,
+          g.machine,
+          String(g.count),
+          g.beaconed > 0 ? String(g.beaconed) : "",
+          num(g.outputPerSecond),
+          g.product,
+        ]),
+      ),
+    );
+  }
+
+  const imports = result.flows.filter((f) => f.net < -1e-9);
+  const exports = result.flows.filter((f) => f.net > 1e-9);
+  const internal = result.flows.filter((f) => Math.abs(f.net) <= 1e-9 && f.produced > 0);
+
+  if (imports.length > 0) {
+    console.log(sub("Needs fed in"));
+    console.log(
+      table(
+        [
+          { header: "item" },
+          { header: "needed/s", align: "right" },
+          { header: "made here/s", align: "right" },
+          { header: "shortfall/s", align: "right" },
+        ],
+        imports.map((f) => [f.item, num(f.consumed), num(f.produced), num(-f.net)]),
+      ),
+    );
+  }
+
+  if (exports.length > 0) {
+    console.log(sub("Produces for export"));
+    console.log(
+      table(
+        [
+          { header: "item" },
+          { header: "made/s", align: "right" },
+          { header: "used here/s", align: "right" },
+          { header: "net/s", align: "right" },
+          { header: "per min", align: "right" },
+        ],
+        exports.map((f) => [
+          f.item,
+          num(f.produced),
+          num(f.consumed),
+          num(f.net),
+          num(f.net * 60),
+        ]),
+      ),
+    );
+  }
+
+  if (internal.length > 0) {
+    console.log(sub("Balanced internally"));
+    console.log(bullet(internal.map((f) => `${f.item} at ${num(f.produced)}/s`)));
+  }
+
+  if (result.beltsPresent.length > 0) {
+    console.log(sub("Belts in the print"));
+    console.log(
+      table(
+        [
+          { header: "belt" },
+          { header: "count", align: "right" },
+          { header: "carries/s", align: "right" },
+        ],
+        result.beltsPresent.map((b) => [b.name, String(b.count), num(b.itemsPerSecond)]),
+      ),
+    );
+    const worst = result.beltsPresent[result.beltsPresent.length - 1];
+    const biggest = [...result.flows].sort((a, b) => b.net - a.net)[0];
+    if (worst && biggest && biggest.net > worst.itemsPerSecond) {
+      console.log(
+        `\n  ${biggest.item} leaves at ${num(biggest.net)}/s, which is more than one ` +
+          `${worst.name} carries (${num(worst.itemsPerSecond)}/s).`,
+      );
+    }
+  }
+
+  if (result.moduleCensus.length > 0) {
+    console.log(sub("Modules"));
+    console.log(bullet(result.moduleCensus.map((m) => `${m.count} x ${m.name}`)));
+  }
+
+  if (result.qualityModules.length > 0) {
+    console.log(
+      `\n  ${result.qualityModules.length} module type(s) here are above normal quality.\n` +
+        "  Quality raises a module's effect in game, but the scaling is an engine rule and\n" +
+        "  does not appear anywhere in the prototype data. Rather than guess at it, the\n" +
+        "  figures above use base module effects, so they understate this print.",
+    );
+  }
+
+  console.log(sub("Power and pollution"));
+  console.log(
+    `${formatWatts(result.totalWatts)} active + ${formatWatts(result.totalDrainWatts)} idle drain`,
+  );
+  console.log(`${num(result.pollutionPerMinute)} pollution/min at full load`);
+
+  if (result.unsetRecipes.length > 0) {
+    console.log(sub("Machines with no recipe set"));
+    console.log(bullet(result.unsetRecipes.map((u) => `${u.count} x ${u.name}`)));
+  }
+
+  if (result.unknownEntities.length > 0) {
+    console.log(sub("Not in this snapshot"));
+    console.log(bullet(result.unknownEntities));
+    console.log(
+      "\n  These are almost certainly from a mod. The audit above ignored them, so its\n" +
+        "  totals are for the vanilla part of the print only.",
+    );
+  }
+
+  console.log(sub("Full entity census"));
+  console.log(
+    table(
+      [{ header: "entity" }, { header: "count", align: "right" }],
+      result.census.map((c) => [c.name, String(c.count)]),
+    ),
+  );
+}
+
+function usage(): void {
+  console.log(
+    `factorio-advisor: read-only prototype solver and blueprint auditor.
+
+  bun run sync                            refresh the prototype snapshot
+  bun run search <text>                   find prototypes by name
+  bun run recipe <name>                   a recipe, its makers, its unlock
+  bun run ratio <item> --rate=<n>         full production chain
+  bun run tech <name> [--path]            cost, prerequisites, research path
+  bun run belt [item] --rate=<n>          belt throughput and saturation
+  bun run bp --file=<path>                decode and audit a blueprint
+
+Flags for ratio:
+  --rate=45 | 90/m | 5400/h               target output rate
+  --machine=assembling-machine-3          prefer a machine where it fits
+  --modules=productivity-module-3x4       modules in every machine
+  --beacons=8 --beacon-modules=speed-module-3x2
+  --recipe=<product>=<recipe>             override a recipe choice
+  --raw=iron-plate,copper-plate           treat these as bought in
+
+Nothing here writes to your game. sync launches Factorio headless with its
+write-data redirected into this project; every other command reads the snapshot.`,
+  );
+}
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  const command = argv[0];
+  const args = parseArgs(argv.slice(1));
+
+  switch (command) {
+    case "sync":
+      await cmdSync();
+      break;
+    case "search":
+      cmdSearch(args);
+      break;
+    case "recipe":
+      cmdRecipe(args);
+      break;
+    case "ratio":
+      cmdRatio(args);
+      break;
+    case "tech":
+      cmdTech(args);
+      break;
+    case "belt":
+      cmdBelt(args);
+      break;
+    case "bp":
+      cmdBp(args);
+      break;
+    default:
+      usage();
+      process.exitCode = command === undefined || command === "help" ? 0 : 1;
+  }
+}
+
+main().catch((err: unknown) => {
+  console.error(`\n${err instanceof Error ? err.message : String(err)}`);
+  process.exitCode = 1;
+});

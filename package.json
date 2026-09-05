@@ -1,0 +1,21 @@
+{
+  "name": "factorio-advisor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only prototype solver and blueprint auditor for advising on a vanilla Factorio 2.0 Space Age playthrough.",
+  "scripts": {
+    "sync": "bun src/cli.ts sync",
+    "search": "bun src/cli.ts search",
+    "recipe": "bun src/cli.ts recipe",
+    "ratio": "bun src/cli.ts ratio",
+    "tech": "bun src/cli.ts tech",
+    "belt": "bun src/cli.ts belt",
+    "bp": "bun src/cli.ts bp",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}
