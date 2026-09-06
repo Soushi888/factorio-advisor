@@ -39,6 +39,7 @@ bun run state --save "game 4"             # live state, read from a copy of your
 bun run next                              # what you can research right now
 bun run next --for=carbon-fiber           # the path from here to what unlocks an item
 bun run power                             # generation against draw, from your census
+bun run gen electronic-circuit --rate=45  # one recipe step, laid out as a placeable row
 bun run typecheck
 ```
 
@@ -127,6 +128,24 @@ Some machines draw per event rather than per second. An inserter spends `energy_
 
 Three honest limits, all printed. Draw is a ceiling, since no base runs every machine at once. Generation is nameplate capacity, not what your grid actually delivered, which is a runtime figure this tool does not read yet. And where the boilers cannot feed the engines built, the steam-limited figure is computed and the balance drawn against that, because the nameplate number would otherwise be a fiction.
 
+### gen
+
+```bash
+bun run gen electronic-circuit --rate=45
+bun run gen iron-plate --rate=100 --belt=fast-transport-belt
+bun run gen electronic-circuit --rate=45 --machines=8    # pin the count instead
+```
+
+Lays ONE recipe step out as a row and prints a blueprint string you can paste into the game: machines side by side, an input belt above, an output belt below, an inserter per machine per side. The string is printed last and alone, so it is easy to copy.
+
+Machine counts round up, so the row meets the target and the overcapacity is printed and written into the blueprint label, where it survives into your game. `--machines=<n>` pins a count instead and tells you the rate that gives, shortfall included. The belt tier is picked for the rounded-up rate, and a row that outruns its belt says so rather than quietly running at 140%.
+
+Every coordinate comes from the prototypes. Footprints are read from `selection_box`, which is the real tile size, rather than `collision_box`, which is inset so you can walk past things. A prototype with no selection box gets nothing placed and the gap is printed, because a guessed size puts entities in the wrong tiles.
+
+Both sides are sized. The output belt tier is picked for the rounded-up rate, and the input demand is computed from the recipe and reported per ingredient, with the number of input lanes the row would need. The row lays one lane each way and tells you when that is not enough, rather than drawing a picture that cannot run. Inserters are picked by rotation ceiling, and when no tier in the game keeps up with the row's throughput, it says that too.
+
+One step only. A whole chain or a main bus is out of scope and the output says so; `bun run ratio` is what sizes a chain. Check a generated row the same way you would check anyone else's: `bun run bp --rate=<same>` reads it back and re-derives its rates through a different code path.
+
 ### bp
 
 With `--rate=<n[/s|/m|/h]>` the audit stops describing the print and starts judging it: what fraction of the target it reaches, how many of the print the target would take, what that scale means per machine type, whether the belt tier it places carries the target, and how many inserters per machine the target needs at the rotation ceiling. `--item=<name>` picks which product to judge; without it the print's largest net export is used and the output says so.
@@ -159,6 +178,7 @@ state.ts     runs Factorio over a copy of a save to read live state back
 next.ts      intersects the tech tree with what a save says is already researched
 power.ts     generation, steam chain and draw, priced from the machine census
 target.ts    judges an audited print against a target rate
+layout.ts    lays one recipe step out as a row and emits a blueprint string
 proto.ts     load and index the snapshot; every other module reads through here
 energy.ts    parse "375kW", "1.5MW", "0.2kJ"
 recipes.ts   normalise recipes, index by product, choose a default and justify it

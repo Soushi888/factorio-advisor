@@ -10,6 +10,7 @@ import { costOf, dependents, labsFor, researchPath, totalCost, unlocksOf } from 
 import { decode, flatten, describeKind } from "./blueprint.ts";
 import { audit, byRecipe, type AuditResult } from "./audit.ts";
 import { judge } from "./target.ts";
+import { beltFor, buildRow } from "./layout.ts";
 import { newestSave, readState, readStateFile, type GameState } from "./state.ts";
 import { gateFor, pathFromHere, researchable } from "./next.ts";
 import { powerReport, solarAverageFactor } from "./power.ts";
@@ -1469,6 +1470,180 @@ function cmdPower(args: Args): void {
   );
 }
 
+
+function cmdGen(args: Args): void {
+  const data = load();
+  const index = new RecipeIndex(data);
+  const query = args.positional.join("-");
+  if (!query) throw new Error('Usage: bun run gen <item> --rate=<n>   e.g. bun run gen electronic-circuit --rate=45');
+
+  const rateFlag = valueFlag(args, "rate");
+  if (!rateFlag) throw new Error("gen needs a target: --rate=<n[/s|/m|/h]>");
+  const target = parseRate(rateFlag);
+  const product = resolveProduct(data, query);
+
+  console.log(header(data.manifest));
+
+  // One step only. Every ingredient is declared raw so the solver stops at the
+  // first recipe instead of expanding a chain, which is what makes this a row
+  // rather than a factory.
+  const recipe = index.defaultFor(product);
+  if (!recipe) {
+    throw new Error(`Nothing makes ${product}: it is a raw input, so there is no step to lay out.`);
+  }
+  const raw = new Set(recipe.ingredients.map((i) => i.name));
+  const loadout = buildLoadout(data, args.flags);
+  const machineFlag = args.flags.get("machine");
+  const solution = solve(data, index, product, target, {
+    raw,
+    loadout,
+    ...(machineFlag ? { machine: machineFlag } : {}),
+  });
+
+  const step = solution.steps.find((st) => st.product === product);
+  if (!step || !step.machine || !step.run) {
+    throw new Error(`No machine in this snapshot can run ${recipe.category}, so there is nothing to lay out.`);
+  }
+
+  // Machines round UP, so the row meets the target and the overcapacity is
+  // stated rather than silently spent (pm#36).
+  const exact = step.machineCount;
+  const pinned = valueFlag(args, "machines");
+  const count = pinned ? Number(pinned) : Math.ceil(exact - 1e-9);
+  if (!Number.isFinite(count) || count < 1) throw new Error(`--machines must be a positive whole number.`);
+
+  const perMachine = step.run.outputPerSecond.get(product) ?? 0;
+  if (perMachine <= 0) {
+    throw new Error(`${step.machine.name} running ${recipe.name} makes no ${product} per second, so a row cannot be sized.`);
+  }
+  const actual = perMachine * count;
+  const overPct = target > 0 ? (actual / target - 1) * 100 : 0;
+
+  const beltProto = beltFor(data, actual, valueFlag(args, "belt") ?? undefined);
+  const beltRate = beltProto ? Number(beltProto["speed"]) * 480 : 0;
+  const saturation = beltRate > 0 ? actual / beltRate : Infinity;
+
+  // B3: the input side. Ingredient demand comes from the run, so it is the same
+  // number the auditor would re-derive, and one input belt is all this row lays.
+  const inputs = [...step.run.inputPerSecond.entries()]
+    .map(([name, perMachine]) => ({ name, perSecond: perMachine * count }))
+    .sort((a, b) => b.perSecond - a.perSecond);
+  const inputTotal = inputs.reduce((n, i) => n + i.perSecond, 0);
+
+  // N5: pick the inserter by its rotation ceiling rather than taking the first
+  // in the list, which was a basic inserter at 0.84/s against 16/s of demand.
+  const perMachineOut = perMachine;
+  const perMachineIn = inputTotal / count;
+  const need = Math.max(perMachineOut, perMachineIn);
+  const ceilings = inserterCeilings(data);
+  const inserter =
+    (ceilings.find((c) => c.itemsPerSecondCeiling >= need)?.inserter ??
+      ceilings[ceilings.length - 1]?.inserter) ?? null;
+  const inserterCeiling =
+    ceilings.find((c) => String(c.inserter["name"]) === String(inserter?.["name"]))
+      ?.itemsPerSecondCeiling ?? 0;
+
+  const label =
+    `${product} ${num(actual)}/s (${count} x ${step.machine.name}` +
+    (overPct > 0.05 ? `, +${num(overPct, 1)}% over ${num(target)}/s` : "") +
+    ")";
+
+  const row = buildRow(data, {
+    machine: step.machine,
+    machineCount: count,
+    recipe: recipe.name,
+    belt: beltProto,
+    inserter,
+    modules: loadout.modules.map((m) => m.name),
+    label,
+  });
+
+  console.log(heading(`One row: ${count} x ${step.machine.name} making ${product}`));
+  console.log(
+    table(
+      [{ header: "" }, { header: "value", align: "right" }],
+      [
+        ["recipe", recipe.name],
+        ["target", rate(target)],
+        ["machines needed, exact", num(exact)],
+        [pinned ? "machines pinned" : "machines placed, rounded up", String(count)],
+        ["output per machine", rate(perMachine)],
+        ["output of the row", rate(actual)],
+        [overPct >= 0 ? "overcapacity" : "shortfall", `${num(Math.abs(overPct), 1)}%`],
+        ["output belt", beltProto ? `${String(beltProto["name"])} at ${rate(beltRate)}` : "(none placed)"],
+        ["output saturation", beltRate > 0 ? `${num(saturation * 100, 1)}%` : "-"],
+        ["input needed", rate(inputTotal)],
+        ["input saturation, one belt", beltRate > 0 ? `${num((inputTotal / beltRate) * 100, 1)}%` : "-"],
+        ["input belts needed", beltRate > 0 ? String(Math.ceil(inputTotal / beltRate)) : "-"],
+        ["inserter", inserter ? `${String(inserter["name"])}, ceiling ${rate(inserterCeiling)}` : "(none)"],
+        ["footprint", `${String(row.width)} x ${String(row.height)} tiles, ${String(row.entityCount)} entities`],
+      ],
+    ),
+  );
+
+  console.log(sub("Input side"));
+  console.log(
+    table(
+      [
+        { header: "ingredient" },
+        { header: "per second", align: "right" },
+        { header: "one belt at", align: "right" },
+      ],
+      inputs.map((i) => [
+        i.name,
+        num(i.perSecond),
+        beltRate > 0 ? `${num((i.perSecond / beltRate) * 100, 1)}%` : "-",
+      ]),
+    ),
+  );
+  const inputBelts = beltRate > 0 ? Math.ceil(inputTotal / beltRate) : 0;
+  if (inputBelts > 1) {
+    console.log(
+      `\n  WARNING: the row needs ${rate(inputTotal)} in, which is ` +
+        `${num((inputTotal / beltRate) * 100, 1)}% of one ${String(beltProto?.["name"])}. ` +
+        `That is ${String(inputBelts)} input belts.\n` +
+        "  This row lays ONE input lane, so the rest is yours to route: laying several\n" +
+        "  is out of scope, because where a second lane goes is a layout opinion and\n" +
+        "  this tool has no source for those.",
+    );
+  }
+
+  if (inserterCeiling > 0 && need > inserterCeiling) {
+    console.log(
+      `\n  WARNING: no inserter in this snapshot keeps up. The busiest side moves ` +
+        `${rate(need)} per machine and the fastest, ${String(inserter?.["name"])}, ` +
+        `has a rotation ceiling of ${rate(inserterCeiling)}.\n` +
+        "  One per side is what this row lays, so you will need more of them, and a\n" +
+        "  ceiling is not a prediction: real throughput is lower still.",
+    );
+  }
+
+  if (saturation > 1) {
+    console.log(
+      `\n  WARNING: output is ${num(saturation * 100, 1)}% of one ${String(beltProto?.["name"])}. ` +
+        "The row makes more than its output belt carries.\n" +
+        "  Pick a faster tier with --belt=<name>, or split the row.",
+    );
+  }
+
+  if (row.gaps.length > 0) {
+    console.log(sub("Gaps, reported rather than guessed"));
+    console.log(bullet(row.gaps));
+    console.log("\n  These prototypes declare no selection_box, so nothing was placed for them.");
+  }
+
+  console.log(
+    "\n  One recipe step. A whole chain or a main bus is out of scope: this lays out\n" +
+      "  the machines for ONE recipe with an input and an output belt, and nothing\n" +
+      "  upstream or downstream of it. Positions come from each prototype's own\n" +
+      "  selection_box, and inserters are placed one per machine per side.\n" +
+      "  Check it before you build it: bun run bp --rate=" + rateFlag,
+  );
+
+  console.log("\nBlueprint string:\n");
+  console.log(row.string);
+}
+
 function usage(): void {
   console.log(
     `factorio-advisor: read-only prototype solver and blueprint auditor.
@@ -1485,6 +1660,7 @@ function usage(): void {
   bun run next                            what you can research right now
   bun run next --for=<item>               path from here to what unlocks that item
   bun run power                           generation against draw, from your census
+  bun run gen <item> --rate=<n>           lay one recipe step out as a placeable row
 
 Flags for ratio:
   --rate=45 | 90/m | 5400/h               target output rate
@@ -1544,6 +1720,9 @@ async function main(): Promise<void> {
       break;
     case "power":
       cmdPower(args);
+      break;
+    case "gen":
+      cmdGen(args);
       break;
     default:
       usage();
