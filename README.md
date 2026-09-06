@@ -1,8 +1,8 @@
 # factorio-advisor
 
-A read-only advisory toolkit for a vanilla Factorio 2.0 Space Age playthrough. It answers ratio, technology and throughput questions from the game's own declared numbers, and audits blueprint strings. It never touches your saves, your mods or your config.
+A read-only advisory toolkit for a vanilla Factorio 2.0 Space Age playthrough. It answers ratio, technology and throughput questions from the game's own declared numbers, audits blueprint strings, and reads the state of your base out of a copy of your save. It never touches your saves, your mods or your config.
 
-Sibling of `wesnoth-advisor`, with one structural difference. A Wesnoth save is plain text, so that tool reads the live board. A Factorio save is a version-locked binary blob, so this one reads what the game declares before a map exists: every recipe, machine, module, technology, belt and quality tier. That turns out to cover the questions Factorio actually provokes.
+Sibling of `wesnoth-advisor`, with one structural difference. A Wesnoth save is plain text, so that tool reads the live board directly. A Factorio save is a version-locked binary blob, so this one works from two sources instead: what the game declares before a map exists (every recipe, machine, module, technology, belt and quality tier), and what the engine itself reports when asked to tick a copy of your save. Between them they cover the questions Factorio actually provokes.
 
 ## Quick start
 
@@ -12,7 +12,17 @@ bun run sync                              # once, and again after a game update
 bun run ratio electronic-circuit --rate=45
 ```
 
-`sync` launches Factorio headless for about three seconds with its write-data redirected into this project, so the dump lands in `data/` and `~/.factorio` is never written to. Every other command reads that snapshot and never launches anything.
+`sync` launches Factorio headless for about three seconds with its write-data redirected into this project, so the dump lands in `data/` and `~/.factorio` is never written to.
+
+Two commands launch the engine: `sync`, and `state`, which additionally copies your save and reads the copy. Everything else reads what those two wrote and launches nothing. Neither ever writes to a game directory, and the probe that proves it is in `bun run state`'s own section below.
+
+To ask about your actual base, save in game (or let an autosave fire) and then:
+
+```bash
+bun run state                             # reads your newest save, autosaves included
+bun run next                              # what you can research now
+bun run power                             # generation against draw
+```
 
 ## Commands
 
@@ -27,6 +37,7 @@ bun run bp --file=blueprint.txt           # decode and audit a blueprint string
 bun run state --save "game 4"             # live state, read from a copy of your save
 bun run next                              # what you can research right now
 bun run next --for=carbon-fiber           # the path from here to what unlocks an item
+bun run power                             # generation against draw, from your census
 bun run typecheck
 ```
 
@@ -88,6 +99,21 @@ Trigger technologies are shown as the action they want rather than as zero cost,
 
 If a save carries technologies this snapshot has never heard of, from another version or a modded run, they are listed rather than dropped. A silently shorter answer would look exactly like a correct one.
 
+### power
+
+```bash
+bun run power                        # uses your newest save's state
+bun run power --save="game 4"        # or a named one
+```
+
+Prices your base from the machine census `state` reports. Generation by source with the prototype fields each figure came from, the steam chain and whether your boilers can actually feed your engines, accumulator capacity, and the draw of every machine type if all of them ran at once.
+
+Every watt is derived, and the `derived from` column tells you how, so you can redo any of it by hand from `data/data-raw.json`. A steam engine, for instance, is `fluid_usage_per_tick 0.5 x 60 ticks x (maximum_temperature 165 minus steam's default_temperature 15) x steam heat_capacity 0.2kJ x effectivity 1`, which is 900 kW.
+
+Solar reports both peak and the average over a day-night cycle, and the average is not a remembered constant. The cycle length is a prototype field (`planet.surface_properties.day-night-cycle`, 25200 ticks on Nauvis) and the curve itself is read off the surface when `state` runs. Lit from dawn round to dusk, dark from evening to morning, linear between, which on Nauvis gives 0.7. If you are reading an older state file that predates the curve being collected, it says so and reports peak only rather than inventing a factor.
+
+Two honest limits, both printed. Draw is a ceiling, since no base runs every machine at once. And generation is nameplate capacity, not what your grid actually delivered, which is a runtime figure this tool does not read. Where the boilers cannot feed the engines built, the steam-limited figure is computed and the balance is drawn against that instead, because the nameplate number would otherwise be a fiction.
+
 ### bp
 
 Feed it a blueprint string from a file, an argument, or stdin. Books are unrolled. The audit resolves every machine's real module loadout, works out which beacons physically reach it from the positions in the print, runs each machine, and nets the flows: what the print needs fed in, what it exports, and what it balances internally.
@@ -112,6 +138,7 @@ paths.ts     find the install and the binary; FACTORIO_CORE / FACTORIO_USERDATA 
 dump.ts      runs Factorio for the prototype dump, with write-data redirected into this project
 state.ts     runs Factorio over a copy of a save to read live state back
 next.ts      intersects the tech tree with what a save says is already researched
+power.ts     generation, steam chain and draw, priced from the machine census
 proto.ts     load and index the snapshot; every other module reads through here
 energy.ts    parse "375kW", "1.5MW", "0.2kJ"
 recipes.ts   normalise recipes, index by product, choose a default and justify it

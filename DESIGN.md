@@ -107,6 +107,22 @@ Two engine constants are declared here, in the ADR-3 sense: `TICKS_PER_SECOND` a
 
 **What this does not do.** It reads a save on disk, so it is as fresh as the last time the game saved, not as fresh as the running game. Nothing here connects to a live session.
 
+## ADR-7: power is priced from the census, and the solar average is read rather than remembered
+
+`power` joins the machine census ADR-6 returns to the energy fields in the snapshot. Generation by source, the steam chain, accumulator capacity, and the draw of every electric consumer.
+
+**Every watt is derived, and the derivation is printed.** A steam engine is `fluid_usage_per_tick 0.5 x 60 x (maximum_temperature 165 - steam default_temperature 15) x heat_capacity 0.2kJ x effectivity 1`, which is 900 kW. The output column names those fields so a reader can redo the arithmetic against `data-raw.json` without asking anyone.
+
+**Two probes of different shape, before a line was written.** The prototype strings were cross-checked against the engine's own runtime values, read through the ADR-6 mechanism: `steam-engine.max_power_output` is 15000 J per tick, which is the same 900 kW; `assembling-machine-2.energy_usage` is 2500 J per tick, which is the 150 kW the prototype declares. The snapshot alone is sufficient, and the runtime agrees with it. That check also settled the boiler, where two readings of the heat-capacity rule were available and only one is right: a unit of 165 degree steam carries 30 kJ, because an engine consuming 30 units a second produces exactly 900 kW. So a 1.8 MW boiler emits 60 units a second and feeds two engines.
+
+**The solar average is not the remembered 70 percent.** It is computed from the curve, and the curve is read from the game. The cycle length is a prototype field: `planet.surface_properties.day-night-cycle`, 25200 ticks on Nauvis and different on every planet. The curve itself (`dusk`, `evening`, `morning`, `dawn`) is a runtime surface property rather than a prototype field, so ADR-6's collector was extended to record it. Lit from dawn round through 0 to dusk, dark from evening to morning, linear between, so the ramps average a half. On Nauvis that yields 0.7. It happens to match the figure every player knows, which is the point: the number is now sourced instead of recalled, and on Vulcanus or Aquilo it will differ because their curves do.
+
+A state file written before the curve was collected has no curve. That case prints peak only and says why, rather than falling back to a constant.
+
+**Nameplate is not capacity.** Counting every engine built overstates generation when the boilers cannot make enough steam for them. The steam-limited figure is computed and the balance is drawn against it, with the gap named. On the save this was built against, 407 engines are built and 115 boilers can feed 230 of them, so 177 engines have no boiler behind them.
+
+**What is still not modelled**, and is printed as such: what the grid actually delivered, which is a runtime figure; and the draw figure is a ceiling, since no base runs every machine at once.
+
 ## Module map
 
 Bottom up, one data flow, mirroring the sibling project.
@@ -123,6 +139,8 @@ belts.ts     belt and inserter throughput, saturation
 tech.ts      prerequisite closure, cumulative science cost, what unlocks a recipe, research path
 blueprint.ts decode and encode blueprint strings
 state.ts     copy a save, inject a collector, run the engine, read live state back
+next.ts      intersect the tech tree with what a save says is already researched
+power.ts     generation, steam chain and draw, priced from the machine census
 audit.ts     entity census, ratio check against the solver, belt saturation, module and beacon coverage
 render.ts    tables and trees for the terminal
 cli.ts       the only entry point and the only place that formats output
@@ -143,6 +161,9 @@ bun run tech --path=kovarex-enrichment-process   # full research path with cumul
 bun run belt iron-plate --rate=45         # belts and inserters needed, saturation
 bun run bp --file=blueprint.txt           # decode and audit a blueprint
 bun run state --save "game 4"             # live state read from a copy of a save
+bun run next                              # what is researchable now, from that state
+bun run next --for=carbon-fiber           # the unresearched path to what unlocks an item
+bun run power                             # generation against draw, from the census
 bun run typecheck
 ```
 

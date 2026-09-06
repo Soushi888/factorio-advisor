@@ -2,8 +2,10 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -38,6 +40,25 @@ const BENCHMARK_TICKS = 60;
 /** Factorio ticks per second. An engine constant, absent from the dump. */
 const TICKS_PER_SECOND = 60;
 
+/**
+ * The day-night curve of a surface, read from the game rather than assumed.
+ *
+ * `daytime` runs 0 to 1. The surface is fully lit from `dawn` round through 0 to
+ * `dusk`, fully dark between `evening` and `morning`, and ramps between. These
+ * are runtime surface properties, not prototype fields, which is why they are
+ * collected here: without them the average solar output over a cycle would be a
+ * number this tool has no source for.
+ */
+export interface SurfaceDay {
+  surface: string;
+  ticksPerDay: number;
+  solarPowerMultiplier: number;
+  dusk: number;
+  evening: number;
+  morning: number;
+  dawn: number;
+}
+
 export interface ForceState {
   technologies: {
     researched: string[];
@@ -65,6 +86,8 @@ export interface GameState {
     hoursPlayed: number;
     surfaces: string[];
     readAt: string;
+    /** Absent in state files written before the curve was collected. */
+    day?: SurfaceDay;
   };
   forces: Record<string, ForceState>;
 }
@@ -112,6 +135,17 @@ script.on_nth_tick(1, function()
 
   local surfaces = {}
   for name in pairs(game.surfaces) do surfaces[#surfaces + 1] = name end
+
+  -- The day curve is a runtime surface property, not a prototype field, so it
+  -- has to be read here or the solar average has no source at all.
+  local day = nil
+  local first = game.surfaces[surfaces[1]]
+  if first then
+    day = { surface = first.name, ticksPerDay = first.ticks_per_day,
+            solarPowerMultiplier = first.solar_power_multiplier,
+            dusk = first.dusk, evening = first.evening,
+            morning = first.morning, dawn = first.dawn }
+  end
 
   local forces = {}
   for force_name, force in pairs(game.forces) do
@@ -164,6 +198,7 @@ script.on_nth_tick(1, function()
   helpers.write_file("factorio-advisor/state.json", helpers.table_to_json({
     tick = game.tick,
     surfaces = surfaces,
+    day = day,
     forces = forces,
   }), false)
 end)
@@ -221,6 +256,29 @@ async function innerDirOf(zipPath: string): Promise<string> {
     if (slash > 0) return line.slice(0, slash);
   }
   throw new Error(`${zipPath} does not look like a Factorio save: no top-level directory.`);
+}
+
+/**
+ * The newest save in the save directory, autosaves included.
+ *
+ * The workflow this exists for is "press save, alt-tab, ask": naming a file by
+ * hand every time is friction that has nothing to do with the question.
+ */
+export function newestSave(): { name: string; path: string; mtime: Date } | null {
+  const userdata = findUserdata();
+  if (!userdata) return null;
+  const dir = join(userdata, "saves");
+  if (!existsSync(dir)) return null;
+  let best: { name: string; path: string; mtime: Date } | null = null;
+  for (const entry of readdirSync(dir)) {
+    if (!entry.toLowerCase().endsWith(".zip")) continue;
+    const path = join(dir, entry);
+    const mtime = statSync(path).mtime;
+    if (!best || mtime > best.mtime) {
+      best = { name: entry.replace(/\.zip$/i, ""), path, mtime };
+    }
+  }
+  return best;
 }
 
 export interface ReadStateOptions {
@@ -288,6 +346,7 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
   const raw = JSON.parse(readFileSync(outPath, "utf8")) as {
     tick: number;
     surfaces: string[];
+    day?: SurfaceDay;
     forces: Record<string, ForceState>;
   };
 
@@ -306,6 +365,7 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
       hoursPlayed: raw.tick / TICKS_PER_SECOND / 3600,
       surfaces: raw.surfaces,
       readAt: new Date().toISOString(),
+      ...(raw.day ? { day: raw.day } : {}),
     },
     forces: raw.forces,
   };

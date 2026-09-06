@@ -9,8 +9,9 @@ import { beltOptions, inserterCeilings } from "./belts.ts";
 import { costOf, dependents, labsFor, researchPath, totalCost, unlocksOf } from "./tech.ts";
 import { decode, flatten, describeKind } from "./blueprint.ts";
 import { audit, byRecipe } from "./audit.ts";
-import { readState, readStateFile, type GameState } from "./state.ts";
+import { newestSave, readState, readStateFile, type GameState } from "./state.ts";
 import { gateFor, pathFromHere, researchable } from "./next.ts";
+import { powerReport, solarAverageFactor } from "./power.ts";
 import { bullet, heading, indent, num, pct, rate, sub, table } from "./render.ts";
 
 /**
@@ -821,9 +822,59 @@ async function cmdState(args: Args): Promise<void> {
 }
 
 
+/**
+ * A flag that needs a value.
+ *
+ * The parser stores `--for` with no `=` as the string "true", so a bare
+ * `--for carbon-fiber` used to fall through silently and print the plain table.
+ * A wrong answer that looks like a right one is the worst failure available, so
+ * this errors with the syntax instead.
+ */
+function valueFlag(args: Args, name: string): string | null {
+  const v = args.flags.get(name);
+  if (v === undefined) return null;
+  if (v === "true") {
+    throw new Error(
+      `--${name} needs a value, written with an equals sign: --${name}=<value>\n` +
+        `A bare --${name} was silently ignored before; it is an error now.`,
+    );
+  }
+  return v;
+}
+
 /** Pack counts are whole packs in vanilla; `num` would render 500 as "500.0". */
 function packCount(n: number): string {
   return Number.isInteger(n) ? String(n) : num(n);
+}
+
+/**
+ * The state file to answer from: the one named, or the newest save read so far.
+ *
+ * Naming a file by hand every time is friction that has nothing to do with the
+ * question being asked, so with no flag this falls back to whatever save is
+ * newest on disk, autosaves included.
+ */
+function requireState(args: Args): GameState {
+  const named = valueFlag(args, "save");
+  if (named) {
+    const s = readStateFile(named);
+    if (!s) {
+      throw new Error(
+        `No state on file for "${named}". Read it first:\n  bun run state --save="${named}"`,
+      );
+    }
+    return s;
+  }
+  const newest = newestSave();
+  if (newest) {
+    const s = readStateFile(newest.name);
+    if (s) return s;
+    throw new Error(
+      `Your newest save is "${newest.name}" but no state has been read from it yet:\n` +
+        `  bun run state --save="${newest.name}"`,
+    );
+  }
+  throw new Error("No save found. Name one with --save=<name>, or set FACTORIO_USERDATA.");
 }
 
 function stateHeader(state: GameState): string {
@@ -836,23 +887,14 @@ function stateHeader(state: GameState): string {
 
 function cmdNext(args: Args): void {
   const data = load();
-  const saveFlag = args.flags.get("save");
-  const save = saveFlag && saveFlag !== "true" ? saveFlag : "game 4";
   const forceName = args.flags.get("force") ?? "player";
-
-  const state = readStateFile(save);
-  if (!state) {
-    throw new Error(
-      `No state on file for "${save}". Run it first:\n` +
-        `  bun run state --save "${save}"`,
-    );
-  }
+  const state = requireState(args);
 
   console.log(header(data.manifest));
   console.log(stateHeader(state));
 
-  const forItem = args.flags.get("for");
-  if (forItem && forItem !== "true") {
+  const forItem = valueFlag(args, "for");
+  if (forItem) {
     cmdNextFor(data, state, forceName, forItem);
     return;
   }
@@ -1002,6 +1044,169 @@ function cmdNextFor(data: Data, state: GameState, forceName: string, query: stri
   }
 }
 
+function cmdPower(args: Args): void {
+  const data = load();
+  const forceName = args.flags.get("force") ?? "player";
+  const state = requireState(args);
+
+  console.log(header(data.manifest));
+  console.log(stateHeader(state));
+
+  const r = powerReport(data, state, forceName);
+
+  console.log(heading("Generation, at full output"));
+  console.log(
+    table(
+      [
+        { header: "source" },
+        { header: "count", align: "right" },
+        { header: "each", align: "right" },
+        { header: "total", align: "right" },
+        { header: "derived from" },
+      ],
+      r.generation.map((g) => [
+        g.name,
+        String(g.count),
+        formatWatts(g.each),
+        formatWatts(g.total),
+        g.derivation,
+      ]),
+    ),
+  );
+
+  if (r.solar) {
+    console.log(sub("Solar over a day-night cycle"));
+    if (r.solar.averageFactor !== null && r.solar.curve) {
+      const c = r.solar.curve;
+      console.log(
+        `  ${r.solar.count} panels, ${formatWatts(r.solar.peakTotal)} at peak, ` +
+          `${formatWatts(r.solar.averageTotal!)} averaged over the cycle ` +
+          `(factor ${num(r.solar.averageFactor, 3)}).`,
+      );
+      console.log(
+        `  Cycle ${String(c.ticksPerDay)} ticks. Curve read from the surface: ` +
+          `dusk ${c.dusk}, evening ${c.evening}, morning ${c.morning}, dawn ${c.dawn}, ` +
+          `solar multiplier ${c.solarPowerMultiplier}.`,
+      );
+      console.log(
+        "  Lit from dawn round through 0 to dusk, dark from evening to morning,\n" +
+          "  linear between, so the two ramps average a half. That is the whole rule.",
+      );
+    } else {
+      console.log(
+        `  ${r.solar.count} panels, ${formatWatts(r.solar.peakTotal)} at peak. ` +
+          "Average not reported.",
+      );
+      console.log(
+        "  The day curve is a runtime surface property, not a prototype field, and\n" +
+          "  this state file predates its collection. Re-read the save to get it:\n" +
+          "    bun run state --save=<name>",
+      );
+    }
+  }
+
+  if (r.steam) {
+    const s = r.steam;
+    console.log(sub("Steam chain"));
+    console.log(
+      `  ${s.boilers} boilers make ${num(s.steamPerBoiler)}/s of steam each; ` +
+        `${s.engines} engines burn ${num(s.steamPerEngine)}/s each.`,
+    );
+    console.log(
+    `  One boiler feeds ${num(s.ratio)} engines, so ${s.boilers} feed ${packCount(s.enginesFed)}.`,
+  );
+    const short = s.enginesFed < s.engines;
+    console.log(
+      short
+        ? `  You are boiler bound: ${s.engines} engines are built and only ${packCount(s.enginesFed)} can be fed.`
+        : `  Boilers are sufficient for the engines built (${packCount(s.enginesFed)} >= ${s.engines}).`,
+    );
+    console.log(`  Boilers draw ${formatWatts(s.boilerFuelDraw)} of chemical fuel at full tilt.`);
+    console.log(`  Derivation: ${s.derivation}`);
+  }
+
+  if (r.accumulators) {
+    const a = r.accumulators;
+    console.log(sub("Accumulators"));
+    console.log(
+      `  ${a.count} holding ${num(a.capacity * a.count / 1e6)} MJ, ` +
+        `discharging at up to ${formatWatts(a.outputLimit * a.count)}.`,
+    );
+  }
+
+  console.log(heading("Draw, every machine running at once"));
+  console.log(
+    table(
+      [
+        { header: "machine" },
+        { header: "count", align: "right" },
+        { header: "each", align: "right" },
+        { header: "drain each", align: "right" },
+        { header: "total", align: "right" },
+      ],
+      r.consumption.map((c) => [
+        c.name,
+        String(c.count),
+        formatWatts(c.each),
+        formatWatts(c.drainEach),
+        formatWatts(c.total),
+      ]),
+    ),
+  );
+
+  const gen = r.solar?.averageTotal !== null && r.solar?.averageTotal !== undefined
+    ? r.generationTotal - r.solar.peakTotal + r.solar.averageTotal
+    : r.generationTotal;
+
+  // Nameplate generation counts every engine built. If the boilers cannot make
+  // enough steam for them, that figure is a fiction, so the steam-limited number
+  // is computed and it is the one the balance is drawn against.
+  let effective = gen;
+  const steamCapped =
+    r.steam && r.steam.enginesFed < r.steam.engines
+      ? (r.steam.engines - r.steam.enginesFed) *
+        (r.generation.find((g) => g.name === r.steam!.name)?.each ?? 0)
+      : 0;
+  effective -= steamCapped;
+
+  const rows: Array<[string, string]> = [["generation, nameplate peak", formatWatts(r.generationTotal)]];
+  if (r.solar?.averageTotal != null) {
+    rows.push(["generation, solar averaged", formatWatts(gen)]);
+  }
+  if (steamCapped > 0) {
+    rows.push(["generation, steam limited", formatWatts(effective)]);
+  }
+  rows.push(["draw, everything running", formatWatts(r.consumptionTotal)]);
+  rows.push(["of which idle drain", formatWatts(r.drainTotal)]);
+  const headroom = effective - r.consumptionTotal;
+  rows.push([headroom >= 0 ? "headroom" : "shortfall", formatWatts(Math.abs(headroom))]);
+
+  console.log(sub("Balance"));
+  const width = Math.max(...rows.map((x) => x[0].length));
+  for (const [label, value] of rows) {
+    console.log(`  ${label.padEnd(width)}  ${value}`);
+  }
+  if (steamCapped > 0) {
+    console.log(
+      `\n  The steam-limited line is the one that matters: ${r.steam!.engines - Math.floor(r.steam!.enginesFed)} ` +
+        "engines have no boiler behind them, so their nameplate output is a fiction.",
+    );
+  }
+
+  if (r.unknown.length > 0) {
+    console.log(sub("In the save but not in this snapshot"));
+    console.log(bullet(r.unknown));
+  }
+
+  console.log(
+    "\n  Draw is a ceiling: every machine running at once, which no base does.\n" +
+      "  Idle drain applies whatever the machine is doing. Generation is nameplate\n" +
+      "  capacity, not what your grid actually delivered, which is a runtime figure\n" +
+      "  this tool does not read. Every watt above is derived from the prototype\n" +
+      "  fields named in the `derived from` column.",
+  );
+}
+
 function usage(): void {
   console.log(
     `factorio-advisor: read-only prototype solver and blueprint auditor.
@@ -1016,6 +1221,7 @@ function usage(): void {
   bun run state --save "game 4"           live state read from a copy of a save
   bun run next                            what you can research right now
   bun run next --for=<item>               path from here to what unlocks that item
+  bun run power                           generation against draw, from your census
 
 Flags for ratio:
   --rate=45 | 90/m | 5400/h               target output rate
@@ -1068,6 +1274,9 @@ async function main(): Promise<void> {
       break;
     case "next":
       cmdNext(args);
+      break;
+    case "power":
+      cmdPower(args);
       break;
     default:
       usage();

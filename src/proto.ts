@@ -160,6 +160,26 @@ export class Data {
     });
   }
 
+  /**
+   * Prototype classes that place something on the map, which is every class that
+   * is not an item class. Grouped by what they carry rather than by a hardcoded
+   * list, the same way `itemClasses` is: an entity declares a `collision_box`
+   * or a `selection_box`, an item never does.
+   */
+  entityClasses(): string[] {
+    return this.memo("entityClasses", () => {
+      const items = new Set(this.itemClasses());
+      const out: string[] = [];
+      for (const [klass, entries] of Object.entries(this.raw)) {
+        if (items.has(klass)) continue;
+        const first = Object.values(entries ?? {})[0];
+        if (!first || typeof first !== "object") continue;
+        if ("collision_box" in first || "selection_box" in first) out.push(klass);
+      }
+      return out;
+    });
+  }
+
   items(): Map<string, Proto> {
     return this.memo("items", () => {
       const m = new Map<string, Proto>();
