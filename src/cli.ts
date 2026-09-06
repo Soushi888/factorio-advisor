@@ -9,7 +9,8 @@ import { beltOptions, inserterCeilings } from "./belts.ts";
 import { costOf, dependents, labsFor, researchPath, totalCost, unlocksOf } from "./tech.ts";
 import { decode, flatten, describeKind } from "./blueprint.ts";
 import { audit, byRecipe } from "./audit.ts";
-import { readState } from "./state.ts";
+import { readState, readStateFile, type GameState } from "./state.ts";
+import { gateFor, pathFromHere, researchable } from "./next.ts";
 import { bullet, heading, indent, num, pct, rate, sub, table } from "./render.ts";
 
 /**
@@ -819,6 +820,188 @@ async function cmdState(args: Args): Promise<void> {
   );
 }
 
+
+/** Pack counts are whole packs in vanilla; `num` would render 500 as "500.0". */
+function packCount(n: number): string {
+  return Number.isInteger(n) ? String(n) : num(n);
+}
+
+function stateHeader(state: GameState): string {
+  const when = state.save.readAt.slice(0, 16).replace("T", " ");
+  return (
+    `state: save "${state.save.name}" at tick ${String(state.save.tick)} ` +
+    `(${state.save.hoursPlayed.toFixed(1)} h played), read ${when}`
+  );
+}
+
+function cmdNext(args: Args): void {
+  const data = load();
+  const saveFlag = args.flags.get("save");
+  const save = saveFlag && saveFlag !== "true" ? saveFlag : "game 4";
+  const forceName = args.flags.get("force") ?? "player";
+
+  const state = readStateFile(save);
+  if (!state) {
+    throw new Error(
+      `No state on file for "${save}". Run it first:\n` +
+        `  bun run state --save "${save}"`,
+    );
+  }
+
+  console.log(header(data.manifest));
+  console.log(stateHeader(state));
+
+  const forItem = args.flags.get("for");
+  if (forItem && forItem !== "true") {
+    cmdNextFor(data, state, forceName, forItem);
+    return;
+  }
+
+  const r = researchable(data, state, forceName);
+  console.log(
+    `\n${r.researchedCount} of ${r.totalCount} technologies researched. ` +
+      `${r.available.length} researchable right now.`,
+  );
+
+  if (r.unknownToSnapshot.length > 0) {
+    console.log(sub("Researched in the save but absent from this snapshot"));
+    console.log(bullet(r.unknownToSnapshot));
+    console.log(
+      "\n  These are reported rather than dropped. A save made on another version,\n" +
+        "  or with mods, can carry names this vanilla snapshot has never heard of.",
+    );
+  }
+
+  const limit = Number(args.flags.get("top") ?? "25");
+  const shown = r.available.slice(0, limit);
+  console.log(heading(`Researchable now, cheapest first (${shown.length} of ${r.available.length})`));
+  console.log(
+    table(
+      [
+        { header: "technology" },
+        { header: "lab s", align: "right" },
+        { header: "opens", align: "right" },
+        { header: "science packs" },
+        { header: "unlocks" },
+      ],
+      shown.map((c) => {
+        const packs = [...c.cost.packs.entries()]
+          .map(([name, n]) => `${packCount(n)} ${name.replace(/-science-pack$/, "")}`)
+          .join(", ");
+        const cost = c.cost.trigger && c.cost.packs.size === 0
+          ? c.cost.trigger
+          : c.cost.formula
+            ? `formula ${c.cost.formula}`
+            : packs || "(none)";
+        const unlocks = c.unlocksRecipes.length > 0
+          ? c.unlocksRecipes.slice(0, 3).join(", ") +
+            (c.unlocksRecipes.length > 3 ? `, +${c.unlocksRecipes.length - 3}` : "")
+          : "(no recipe)";
+        return [
+          c.tech.name,
+          c.cost.formula || c.cost.labSeconds === 0 ? "-" : num(c.cost.labSeconds),
+          String(c.opens),
+          cost,
+          unlocks,
+        ];
+      }),
+    ),
+  );
+
+  console.log(
+    "\n  `opens` is how many further technologies become researchable once this one\n" +
+      "  is done. Lab-seconds are at speed 1 before lab speed and productivity, which\n" +
+      "  are live game facts this tool does not read.\n" +
+      "  For a specific goal: bun run next --for=electric-furnace",
+  );
+}
+
+function cmdNextFor(data: Data, state: GameState, forceName: string, query: string): void {
+  const index = new RecipeIndex(data);
+  const techs = data.technologies();
+
+  // The query is a technology name if the tree knows it, otherwise an item.
+  let target: string | null = null;
+  if (techs.has(query)) target = query;
+
+  if (!target) {
+    const product = resolveProduct(data, query);
+    const gate = gateFor(data, index, state, forceName, product);
+    if (gate.availableFromStart && gate.options.length === 0) {
+      console.log(`\n${product} needs no research: it is available from the start.`);
+      return;
+    }
+    if (!gate.best) {
+      console.log(`\nNothing in this snapshot unlocks ${product}.`);
+      return;
+    }
+    target = gate.best;
+    console.log(`\n${product} is gated by ${target} (via ${gate.options[0]!.viaRecipe}).`);
+    if (gate.options.length > 1) {
+      console.log(
+        bullet(
+          gate.options
+            .slice(1, 5)
+            .map((o) => `also unlocked by ${o.tech}, ${o.remaining} still to research`),
+        ),
+      );
+    }
+  }
+
+  const path = pathFromHere(data, state, forceName, target);
+  if (path.alreadyDone) {
+    console.log(`\n${target} is already researched in this save. Nothing to do.`);
+    return;
+  }
+  if (path.remaining.length === 0) {
+    console.log(`\n${target} has no unresearched prerequisites left.`);
+    return;
+  }
+
+  console.log(heading(`Path to ${target}: ${path.remaining.length} technologies left`));
+  console.log(
+    table(
+      [
+        { header: "#", align: "right" },
+        { header: "technology" },
+        { header: "lab s", align: "right" },
+        { header: "science packs" },
+      ],
+      path.remaining.map((t, i) => {
+        const c = costOf(t);
+        const packs = [...c.packs.entries()]
+          .map(([name, n]) => `${packCount(n)} ${name.replace(/-science-pack$/, "")}`)
+          .join(", ");
+        const cost = c.trigger && c.packs.size === 0
+          ? c.trigger
+          : c.formula
+            ? `formula ${c.formula}`
+            : packs || "(none)";
+        const labs = c.formula || c.labSeconds === 0 ? "-" : num(c.labSeconds);
+        return [String(i + 1), t.name, labs, cost];
+      }),
+    ),
+  );
+
+  const totals = totalCost(path.remaining);
+  console.log(sub("Totals for what is left"));
+  console.log(
+    table(
+      [{ header: "science pack" }, { header: "count", align: "right" }],
+      [...totals.packs.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, n]) => [name, packCount(n)]),
+    ),
+  );
+  console.log(`\n  ${packCount(totals.labSeconds)} lab-seconds at speed 1.`);
+  if (totals.triggered.length > 0) {
+    console.log(`  Unlocked by doing, not by science: ${totals.triggered.join(", ")}`);
+  }
+  if (totals.infinite.length > 0) {
+    console.log(`  Infinite, cost is a formula and is not in the total: ${totals.infinite.join(", ")}`);
+  }
+}
+
 function usage(): void {
   console.log(
     `factorio-advisor: read-only prototype solver and blueprint auditor.
@@ -831,6 +1014,8 @@ function usage(): void {
   bun run belt [item] --rate=<n>          belt throughput and saturation
   bun run bp --file=<path>                decode and audit a blueprint
   bun run state --save "game 4"           live state read from a copy of a save
+  bun run next                            what you can research right now
+  bun run next --for=<item>               path from here to what unlocks that item
 
 Flags for ratio:
   --rate=45 | 90/m | 5400/h               target output rate
@@ -880,6 +1065,9 @@ async function main(): Promise<void> {
       break;
     case "state":
       await cmdState(args);
+      break;
+    case "next":
+      cmdNext(args);
       break;
     default:
       usage();

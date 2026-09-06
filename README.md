@@ -25,6 +25,8 @@ bun run tech kovarex --path               # cost, prerequisites, the whole resea
 bun run belt iron-plate --rate=45         # which belt tier carries it, and at what saturation
 bun run bp --file=blueprint.txt           # decode and audit a blueprint string
 bun run state --save "game 4"             # live state, read from a copy of your save
+bun run next                              # what you can research right now
+bun run next --for=carbon-fiber           # the path from here to what unlocks an item
 bun run typecheck
 ```
 
@@ -69,6 +71,23 @@ Rates are the game's own one-hour average expressed in items per minute. Totals 
                          machines:    { <prototype>: count } } } }
 ```
 
+### next
+
+```bash
+bun run next                         # everything researchable right now, cheapest first
+bun run next --for=carbon-fiber      # the path from where you are to that item
+bun run next --for=kovarex-enrichment-process   # a technology name works too
+bun run next --save "game 4" --top=40 --force=player
+```
+
+Reads the state file `bun run state` wrote and intersects it with the technology tree. A technology is listed exactly when it is not researched and every one of its prerequisites is. Nothing is ranked by taste: the table is sorted by lab-seconds, and `opens` says how many further technologies each one unblocks, so a cheap tech that opens six others is visible as such.
+
+`--for` takes an item or a technology. Given an item, it finds which technology gates it, says which recipe that is via, lists the alternatives when several would do, and then prints only the part of the path you have not already researched, with the science totals for what is left.
+
+Trigger technologies are shown as the action they want rather than as zero cost, because in Space Age a good deal of progress is unlocked by doing rather than by researching. Lab-seconds are at speed 1, before lab speed and productivity, which are live game facts this tool does not read.
+
+If a save carries technologies this snapshot has never heard of, from another version or a modded run, they are listed rather than dropped. A silently shorter answer would look exactly like a correct one.
+
 ### bp
 
 Feed it a blueprint string from a file, an argument, or stdin. Books are unrolled. The audit resolves every machine's real module loadout, works out which beacons physically reach it from the positions in the print, runs each machine, and nets the flows: what the print needs fed in, what it exports, and what it balances internally.
@@ -92,6 +111,7 @@ Feed it a blueprint string from a file, an argument, or stdin. Books are unrolle
 paths.ts     find the install and the binary; FACTORIO_CORE / FACTORIO_USERDATA override
 dump.ts      runs Factorio for the prototype dump, with write-data redirected into this project
 state.ts     runs Factorio over a copy of a save to read live state back
+next.ts      intersects the tech tree with what a save says is already researched
 proto.ts     load and index the snapshot; every other module reads through here
 energy.ts    parse "375kW", "1.5MW", "0.2kJ"
 recipes.ts   normalise recipes, index by product, choose a default and justify it
