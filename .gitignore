@@ -2,3 +2,10 @@ node_modules/
 data/
 .factorio-runtime/
 .local/
+.worktrees/
+# A worktree shares the snapshot by symlinking data/ and .local/ from the main
+# tree. `data/` with a trailing slash matches a directory and not a symlink, so
+# these two forms are needed or every worktree shows them permanently dirty,
+# which is how a `git add -A` eventually sweeps them in.
+/data
+/.local

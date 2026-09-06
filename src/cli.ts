@@ -8,7 +8,8 @@ import { parseRate, solve } from "./solve.ts";
 import { beltOptions, inserterCeilings } from "./belts.ts";
 import { costOf, dependents, labsFor, researchPath, totalCost, unlocksOf } from "./tech.ts";
 import { decode, flatten, describeKind } from "./blueprint.ts";
-import { audit, byRecipe } from "./audit.ts";
+import { audit, byRecipe, type AuditResult } from "./audit.ts";
+import { judge } from "./target.ts";
 import { newestSave, readState, readStateFile, type GameState } from "./state.ts";
 import { gateFor, pathFromHere, researchable } from "./next.ts";
 import { powerReport, solarAverageFactor } from "./power.ts";
@@ -574,9 +575,15 @@ function cmdBp(args: Args): void {
     return;
   }
 
+  // Additive by construction: without --rate the loop below does exactly what it
+  // did before this flag existed, and printAudit is untouched.
+  const rateFlag = valueFlag(args, "rate");
+  const itemFlag = valueFlag(args, "item");
+
   for (const { path, bp } of prints) {
     const result = audit(data, index, bp, bp.label ?? path);
     printAudit(result, bp.label ?? path);
+    if (rateFlag) reportAgainstTarget(data, result, rateFlag, itemFlag);
   }
 }
 
@@ -722,6 +729,124 @@ function printAudit(result: ReturnType<typeof audit>, label: string): void {
       result.census.map((c) => [c.name, String(c.count)]),
     ),
   );
+}
+
+function reportAgainstTarget(
+  data: Data,
+  result: AuditResult,
+  rateFlag: string,
+  item: string | null,
+): void {
+  const target = parseRate(rateFlag);
+  const v = judge(data, result, target, item ?? undefined);
+
+  console.log(heading(`Against a target of ${rate(target)} of ${v.item}`));
+  if (v.itemChosen) {
+    console.log(`  (item chosen as the print's largest net export; override with --item=<name>)`);
+  }
+  console.log(
+    `  the print makes ${rate(v.achievedPerSecond)}, which is ` +
+      `${num(v.ratio * 100, 1)}% of the target` +
+      (v.shortfallPerSecond > 0 ? `, short by ${rate(v.shortfallPerSecond)}.` : "."),
+  );
+
+  // A blueprint is scaled as a unit, so the honest statement is how many of THIS
+  // PRINT the target wants, and what that means per machine type. Labelling the
+  // column "needed" per recipe invites reading it as "this recipe needs N
+  // machines to make the target", which is false for any step that does not make
+  // the target item at all: in the shipped platform print, carbonic and oxide
+  // crushing make no iron ore, yet they scale with it because the print does.
+  const printsNeeded = v.ratio > 0 && Number.isFinite(v.ratio) ? 1 / v.ratio : Infinity;
+  console.log(
+    `\n  The target wants ${Number.isFinite(printsNeeded) ? num(printsNeeded) : "infinitely many"} ` +
+      "of this print. A print scales as a unit, so every step below scales with it,\n" +
+      "  including steps that do not make " + v.item + " at all.",
+  );
+  console.log(sub("Machines at that scale"));
+  console.log(
+    table(
+      [
+        { header: "recipe" },
+        { header: "machine" },
+        { header: "in the print", align: "right" },
+        { header: "at that scale", align: "right" },
+        { header: "spare", align: "right" },
+      ],
+      v.steps.map((st) => [
+        st.recipe,
+        st.machine,
+        String(st.present),
+        Number.isFinite(st.needed) ? num(st.needed) : "inf",
+        Number.isFinite(st.spare)
+          ? (st.spare >= 0 ? `+${num(st.spare)}` : num(st.spare))
+          : "-",
+      ]),
+    ),
+  );
+  console.log(
+    "\n  `at that scale` is the print's own machine count multiplied by the scale\n" +
+      "  above, so it uses the print's measured rate and adds no calculation of its\n" +
+      "  own. A negative spare means the target wants more of this print than it has.\n" +
+      "  To size one recipe on its own rather than a whole print, use `bun run ratio`.",
+  );
+
+  console.log(sub("Belts"));
+  const b = v.belt;
+  if (!b.present) {
+    console.log("  The print places no belt, so there is no tier to judge.");
+  } else {
+    console.log(
+      `  print uses ${b.present.name} at ${num(b.present.itemsPerSecond)}/s ` +
+        `(${b.present.count} placed), which the target loads to ` +
+        `${num((b.presentSaturation ?? 0) * 100, 1)}%.`,
+    );
+    if (b.underTiered && b.needed) {
+      console.log(
+        `  That is over one belt. ${b.needed.belt["name"]} carries ` +
+          `${rate(b.needed.itemsPerSecond)} and would hold it at ` +
+          `${num(b.needed.saturation * 100, 1)}%.`,
+      );
+    } else if (b.underTiered) {
+      console.log("  That is over one belt, and no tier in this snapshot carries it alone.");
+    } else {
+      console.log("  One belt of that tier carries the target.");
+    }
+  }
+
+  if (v.inserters) {
+    const ins = v.inserters;
+    console.log(sub("Inserters, at the rotation ceiling"));
+    if (ins.present.length > 0) {
+      console.log(
+        table(
+          [
+            { header: "in the print" },
+            { header: "count", align: "right" },
+            { header: "ceiling/s", align: "right" },
+          ],
+          ins.present.map((x) => [x.name, String(x.count), num(x.ceilingPerSecond)]),
+        ),
+      );
+    } else {
+      console.log("  The print places no inserter.");
+    }
+    console.log(
+      `\n  The target spread over ${String(ins.machines)} machines is ` +
+        `${rate(ins.perMachinePerSecond)} each. At the rotation ceiling that needs:`,
+    );
+    console.log(
+      table(
+        [{ header: "inserter" }, { header: "per machine", align: "right" }],
+        ins.neededPerMachine.map((x) => [x.name, String(x.count)]),
+      ),
+    );
+    console.log(
+      "\n  A ceiling, not a prediction, exactly as `bun run belt` reports it. Real\n" +
+        "  throughput depends on belt chasing and the inserter capacity research,\n" +
+        "  neither of which is a prototype fact, so this is a floor on the count\n" +
+        "  rather than a number to build to.",
+    );
+  }
 }
 
 async function cmdState(args: Args): Promise<void> {
@@ -877,9 +1002,11 @@ function valueFlag(args: Args, name: string): string | null {
   const v = args.flags.get(name);
   if (v === undefined) return null;
   if (v === "true") {
+    // The parser stores a valueless flag as "true", which once made a bare
+    // `--for` fall through and print the wrong table (N1). Erroring is the point:
+    // a wrong answer that looks like a right one is the worst failure available.
     throw new Error(
-      `--${name} needs a value, written with an equals sign: --${name}=<value>\n` +
-        `A bare --${name} was silently ignored before; it is an error now.`,
+      `--${name} needs a value, written with an equals sign: --${name}=<value>`,
     );
   }
   return v;
@@ -1353,6 +1480,7 @@ function usage(): void {
   bun run tech <name> [--path]            cost, prerequisites, research path
   bun run belt [item] --rate=<n>          belt throughput and saturation
   bun run bp --file=<path>                decode and audit a blueprint
+  bun run bp --file=<path> --rate=45      judge that print against a target
   bun run state --save "game 4"           live state read from a copy of a save
   bun run next                            what you can research right now
   bun run next --for=<item>               path from here to what unlocks that item
@@ -1365,6 +1493,10 @@ Flags for ratio:
   --beacons=8 --beacon-modules=speed-module-3x2
   --recipe=<product>=<recipe>             override a recipe choice
   --raw=iron-plate,copper-plate           treat these as bought in
+
+Flags for bp:
+  --rate=45 | 90/m | 5400/h               judge the print against this output
+  --item=<name>                           which product (default: largest export)
 
 Flags for state:
   --save="game 4"                         which save to read (copied, never opened)

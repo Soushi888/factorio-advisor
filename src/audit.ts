@@ -279,7 +279,7 @@ export function byRecipe(result: AuditResult): Array<{
 }> {
   const groups = new Map<string, MachineEntry[]>();
   for (const m of result.machines) {
-    const key = `${m.recipeName} ${m.machine.name}`;
+    const key = `${m.recipeName}\u0000${m.machine.name}`;
     const list = groups.get(key);
     if (list) list.push(m);
     else groups.set(key, [m]);
@@ -293,7 +293,7 @@ export function byRecipe(result: AuditResult): Array<{
     beaconed: number;
   }> = [];
   for (const [key, list] of groups) {
-    const [recipe = "", machine = ""] = key.split(" ");
+    const [recipe = "", machine = ""] = key.split("\u0000");
     let product = "";
     let best = 0;
     const totals = new Map<string, number>();

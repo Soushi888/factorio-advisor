@@ -34,6 +34,7 @@ bun run ratio processing-unit --rate=5    # full production chain, machine count
 bun run tech kovarex --path               # cost, prerequisites, the whole research path with totals
 bun run belt iron-plate --rate=45         # which belt tier carries it, and at what saturation
 bun run bp --file=blueprint.txt           # decode and audit a blueprint string
+bun run bp --file=bp.txt --rate=45        # judge that print against a target rate
 bun run state --save "game 4"             # live state, read from a copy of your save
 bun run next                              # what you can research right now
 bun run next --for=carbon-fiber           # the path from here to what unlocks an item
@@ -128,6 +129,12 @@ Three honest limits, all printed. Draw is a ceiling, since no base runs every ma
 
 ### bp
 
+With `--rate=<n[/s|/m|/h]>` the audit stops describing the print and starts judging it: what fraction of the target it reaches, how many of the print the target would take, what that scale means per machine type, whether the belt tier it places carries the target, and how many inserters per machine the target needs at the rotation ceiling. `--item=<name>` picks which product to judge; without it the print's largest net export is used and the output says so.
+
+A print scales as a unit, so every step scales with it, including steps that make none of the target item. The output says that too, because the alternative is a column that reads like a per-recipe requirement and is not one. To size a single recipe rather than a whole print, use `bun run ratio`.
+
+Without `--rate` the output is exactly what it was before the flag existed.
+
 Feed it a blueprint string from a file, an argument, or stdin. Books are unrolled. The audit resolves every machine's real module loadout, works out which beacons physically reach it from the positions in the print, runs each machine, and nets the flows: what the print needs fed in, what it exports, and what it balances internally.
 
 ## What it will not do
@@ -151,6 +158,7 @@ dump.ts      runs Factorio for the prototype dump, with write-data redirected in
 state.ts     runs Factorio over a copy of a save to read live state back
 next.ts      intersects the tech tree with what a save says is already researched
 power.ts     generation, steam chain and draw, priced from the machine census
+target.ts    judges an audited print against a target rate
 proto.ts     load and index the snapshot; every other module reads through here
 energy.ts    parse "375kW", "1.5MW", "0.2kJ"
 recipes.ts   normalise recipes, index by product, choose a default and justify it
