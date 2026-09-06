@@ -64,6 +64,14 @@ Belt throughput follows from the spacing: `items/s = speed * 60 ticks * (1 / 0.2
 
 Two engine rules are deliberately **not** implemented, because implementing them would mean guessing: inserter throughput beyond the rotation-bound ceiling, and how quality scales a module's effect. Both are reported as gaps in the output where they apply. A tool that says "this figure understates your print" is more useful than one that quietly invents a multiplier.
 
+### A machine's own effects are a prototype field, and were unread for a month
+
+Three Space Age machines carry productivity in the building rather than in a module: `electromagnetic-plant`, `foundry` and `biochamber` each declare `effect_receiver.base_effect.productivity` of 0.5. Nothing in `src/` read that field until 2026-09-05, so every command that priced those machines understated them by half: `ratio` asked for 11.25 electromagnetic plants where the game needs 7.5, and a generated row labelled 48/s would have made 72/s and overrun its output belt at 120 percent.
+
+It is a declared prototype field, so reading it was always inside ADR-3 rather than an exception to it. The fix lives in `machines.ts`, in the one function that folds effects, so `ratio`, the blueprint audit and the generator moved together and cannot disagree. Regression both ways: electronic circuits go from 11.25 to 7.5 plants, and C4's steel furnace figures, 72 and 108, do not move at all, because a steel furnace declares no base effect.
+
+Found by the auditor asking what a generated row would DO in the game rather than what it reported, which is the question that separates a plausible artefact from a correct one.
+
 ### Raw materials come from the game too
 
 The solver needs to know where a chain stops. That set is derived, not listed: every product a `resource` prototype yields when mined (iron ore, crude oil, scrap, calcite, lithium brine, fluorine, and the rest), plus every fluid a `tile` prototype carries for an offshore pump (water, lava). A new planet's resources therefore arrive on their own.
@@ -158,6 +166,10 @@ Position parity follows footprint parity. An odd dimension sits at a half coordi
 **A missing field is a gap, never a constant.** A prototype with no `selection_box` has an unknown footprint, so nothing is placed for it and the omission is printed. Inventing a size would put entities in the wrong tiles, which is worse than placing nothing.
 
 **Fractional machines round up** (decided with Soushi, 2026-09-05). A player building to a target wants the target met and reads surplus as headroom, so the row overbuilds and prints the overcapacity, which also goes into the blueprint label so it survives into the game. `--machines=<n>` pins a count instead and states the resulting rate, which can be a shortfall and is labelled as one. The belt tier is chosen for the rounded-up rate, and a row that outruns its belt prints a warning rather than a quiet 140 percent.
+
+**The input side is sized and never silently ignored.** A row's ingredient demand comes from the same run the output does, so the auditor re-derives it from the entities. Eight electromagnetic plants pull 128 items a second, which is 213 percent of one turbo belt and therefore three input lanes. The row lays ONE, prints the number needed, and says the rest is the player's to route: where a second lane goes is a layout opinion and this tool has no source for opinions.
+
+**The inserter tier is chosen by its ceiling.** The first version placed whatever came first in the list, a basic inserter at 0.84/s, against sixteen items a second of demand. The tier is now the cheapest whose rotation ceiling covers the busier side, and when none covers it, which is the usual case at these rates, the output says so rather than shipping a row that cannot move its own throughput.
 
 **The generator checks itself against the auditor.** `gen` and `bp --rate` share no code path: one lays entities out from the solver, the other reads entities back and re-derives their rates. Running the second over the first's output is therefore a real test rather than a tautology, and it is the unit's own acceptance criterion. On `electronic-circuit --rate=45` the generator places 12 machines for an exact 11.25, and the auditor independently recovers 48/s and 11.25.
 

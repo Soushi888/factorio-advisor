@@ -1,5 +1,5 @@
 import { watts } from "./energy.ts";
-import type { BeaconProto, CraftingMachine, Data, Effect, ModuleProto } from "./proto.ts";
+import type { BeaconProto, CraftingMachine, Data, Effect, ModuleProto, Raw } from "./proto.ts";
 import type { Recipe } from "./recipes.ts";
 
 /**
@@ -84,8 +84,48 @@ export interface Multipliers {
   quality: number;
 }
 
-export function multipliers(loadout: ModuleLoadout, recipe?: Recipe): Multipliers {
-  const t = totalEffects(loadout);
+/**
+ * A machine's own built-in effects, declared on the prototype.
+ *
+ * Three Space Age machines carry productivity in the building itself rather than
+ * in a module: `electromagnetic-plant`, `foundry` and `biochamber` each declare
+ * `effect_receiver.base_effect.productivity = 0.5`. It is a prototype field, so
+ * reading it is squarely inside ADR-3, and NOT reading it understated all three
+ * by half in every command that priced them (B2, found by the pm asking what a
+ * generated row would do in game rather than what it reported).
+ */
+export function baseEffect(machine?: CraftingMachine | null): EffectTotals {
+  const zero: EffectTotals = { speed: 0, productivity: 0, consumption: 0, pollution: 0, quality: 0 };
+  if (!machine) return zero;
+  const receiver = machine["effect_receiver"];
+  if (!receiver || typeof receiver !== "object") return zero;
+  const base = (receiver as Raw)["base_effect"];
+  if (!base || typeof base !== "object") return zero;
+  const b = base as Raw;
+  const n = (k: string): number => (typeof b[k] === "number" ? (b[k] as number) : 0);
+  return {
+    speed: n("speed"),
+    productivity: n("productivity"),
+    consumption: n("consumption"),
+    pollution: n("pollution"),
+    quality: n("quality"),
+  };
+}
+
+export function multipliers(
+  loadout: ModuleLoadout,
+  recipe?: Recipe,
+  machine?: CraftingMachine | null,
+): Multipliers {
+  const modules = totalEffects(loadout);
+  const own = baseEffect(machine);
+  const t: EffectTotals = {
+    speed: modules.speed + own.speed,
+    productivity: modules.productivity + own.productivity,
+    consumption: modules.consumption + own.consumption,
+    pollution: modules.pollution + own.pollution,
+    quality: modules.quality + own.quality,
+  };
   // A recipe that forbids productivity ignores every productivity effect.
   const prodAllowed = recipe ? recipe.allowProductivity : true;
   return {
@@ -141,7 +181,7 @@ export function runOne(
   machine: CraftingMachine,
   loadout: ModuleLoadout = EMPTY_LOADOUT,
 ): MachineRun {
-  const mult = multipliers(loadout, recipe);
+  const mult = multipliers(loadout, recipe, machine);
   const craftsPerSecond = (machine.crafting_speed * mult.speed) / recipe.time;
 
   const outputPerSecond = new Map<string, number>();

@@ -1523,7 +1523,25 @@ function cmdGen(args: Args): void {
   const beltRate = beltProto ? Number(beltProto["speed"]) * 480 : 0;
   const saturation = beltRate > 0 ? actual / beltRate : Infinity;
 
-  const inserter = data.inserters()[0] ?? null;
+  // B3: the input side. Ingredient demand comes from the run, so it is the same
+  // number the auditor would re-derive, and one input belt is all this row lays.
+  const inputs = [...step.run.inputPerSecond.entries()]
+    .map(([name, perMachine]) => ({ name, perSecond: perMachine * count }))
+    .sort((a, b) => b.perSecond - a.perSecond);
+  const inputTotal = inputs.reduce((n, i) => n + i.perSecond, 0);
+
+  // N5: pick the inserter by its rotation ceiling rather than taking the first
+  // in the list, which was a basic inserter at 0.84/s against 16/s of demand.
+  const perMachineOut = perMachine;
+  const perMachineIn = inputTotal / count;
+  const need = Math.max(perMachineOut, perMachineIn);
+  const ceilings = inserterCeilings(data);
+  const inserter =
+    (ceilings.find((c) => c.itemsPerSecondCeiling >= need)?.inserter ??
+      ceilings[ceilings.length - 1]?.inserter) ?? null;
+  const inserterCeiling =
+    ceilings.find((c) => String(c.inserter["name"]) === String(inserter?.["name"]))
+      ?.itemsPerSecondCeiling ?? 0;
 
   const label =
     `${product} ${num(actual)}/s (${count} x ${step.machine.name}` +
@@ -1552,16 +1570,57 @@ function cmdGen(args: Args): void {
         ["output per machine", rate(perMachine)],
         ["output of the row", rate(actual)],
         [overPct >= 0 ? "overcapacity" : "shortfall", `${num(Math.abs(overPct), 1)}%`],
-        ["belt", beltProto ? `${String(beltProto["name"])} at ${rate(beltRate)}` : "(none placed)"],
-        ["belt saturation", beltRate > 0 ? `${num(saturation * 100, 1)}%` : "-"],
+        ["output belt", beltProto ? `${String(beltProto["name"])} at ${rate(beltRate)}` : "(none placed)"],
+        ["output saturation", beltRate > 0 ? `${num(saturation * 100, 1)}%` : "-"],
+        ["input needed", rate(inputTotal)],
+        ["input saturation, one belt", beltRate > 0 ? `${num((inputTotal / beltRate) * 100, 1)}%` : "-"],
+        ["input belts needed", beltRate > 0 ? String(Math.ceil(inputTotal / beltRate)) : "-"],
+        ["inserter", inserter ? `${String(inserter["name"])}, ceiling ${rate(inserterCeiling)}` : "(none)"],
         ["footprint", `${String(row.width)} x ${String(row.height)} tiles, ${String(row.entityCount)} entities`],
       ],
     ),
   );
 
+  console.log(sub("Input side"));
+  console.log(
+    table(
+      [
+        { header: "ingredient" },
+        { header: "per second", align: "right" },
+        { header: "one belt at", align: "right" },
+      ],
+      inputs.map((i) => [
+        i.name,
+        num(i.perSecond),
+        beltRate > 0 ? `${num((i.perSecond / beltRate) * 100, 1)}%` : "-",
+      ]),
+    ),
+  );
+  const inputBelts = beltRate > 0 ? Math.ceil(inputTotal / beltRate) : 0;
+  if (inputBelts > 1) {
+    console.log(
+      `\n  WARNING: the row needs ${rate(inputTotal)} in, which is ` +
+        `${num((inputTotal / beltRate) * 100, 1)}% of one ${String(beltProto?.["name"])}. ` +
+        `That is ${String(inputBelts)} input belts.\n` +
+        "  This row lays ONE input lane, so the rest is yours to route: laying several\n" +
+        "  is out of scope, because where a second lane goes is a layout opinion and\n" +
+        "  this tool has no source for those.",
+    );
+  }
+
+  if (inserterCeiling > 0 && need > inserterCeiling) {
+    console.log(
+      `\n  WARNING: no inserter in this snapshot keeps up. The busiest side moves ` +
+        `${rate(need)} per machine and the fastest, ${String(inserter?.["name"])}, ` +
+        `has a rotation ceiling of ${rate(inserterCeiling)}.\n` +
+        "  One per side is what this row lays, so you will need more of them, and a\n" +
+        "  ceiling is not a prediction: real throughput is lower still.",
+    );
+  }
+
   if (saturation > 1) {
     console.log(
-      `\n  WARNING: ${num(saturation * 100, 1)}% of one ${String(beltProto?.["name"])}. ` +
+      `\n  WARNING: output is ${num(saturation * 100, 1)}% of one ${String(beltProto?.["name"])}. ` +
         "The row makes more than its output belt carries.\n" +
         "  Pick a faster tier with --belt=<name>, or split the row.",
     );

@@ -142,6 +142,8 @@ Machine counts round up, so the row meets the target and the overcapacity is pri
 
 Every coordinate comes from the prototypes. Footprints are read from `selection_box`, which is the real tile size, rather than `collision_box`, which is inset so you can walk past things. A prototype with no selection box gets nothing placed and the gap is printed, because a guessed size puts entities in the wrong tiles.
 
+Both sides are sized. The output belt tier is picked for the rounded-up rate, and the input demand is computed from the recipe and reported per ingredient, with the number of input lanes the row would need. The row lays one lane each way and tells you when that is not enough, rather than drawing a picture that cannot run. Inserters are picked by rotation ceiling, and when no tier in the game keeps up with the row's throughput, it says that too.
+
 One step only. A whole chain or a main bus is out of scope and the output says so; `bun run ratio` is what sizes a chain. Check a generated row the same way you would check anyone else's: `bun run bp --rate=<same>` reads it back and re-derives its rates through a different code path.
 
 ### bp
