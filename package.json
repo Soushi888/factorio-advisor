@@ -15,6 +15,7 @@
     "state": "bun src/cli.ts state",
     "next": "bun src/cli.ts next",
     "power": "bun src/cli.ts power",
+    "gen": "bun src/cli.ts gen",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

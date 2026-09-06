@@ -141,6 +141,28 @@ ADR-7 priced the base from prototype fields, and every one of its footers had to
 
 **Additive by design.** Every field this adds is optional, so a state file written before it still works and the commands that do not need it are unchanged. Where a figure is missing the output says so rather than falling back to a guess.
 
+## ADR-9: the generator lays out one row, and every coordinate is measured
+
+`gen` emits a blueprint string for ONE recipe step. Not a chain, not a bus. A row of machines with an input belt above, an output belt below, and an inserter per machine per side.
+
+**Why one step.** A row is the largest shape whose geometry is fully determined by the prototypes. Once a second recipe joins, where the two rows sit relative to each other is a layout opinion, and this project has no source for opinions. `ratio` already answers what a chain needs; `gen` answers what one step looks like on the ground.
+
+**Two placement facts, both measured against the shipped 83-entity platform print before any code was written.**
+
+The tile footprint is `selection_box`, not `collision_box`. Collision boxes are inset so entities can be walked past: a 2x2 turret collides over 1.4 tiles and a 3x3 assembler over 2.4. The selection box gives 2x2 and 3x3 exactly, which is the footprint a blueprint needs.
+
+Position parity follows footprint parity. An odd dimension sits at a half coordinate, the centre of a tile; an even one sits at an integer, the seam between two. Checked against every entity in that print, and it holds 83 of 83.
+
+**Factorio 2.0 has sixteen directions**, so North is 0, East 4, South 8 and West 12. This was measured, not recalled, and the measurement mattered: under the old eight-direction reading the parity rule failed on six entities. Treating 4 and 12 as the axes that swap width and height brings it to 83 of 83, and the print contains only 0, 4, 8 and 12. Emitting `2` for east, which the 1.x convention would have suggested, would have produced prints that place wrong.
+
+**A missing field is a gap, never a constant.** A prototype with no `selection_box` has an unknown footprint, so nothing is placed for it and the omission is printed. Inventing a size would put entities in the wrong tiles, which is worse than placing nothing.
+
+**Fractional machines round up** (decided with Soushi, 2026-09-05). A player building to a target wants the target met and reads surplus as headroom, so the row overbuilds and prints the overcapacity, which also goes into the blueprint label so it survives into the game. `--machines=<n>` pins a count instead and states the resulting rate, which can be a shortfall and is labelled as one. The belt tier is chosen for the rounded-up rate, and a row that outruns its belt prints a warning rather than a quiet 140 percent.
+
+**The generator checks itself against the auditor.** `gen` and `bp --rate` share no code path: one lays entities out from the solver, the other reads entities back and re-derives their rates. Running the second over the first's output is therefore a real test rather than a tautology, and it is the unit's own acceptance criterion. On `electronic-circuit --rate=45` the generator places 12 machines for an exact 11.25, and the auditor independently recovers 48/s and 11.25.
+
+**Worktrees share `data/` by symlink.** The snapshot is gitignored, so a worktree has none until it is linked from the main tree. That link is read-only in practice and must stay so: `bun run state` writes `data/state/<save>.json`, and two trees writing it at once would corrupt what the other reads. `.gitignore` carries `/data` and `/.local` because a trailing-slash pattern does not match a symlink.
+
 ## Module map
 
 Bottom up, one data flow, mirroring the sibling project.
@@ -158,6 +180,8 @@ tech.ts      prerequisite closure, cumulative science cost, what unlocks a recip
 blueprint.ts decode and encode blueprint strings
 state.ts     copy a save, inject a collector, run the engine, read live state back
 next.ts      intersect the tech tree with what a save says is already researched
+target.ts    judge an audited print against a target rate
+layout.ts    lay one recipe step out as a row and emit a blueprint string
 power.ts     generation, steam chain and draw, priced from the machine census
 audit.ts     entity census, ratio check against the solver, belt saturation, module and beacon coverage
 render.ts    tables and trees for the terminal
@@ -182,6 +206,7 @@ bun run state --save "game 4"             # live state read from a copy of a sav
 bun run next                              # what is researchable now, from that state
 bun run next --for=carbon-fiber           # the unresearched path to what unlocks an item
 bun run power                             # generation against draw, from the census
+bun run gen electronic-circuit --rate=45  # one recipe step as a placeable row
 bun run typecheck
 ```
 
