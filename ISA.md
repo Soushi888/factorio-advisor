@@ -1,8 +1,8 @@
 ---
 name: factorio-advisor
 principal_stated_goal: "Do you think it is possible to make a factorio-advisor folder similar to this one where I can ask you advice for my Factorio game? vanilla Space Age is it. You can start /SoftwareDesign it and then /Implement tiers A and B in a new project folder."
-phase: tier C landed (C14 to C16, C18); C17 docs verification pending builder read
-progress: 17/18
+phase: tier C complete (Convene pm-builder run, 2026-09-05, six commits from an empty repo)
+progress: 18/18
 frozen: false
 ---
 
@@ -60,7 +60,8 @@ Soushi asks a ratio, technology or throughput question and gets an exact answer 
   - *Defect closed (pm#16):* U3's hand-named census omitted inserters, radars, roboports, turrets, lamps, pumps and accumulators and understated draw by 73 MW; fixing it exposed that a usage/30 drain rule invented 10 kW per radar the engine resolves to zero. U3b derives the class list from every prototype declaring an energy source and copies the engine's resolved usage, drain and buffer per class, applying no rule.
   - *On trust:* the solar ramp between the four curve points is linear (the values print, so it is refutable); roboport 50 kW and radar 0 drain, which only the engine resolves and a second run reproduced.
   - *Open, non-blocking N4:* bare `bun run state` asks for a save name while the README says it reads the newest save; assigned to U5.
-- [ ] **C17 — The documentation matches the shipped code.** README, DESIGN, CLAUDE.md and module headers agree with `src/` after C14 to C16 land, checked by a CodeDocs pass and verified by the builder.
+- [x] **C17 — The documentation matches the shipped code.** README, DESIGN, CLAUDE.md and this file agree with `src/` at `ea88b28`, checked by a CodeDocs Sync pass and verified by the builder, who did not write them. Docs commit `5d44e5c`.
+  - *Evidence:* the builder's first verification (builder#32) refuted the pass: `energy.ts` and `tech.ts` had no paragraph in CLAUDE.md, and the constant inventory in A2 and CLAUDE.md missed `LANES` and misplaced `TICKS_PER_SECOND`. Both fixed; the second verification (builder#33) confirms in both directions: all sixteen `src/*.ts` basenames named in CLAUDE.md, all eleven `package.json` scripts documented, the canonical grep's ten constants all present in A2, the four stale DESIGN strings absent, README line 22 true, DocSync links 4 checked 0 broken. The refusal is kept here on purpose: a docs pass that its own author verified would have shipped both gaps.
   - *Falsifier:* a command, flag, path or constant named in a document that `src/` does not have, or the reverse.
 - [x] **C18 — The collector reports what Soushi asked to see on 2026-09-05 and could not.** Lab speed modifier and research progress; evolution factor and pollution per surface; logistic network contents by item; electric network statistics, so `power` prints what the grid delivered against nameplate; and bare `bun run state` reads the newest save (N4). Each figure is copied from the Lua API on the copy; the one derived figure, the lab multiplier, is checked. Commit `ea88b28` on base `2a0f546`; verdict pm#22.
   - *Evidence:* pm ran bare `state` at 20:34:40 with both A1 probes empty. Delivered power for game 4: 61.3 MW steam, 50.5 MW solar, 67 kW accumulator, against 112 MW consumed, and production minus consumption from the state file is -0.5 W. The electric flow unit (joules per tick, times 60) was settled by a machine of known duty cycle: 34 radars report 298 kW each against a 300 kW nameplate. Lab speed bonus 1.9 equals the sum of the five researched `research-speed` effects in the snapshot, 0.2 + 0.3 + 0.4 + 0.5 + 0.5, so a lab runs at 2.9x and `steel-plate-productivity` is 39.3% done. Nauvis evolution 0.8978, pollution 54322.6; two logistic networks, 102 item kinds, copper-ore 73354 on top. U2 and U3 output unchanged after the additive schema change. ADR-8 records the unit derivation.
