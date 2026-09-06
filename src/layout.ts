@@ -22,6 +22,16 @@ import type { CraftingMachine, Data, Proto } from "./proto.ts";
  * 12. That is also measured rather than recalled: the print contains directions
  * 0, 4, 8 and 12 and nothing else, and the parity rule only closes at 83 of 83
  * when 4 and 12 are the axes that swap width and height.
+ *
+ * **An inserter's direction names the side it picks up FROM, not the side it
+ * delivers to.** Asked of the engine, not assumed: an inserter placed facing
+ * north reports `pickup_position` at y-1 and `drop_position` at y+1.2, so it
+ * moves items southward. The first version of this file read it the other way
+ * and emitted every row with both inserters reversed, feeding the input belt
+ * from the machine and the machine from the output belt. Nothing static caught
+ * it: the census, the ratios, the belt figures and the decode round-trip are all
+ * indifferent to which way an inserter faces. The sandbox caught it on its first
+ * run, which is the whole argument of ADR-10.
  */
 
 /** The sixteen-direction compass Factorio 2.0 uses. */
@@ -136,19 +146,21 @@ export function buildRow(data: Data, opts: RowOptions): RowResult {
     entities.push(machine);
 
     if (opts.inserter && insFoot) {
-      // Input inserter above, facing south into the machine; output below,
-      // facing south out of it. Both on the machine's centre column.
+      // Both inserters face NORTH, because north means "pick up from the north".
+      // The input one sits above the machine and moves belt -> machine; the
+      // output one sits below and moves machine -> belt. Same direction, because
+      // both are carrying items southward down the row.
       entities.push({
         entity_number: n++,
         name: String(opts.inserter["name"]),
         position: { x: snap(cx, insFoot.width), y: snap(-inserterOffset, insFoot.height) },
-        direction: SOUTH,
+        direction: NORTH,
       });
       entities.push({
         entity_number: n++,
         name: String(opts.inserter["name"]),
         position: { x: snap(cx, insFoot.width), y: snap(inserterOffset, insFoot.height) },
-        direction: SOUTH,
+        direction: NORTH,
       });
     }
   }

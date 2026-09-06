@@ -163,6 +163,12 @@ Position parity follows footprint parity. An odd dimension sits at a half coordi
 
 **Factorio 2.0 has sixteen directions**, so North is 0, East 4, South 8 and West 12. This was measured, not recalled, and the measurement mattered: under the old eight-direction reading the parity rule failed on six entities. Treating 4 and 12 as the axes that swap width and height brings it to 83 of 83, and the print contains only 0, 4, 8 and 12. Emitting `2` for east, which the 1.x convention would have suggested, would have produced prints that place wrong.
 
+**An inserter's direction names the side it picks up FROM.** Measured, after the first version of ADR-9 assumed the opposite and shipped every row with both inserters reversed. Asked of the engine: an inserter at direction 0 (north) reports `pickup_position` at y-1 and `drop_position` at y+1.2; direction 4 (east) picks up at x+1 and drops at x-1.2; 8 and 12 are their mirrors. So a north-facing inserter moves items southward.
+
+The consequence was a row that read correctly and did nothing. Its input inserter picked up inside the machine and dropped on the input belt; its output inserter took from the output belt and fed it back into the machine. Both inserters in every generated row now face north, because both carry items southward across the row: belt to machine above, machine to belt below.
+
+Nothing static could have caught it. The entity census, the ratios, the belt saturation and the decode round-trip are all indifferent to which way an inserter faces, and all four passed on the broken row. That is the argument for ADR-5 level three in one example, and the sandbox found it on its first run.
+
 **A missing field is a gap, never a constant.** A prototype with no `selection_box` has an unknown footprint, so nothing is placed for it and the omission is printed. Inventing a size would put entities in the wrong tiles, which is worse than placing nothing.
 
 **Fractional machines round up** (decided with Soushi, 2026-09-05). A player building to a target wants the target met and reads surplus as headroom, so the row overbuilds and prints the overcapacity, which also goes into the blueprint label so it survives into the game. `--machines=<n>` pins a count instead and states the resulting rate, which can be a shortfall and is labelled as one. The belt tier is chosen for the rounded-up rate, and a row that outruns its belt prints a warning rather than a quiet 140 percent.
