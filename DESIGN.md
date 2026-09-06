@@ -29,7 +29,7 @@ The fix is `--config`. Factorio's `config.ini` carries `[path] read-data` and `w
 
 Verified 2026-08-24: the run loaded `core`, `base 2.0.77`, `elevated-rails 2.0.77`, `quality 2.0.77`, `space-age 2.0.77` and emitted a 27.8 MB `data-raw-dump.json`, while `~/.factorio` was untouched. A fresh write-data means a fresh `mod-list.json`, which is why `even-distribution` is absent: the snapshot is vanilla Space Age by construction, which is what was asked for.
 
-**Consequence:** `bun run sync` is the only command that launches Factorio, it takes about three seconds, and it never opens a save.
+**Consequence:** `sync` takes about three seconds. Two commands launch the engine, `sync` and `state`; see ADR-6 for the second, which reads a copy of a save and never opens the player's own.
 
 ## ADR-2: query time never touches the game
 
@@ -41,7 +41,7 @@ The snapshot is gitignored. It is 27.8 MB of derived data with a one-command reb
 
 Inherited from `wesnoth-advisor` and load-bearing. Every crafting speed, energy draw, module effect, belt speed and science cost is read from the snapshot. If the game patches, the numbers follow.
 
-The only numeric literals permitted in lookup paths are **engine facts that the dump cannot carry**, each declared once, named, and commented at its definition. There are seven, in two kinds.
+The only numeric literals permitted in lookup paths are **engine facts that the dump cannot carry**, each declared once, named, and commented at its definition. Seven belong to this ADR, in two kinds, and ADR-6 declares `TICKS_PER_SECOND` and `BENCHMARK_TICKS` alongside them. The canonical list is ISA anti-claim A2; keep the count there and nowhere else, because a number restated in three files rots in two of them.
 
 Defaults for absent fields, which exist because the dump omits a field equal to its default:
 
@@ -129,6 +129,18 @@ A state file written before the curve was collected has no curve. That case prin
 
 **What is still not modelled**, and is printed as such: what the grid actually delivered, which is a runtime figure; and the draw figure is a ceiling, since no base runs every machine at once.
 
+## ADR-8: what the grid did, not only what it could
+
+ADR-7 priced the base from prototype fields, and every one of its footers had to apologise for the same thing: nameplate capacity is not delivered power. The collector now reads the game's own electric network statistics, so it no longer has to.
+
+**Per network, then summed.** A base has several electric networks (four on the save this was built against), and the statistics live on each. Every distinct network on every surface is visited through its poles and the flows are summed.
+
+**The unit was measured, not assumed.** The figures are joules per tick. `count = true`, which for item statistics returns a total, here returns the number of contributing entities instead, so the trick that settled the item flow unit does not transfer. What settles it is a machine with a known duty cycle: a radar scans continuously at 300 kW, and 34 of them report 169041, which times 60 is 10.14 MW against a nameplate 10.2 MW. No other reading of the unit survives that. The result is checkable by anyone: on this save production and consumption both come to 112 MW, and an electric network that did not balance would be a bug in the reading.
+
+**Everything else in this unit is a copy.** Lab speed modifier, research progress, evolution factor, surface pollution and logistic network contents are read from the Lua API and written out unchanged. The one derived figure is lab speed as a multiplier, and even that was checked rather than assumed: `laboratory_speed_modifier` is 1.9, the five researched `research-speed` technologies declare +0.2, +0.3, +0.4, +0.5 and +0.5, and those sum to exactly 1.9, so the field is a bonus and a lab runs at 2.9 times base.
+
+**Additive by design.** Every field this adds is optional, so a state file written before it still works and the commands that do not need it are unchanged. Where a figure is missing the output says so rather than falling back to a guess.
+
 ## Module map
 
 Bottom up, one data flow, mirroring the sibling project.
@@ -157,7 +169,7 @@ cli.ts       the only entry point and the only place that formats output
 ## Commands
 
 ```bash
-bun run sync                              # refresh the prototype snapshot (the only command that launches Factorio)
+bun run sync                              # refresh the prototype snapshot
 bun run search plate                      # find prototypes by name or type
 bun run recipe electronic-circuit         # ingredients, results, makers, unlocking tech
 bun run ratio science --rate=1.5          # full chain for 1.5/s, machine counts, raw inputs, power
@@ -175,7 +187,7 @@ bun run typecheck
 
 ## Constraints that must hold
 
-- **Read-only, and stricter than "does not corrupt".** No writes anywhere under `~/.factorio` or the Steam install. No save is opened. No mod is installed. The engine runs exactly once per `sync`, headless, with its write-data redirected into this project.
+- **Read-only, and stricter than "does not corrupt".** No writes anywhere under `~/.factorio` or the Steam install. No save of the player's is opened in place; `state` reads a copy. No mod is installed. The engine runs once per `sync` and once per `state`, headless, with its write-data redirected into this project.
 - **No hardcoded game statistics.** Only the declared engine constants of ADR-3 and ADR-6, each named and commented at its definition.
 - **Never state a game fact without the snapshot behind it.** Every command prints the snapshot's game version and dump date in its header, the way the sibling prints the save name.
 - Strict TypeScript with `noUncheckedIndexedAccess`.

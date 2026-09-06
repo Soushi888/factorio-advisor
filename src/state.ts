@@ -74,7 +74,34 @@ export interface ResolvedEnergy {
   perSector?: number;
 }
 
+/** What the grid actually did, as opposed to what it could do. */
+export interface ElectricState {
+  networks: number;
+  /** Watts produced over the last hour, by source prototype. */
+  production: Record<string, number>;
+  /** Watts consumed over the last hour, by consumer prototype. */
+  consumption: Record<string, number>;
+}
+
+export interface ResearchState {
+  labSpeedModifier: number;
+  labProductivityBonus: number;
+  /** 0 to 1 through the current technology, or null when nothing is queued. */
+  progress: number | null;
+}
+
+export interface SurfaceState {
+  surface: string;
+  evolution: number | null;
+  pollution: number | null;
+}
+
 export interface ForceState {
+  /** Present from U5 onward. */
+  electric?: ElectricState;
+  research?: ResearchState;
+  /** Logistic network contents by item, summed across networks. */
+  logistic?: Record<string, number>;
   /** Present from U3b onward; absent in older state files. */
   energy?: Record<string, ResolvedEnergy>;
   technologies: {
@@ -107,6 +134,8 @@ export interface GameState {
     day?: SurfaceDay;
     /** Entity classes the census counted, derived from the game's prototypes. */
     censusClasses?: string[];
+    /** Evolution and pollution per surface. Present from U5 onward. */
+    surfaceState?: SurfaceState[];
   };
   forces: Record<string, ForceState>;
 }
@@ -237,6 +266,18 @@ script.on_nth_tick(1, function()
             morning = first.morning, dawn = first.dawn }
   end
 
+  -- Evolution is per force per surface; pollution is per surface. The player
+  -- force is the one that matters, and both are copied, never computed.
+  local surface_state = {}
+  for _, surface in pairs(game.surfaces) do
+    local entry = { surface = surface.name }
+    local oke, ev = pcall(function() return game.forces["enemy"].get_evolution_factor(surface) end)
+    entry.evolution = oke and ev or nil
+    local okp, po = pcall(function() return surface.get_total_pollution() end)
+    entry.pollution = okp and po or nil
+    surface_state[#surface_state + 1] = entry
+  end
+
   local forces = {}
   for force_name, force in pairs(game.forces) do
     local researched, queue = {}, {}
@@ -272,8 +313,66 @@ script.on_nth_tick(1, function()
     local energy = {}
     for name in pairs(machines) do energy[name] = energy_of(name) end
 
+    -- What the grid actually delivered, as opposed to what it could.
+    --
+    -- Electric network statistics are per network, and a base has several (four
+    -- here), so every distinct network on every surface is visited and summed.
+    -- The figures are joules per tick. Measured, not assumed: 34 radars, which
+    -- scan continuously at 300 kW, report 169041, and 169041 x 60 is 10.14 MW
+    -- against a nameplate 10.2 MW. No other reading of the unit is possible.
+    local nets_seen, prod, cons, net_count = {}, {}, {}, 0
+    for _, surface in pairs(game.surfaces) do
+      for _, pole in pairs(surface.find_entities_filtered{ type = "electric-pole", force = force }) do
+        local id = pole.electric_network_id
+        if id and not nets_seen[id] then
+          nets_seen[id] = true
+          net_count = net_count + 1
+          local st = pole.electric_network_statistics
+          if st then
+            for name in pairs(st.output_counts) do
+              prod[name] = (prod[name] or 0)
+                + st.get_flow_count{ name = name, category = "output", precision_index = hour }
+            end
+            for name in pairs(st.input_counts) do
+              cons[name] = (cons[name] or 0)
+                + st.get_flow_count{ name = name, category = "input", precision_index = hour }
+            end
+          end
+        end
+      end
+    end
+
+    -- Logistic network contents, summed over every network on every surface.
+    local logistic = {}
+    for _, surface in pairs(game.surfaces) do
+      local nets = force.logistic_networks[surface.name]
+      if nets then
+        for _, net in pairs(nets) do
+          local ok, contents = pcall(function() return net.get_contents() end)
+          if ok and contents then
+            for key, entry in pairs(contents) do
+              if type(entry) == "table" then
+                logistic[entry.name] = (logistic[entry.name] or 0) + entry.count
+              else
+                logistic[key] = (logistic[key] or 0) + entry
+              end
+            end
+          end
+        end
+      end
+    end
+
+    local research_progress = nil
+    local okp, pv = pcall(function() return force.research_progress end)
+    if okp and type(pv) == "number" and force.current_research then research_progress = pv end
+
     forces[force_name] = {
       energy = energy,
+      electric = { networks = net_count, production = prod, consumption = cons },
+      research = { labSpeedModifier = force.laboratory_speed_modifier,
+                   labProductivityBonus = force.laboratory_productivity_bonus,
+                   progress = research_progress },
+      logistic = logistic,
       technologies = {
         researched = researched,
         current = force.current_research and force.current_research.name or nil,
@@ -289,6 +388,7 @@ script.on_nth_tick(1, function()
     surfaces = surfaces,
     day = day,
     censusClasses = energy_types(),
+    surfaceState = surface_state,
     forces = forces,
   }), false)
 end)
@@ -438,6 +538,7 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
     surfaces: string[];
     day?: SurfaceDay;
     censusClasses?: string[];
+    surfaceState?: SurfaceState[];
     forces: Record<string, ForceState>;
   };
 
@@ -458,9 +559,19 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
       readAt: new Date().toISOString(),
       ...(raw.day ? { day: raw.day } : {}),
       ...(raw.censusClasses ? { censusClasses: raw.censusClasses } : {}),
+      ...(raw.surfaceState ? { surfaceState: raw.surfaceState } : {}),
     },
     forces: raw.forces,
   };
+
+  // Electric network figures arrive as joules per tick. Watts is what a reader
+  // wants, and the tick constant is declared here rather than in the Lua.
+  for (const force of Object.values(state.forces)) {
+    if (!force.electric) continue;
+    for (const side of [force.electric.production, force.electric.consumption]) {
+      for (const key of Object.keys(side)) side[key] = side[key]! * TICKS_PER_SECOND;
+    }
+  }
 
   const stateDir = join(DATA_DIR, "state");
   mkdirSync(stateDir, { recursive: true });

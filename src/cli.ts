@@ -727,12 +727,20 @@ function printAudit(result: ReturnType<typeof audit>, label: string): void {
 async function cmdState(args: Args): Promise<void> {
   // `--save=game 4` and `--save "game 4"` both reach here: the parser stores a
   // valueless flag as "true", in which case the name is the next positional.
+  // N4: with no --save, read the newest save on disk, which is what the README
+  // promises and what "save in game, then ask" actually needs.
   const flagged = args.flags.get("save");
-  const save = flagged && flagged !== "true" ? flagged : args.positional.join(" ");
+  const named = flagged && flagged !== "true" ? flagged : args.positional.join(" ");
+  const newest = named.trim() ? null : newestSave();
+  const save = named.trim() || newest?.name || "";
+  if (newest) {
+    console.log(`No save named, using the newest: "${newest.name}" (${newest.mtime.toISOString().slice(0, 16).replace("T", " ")})`);
+  }
   if (!save.trim()) {
     throw new Error(
-      'Which save? e.g. bun run state --save "game 4"\n' +
-        "The save is copied into this project and read there; the original is never opened.",
+      "No save found to read. Name one with --save=<name>, or set FACTORIO_USERDATA\n" +
+        "to the directory holding saves/. The save is copied into this project and\n" +
+        "read there; the original is never opened.",
     );
   }
   const top = Number(args.flags.get("top") ?? "10");
@@ -813,6 +821,41 @@ async function cmdState(args: Args): Promise<void> {
       machines.map(([name, count]) => [name, String(count)]),
     ),
   );
+
+  const surf = state.save.surfaceState;
+  if (surf && surf.length > 0) {
+    console.log(heading("Surfaces"));
+    console.log(
+      table(
+        [
+          { header: "surface" },
+          { header: "evolution", align: "right" },
+          { header: "pollution", align: "right" },
+        ],
+        surf.map((x) => [
+          x.surface,
+          x.evolution === null || x.evolution === undefined ? "-" : pct(x.evolution),
+          x.pollution === null || x.pollution === undefined ? "-" : num(x.pollution),
+        ]),
+      ),
+    );
+    console.log(
+      "\n  Evolution is the enemy force's own factor for that surface, and pollution\n" +
+        "  is the surface total. Both copied from the game, neither computed here.",
+    );
+  }
+
+  const logi = force.logistic;
+  if (logi && Object.keys(logi).length > 0) {
+    const items = Object.entries(logi).sort((a, b) => b[1] - a[1]).slice(0, top);
+    console.log(heading(`In your logistic network, top ${items.length} of ${Object.keys(logi).length}`));
+    console.log(
+      table(
+        [{ header: "item" }, { header: "count", align: "right" }],
+        items.map(([name, n]) => [name, String(n)]),
+      ),
+    );
+  }
 
   console.log(
     "\n  Rates are the game's own one-hour average, in items per minute. Totals are\n" +
@@ -905,6 +948,23 @@ function cmdNext(args: Args): void {
       `${r.available.length} researchable right now.`,
   );
 
+  const research = state.forces[forceName]?.research;
+  const labSpeed = research ? 1 + research.labSpeedModifier : null;
+  if (research) {
+    const cur = state.forces[forceName]?.technologies.current;
+    console.log(
+      `  Lab speed bonus ${pct(research.labSpeedModifier)}, so a lab runs at ` +
+        `${num(labSpeed!)}x base` +
+        (research.labProductivityBonus > 0
+          ? `, productivity ${pct(research.labProductivityBonus)}`
+          : "") +
+        ".",
+    );
+    if (cur && research.progress !== null) {
+      console.log(`  ${cur} is ${num(research.progress * 100, 1)}% done.`);
+    }
+  }
+
   if (r.unknownToSnapshot.length > 0) {
     console.log(sub("Researched in the save but absent from this snapshot"));
     console.log(bullet(r.unknownToSnapshot));
@@ -922,6 +982,7 @@ function cmdNext(args: Args): void {
       [
         { header: "technology" },
         { header: "lab s", align: "right" },
+        { header: "yours", align: "right" },
         { header: "opens", align: "right" },
         { header: "science packs" },
         { header: "unlocks" },
@@ -939,21 +1000,21 @@ function cmdNext(args: Args): void {
           ? c.unlocksRecipes.slice(0, 3).join(", ") +
             (c.unlocksRecipes.length > 3 ? `, +${c.unlocksRecipes.length - 3}` : "")
           : "(no recipe)";
-        return [
-          c.tech.name,
-          c.cost.formula || c.cost.labSeconds === 0 ? "-" : num(c.cost.labSeconds),
-          String(c.opens),
-          cost,
-          unlocks,
-        ];
+        const labs = c.cost.formula || c.cost.labSeconds === 0 ? "-" : num(c.cost.labSeconds);
+        const real =
+          labSpeed && c.cost.labSeconds > 0 && !c.cost.formula
+            ? num(c.cost.labSeconds / labSpeed)
+            : "-";
+        return [c.tech.name, labs, real, String(c.opens), cost, unlocks];
       }),
     ),
   );
 
   console.log(
     "\n  `opens` is how many further technologies become researchable once this one\n" +
-      "  is done. Lab-seconds are at speed 1 before lab speed and productivity, which\n" +
-      "  are live game facts this tool does not read.\n" +
+      "  is done. `lab s` is at speed 1; `yours` divides by your actual lab speed,\n" +
+      "  read from the save. Both are per lab, before you multiply by how many you\n" +
+      "  have running.\n" +
       "  For a specific goal: bun run next --for=electric-furnace",
   );
 }
@@ -1134,6 +1195,40 @@ function cmdPower(args: Args): void {
     );
   }
 
+  const el = state.forces[forceName]?.electric;
+  if (el) {
+    const prod = Object.entries(el.production).sort((a, b) => b[1] - a[1]);
+    const cons = Object.entries(el.consumption).sort((a, b) => b[1] - a[1]);
+    const prodTotal = prod.reduce((n, [, w]) => n + w, 0);
+    const consTotal = cons.reduce((n, [, w]) => n + w, 0);
+    console.log(heading(`Delivered, averaged over the last hour (${el.networks} networks)`));
+    console.log(
+      table(
+        [
+          { header: "source" },
+          { header: "produced", align: "right" },
+          { header: "consumer" },
+          { header: "consumed", align: "right" },
+        ],
+        Array.from({ length: Math.max(prod.length, Math.min(cons.length, 10)) }, (_, i) => [
+          prod[i]?.[0] ?? "",
+          prod[i] ? formatWatts(prod[i]![1]) : "",
+          cons[i]?.[0] ?? "",
+          cons[i] ? formatWatts(cons[i]![1]) : "",
+        ]),
+      ),
+    );
+    console.log(
+      `  produced ${formatWatts(prodTotal)}, consumed ${formatWatts(consTotal)}` +
+        (cons.length > 10 ? `, ${String(cons.length - 10)} smaller consumers not listed` : ""),
+    );
+    console.log(
+      "\n  This is what your grid actually did, copied from the game's own electric\n" +
+        "  network statistics, not computed here. Compare it with the ceiling below:\n" +
+        "  the gap is duty cycle, the fraction of the time your machines are busy.",
+    );
+  }
+
   console.log(heading("Draw, every machine running at once"));
   console.log(
     table(
@@ -1238,10 +1333,12 @@ function cmdPower(args: Args): void {
         "  lamp. Re-read the save to fix it: bun run state\n") +
       (classes ? `  The census covered ${String(classes)} entity classes, every one the game\n  declares with an energy source of any kind.\n` : "") +
       "\n  Draw is a ceiling: every machine running at once, which no base does.\n" +
-      "  Idle drain applies whatever the machine is doing. Generation is nameplate\n" +
-      "  capacity, not what your grid actually delivered, which is a runtime figure\n" +
-      "  this tool does not read. Every watt above is derived from the prototype\n" +
-      "  fields named in the `derived from` column.",
+      "  Idle drain applies whatever the machine is doing." +
+      (el
+        ? " What your grid actually\n  delivered is in the Delivered section, so nothing here is nameplate-only."
+        : " Generation is nameplate\n  capacity, not what your grid delivered; re-read the save to get the real\n  figures, which this state file predates.") +
+      "\n  Every watt in the generation table is derived from the prototype fields\n" +
+      "  named in its `derived from` column.",
   );
 }
 

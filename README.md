@@ -67,7 +67,9 @@ bun run state --save "game 4"        # the save name as it appears in your save 
 bun run state --save "game 4" --top=20 --force=player
 ```
 
-Reports what your base has actually done: how many technologies are researched, what is being researched now and what is queued behind it, the items and fluids you produce with their one-hour average rate and their lifetime totals, and every machine you have placed counted by prototype.
+Reports what your base has actually done: how many technologies are researched, what is being researched now and what is queued behind it, the items and fluids you produce with their one-hour average rate and their lifetime totals, every machine you have placed counted by prototype, evolution and pollution per surface, and what is sitting in your logistic network.
+
+With no `--save` it reads the newest save in your save directory, autosaves included, so the loop is: save in game, then ask.
 
 It works by copying your save into `.factorio-runtime/saves/`, appending a collector to the copy's own `control.lua`, and running the engine against the copy in benchmark mode. Your save is never opened in place and never written back. No mod is installed, so a save made with mods still loads.
 
@@ -93,6 +95,8 @@ bun run next --save "game 4" --top=40 --force=player
 
 Reads the state file `bun run state` wrote and intersects it with the technology tree. A technology is listed exactly when it is not researched and every one of its prerequisites is. Nothing is ranked by taste: the table is sorted by lab-seconds, and `opens` says how many further technologies each one unblocks, so a cheap tech that opens six others is visible as such.
 
+Lab-seconds are given twice: at speed 1, and at your actual lab speed read from the save, which is the number that tells you how long a technology will really take. Research progress on the current technology is printed too.
+
 `--for` takes an item or a technology. Given an item, it finds which technology gates it, says which recipe that is via, lists the alternatives when several would do, and then prints only the part of the path you have not already researched, with the science totals for what is left.
 
 Trigger technologies are shown as the action they want rather than as zero cost, because in Space Age a good deal of progress is unlocked by doing rather than by researching. Lab-seconds are at speed 1, before lab speed and productivity, which are live game facts this tool does not read.
@@ -106,7 +110,9 @@ bun run power                        # uses your newest save's state
 bun run power --save="game 4"        # or a named one
 ```
 
-Prices your base from the machine census `state` reports. Generation by source with the prototype fields each figure came from, the steam chain and whether your boilers can actually feed your engines, accumulator capacity, and the draw of every machine type if all of them ran at once.
+Prices your base two ways. **Delivered** is what your grid actually did over the last hour, copied from the game's own electric network statistics across every network you have, so it is measurement rather than arithmetic. **Draw** is the ceiling if every machine ran at once, priced from the machine census. The gap between them is duty cycle.
+
+Then the rest, from the census: Generation by source with the prototype fields each figure came from, the steam chain and whether your boilers can actually feed your engines, accumulator capacity, and the draw of every machine type if all of them ran at once.
 
 Every watt is derived, and the `derived from` column tells you how, so you can redo any of it by hand from `data/data-raw.json`. A steam engine, for instance, is `fluid_usage_per_tick 0.5 x 60 ticks x (maximum_temperature 165 minus steam's default_temperature 15) x steam heat_capacity 0.2kJ x effectivity 1`, which is 900 kW.
 
