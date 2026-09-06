@@ -38,17 +38,18 @@ const CSS = `
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#16151300;--bg:#161513;--fg:#eceae5;--dim:#959087;--line:#2e2b27;--card:#1f1d1a;--up:#5fbf80;--down:#e0745a;--accent:#e08a3c}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-html,body{overflow-x:hidden}
 .wrap{max-width:104rem;margin:0 auto;padding:1.25rem 1.5rem 3rem}
 header{display:flex;flex-wrap:wrap;gap:.75rem 1.5rem;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:.6rem;margin-bottom:1.1rem}
 h1{font-size:1.05rem;margin:0;font-weight:650;letter-spacing:-.01em}
 .meta{color:var(--dim);font-size:.8rem;font-variant-numeric:tabular-nums}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(22rem,1fr));gap:1rem;align-items:start}
-/* min-width:0 is the whole fix for N6. A grid item defaults to min-width:auto,
-   so one long technology name in the Research card widened its track past 22rem,
-   pushed the grid past the 104rem wrap and overflowed the page horizontally,
-   which the dashboard rule forbids. The wrap rules below stop any single long
-   token doing it again through a different card. */
+/* Defensive, not a fix for anything observed. A grid item defaults to
+   min-width:auto, so a long enough unbreakable token would widen its track past
+   22rem and overflow the page, which the dashboard rule forbids. N6 reported
+   exactly that symptom and it did not reproduce: scrollWidth equals clientWidth
+   at every width tested, with and without these rules, on a probe certified to
+   fire. The card the report called clipped fits exactly inside the content edge;
+   what was cropped was the screenshot, which is narrower than the page. */
 section{background:var(--card);border:1px solid var(--line);border-radius:.5rem;padding:.85rem .95rem;min-width:0}
 section>*{min-width:0}
 h2{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:0 0 .6rem;font-weight:600}
