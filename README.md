@@ -40,6 +40,8 @@ bun run next                              # what you can research right now
 bun run next --for=carbon-fiber           # the path from here to what unlocks an item
 bun run power                             # generation against draw, from your census
 bun run gen electronic-circuit --rate=45  # one recipe step, laid out as a placeable row
+bun run watch                             # watch your saves; every save becomes a report
+bun run report                            # write one report for the newest save now
 bun run typecheck
 ```
 
@@ -128,6 +130,25 @@ Some machines draw per event rather than per second. An inserter spends `energy_
 
 Three honest limits, all printed. Draw is a ceiling, since no base runs every machine at once. Generation is nameplate capacity, not what your grid actually delivered, which is a runtime figure this tool does not read yet. And where the boilers cannot feed the engines built, the steam-limited figure is computed and the balance drawn against that, because the nameplate number would otherwise be a fiction.
 
+### watch and report
+
+```bash
+bun run watch                     # leave it running; save in game and a report appears
+bun run report                    # one report for the newest save, now
+bun run report --save="game 4"    # or a named one
+bun run watch --threshold=120     # only mention rate changes of 120/min or more
+```
+
+`watch` polls your save directory and, when a save stops changing, reads it the same way `state` does: your save is copied into this project and the copy is read. It then writes `reports/<save>-<tick>.md` and regenerates `reports/index.html`.
+
+A report is a diff, not a description. The first one for a save describes, because there is nothing to compare against; every later one names only what moved and says so when nothing did. You already know how many solar panels you have; what is worth telling you is that eleven appeared and that coal fell 61/min. The threshold for a production change is printed in the report rather than hidden, because a number that decides what you get told about should be arguable.
+
+Reports are named by game tick, not wall clock, so re-reading an unchanged save produces nothing rather than a second identical report.
+
+Every figure on the page carries `data-source` and `data-field` naming the state file and the exact path inside it that produced the number, so any figure can be checked against the JSON without reading the renderer.
+
+`reports/` is gitignored: it is derived from saves and rebuilt by running the command again.
+
 ### gen
 
 ```bash
@@ -179,6 +200,12 @@ next.ts      intersects the tech tree with what a save says is already researche
 power.ts     generation, steam chain and draw, priced from the machine census
 target.ts    judges an audited print against a target rate
 layout.ts    lays one recipe step out as a row and emits a blueprint string
+
+bridge/      the loop above the advisor. It may import src/; src/ never imports it.
+report.ts    what changed since the last report for this save
+page.ts      the dashboard, every figure carrying the field it came from
+watch.ts     polls the save directory and drives the loop
+cli.ts       the bridge's entry point, separate from the advisor's
 proto.ts     load and index the snapshot; every other module reads through here
 energy.ts    parse "375kW", "1.5MW", "0.2kJ"
 recipes.ts   normalise recipes, index by product, choose a default and justify it

@@ -9,3 +9,4 @@ data/
 # which is how a `git add -A` eventually sweeps them in.
 /data
 /.local
+reports/

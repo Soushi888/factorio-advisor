@@ -16,6 +16,8 @@
     "next": "bun src/cli.ts next",
     "power": "bun src/cli.ts power",
     "gen": "bun src/cli.ts gen",
+    "watch": "bun bridge/cli.ts",
+    "report": "bun bridge/cli.ts --now",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
