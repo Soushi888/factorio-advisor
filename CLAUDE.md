@@ -22,10 +22,11 @@ bun run ratio processing-unit --rate=5    # full production chain, machine count
 bun run tech kovarex --path               # cost, prerequisites, the whole research path with totals
 bun run belt iron-plate --rate=45         # belt tier saturation, inserter rotation ceilings
 bun run bp --file=blueprint.txt           # decode and audit a blueprint string or book
+bun run bp --file=blueprint.txt --rate=45 # judge that print against a target rate: scale, spare machines, belt tier, inserter ceiling
 bun run typecheck                         # tsc --noEmit
 ```
 
-There is no test suite. Verification is hand-checking tool output against the raw prototype JSON with `jq`, and since tier C also against the engine's own runtime values read through the save copy. That is how all four real defects so far were found: recycling recipes as sources, NaN machine speeds, a hand-named census that missed 73 MW of draw, and a usage/30 drain rule the engine contradicts for radars. Game locations are auto-detected and overridable with `FACTORIO_CORE` and `FACTORIO_USERDATA` (see `src/paths.ts`).
+There is no test suite. Verification is hand-checking tool output against the raw prototype JSON with `jq`, and since tier C also against the engine's own runtime values read through the save copy. That is how every real defect so far was found; the incidents are recorded in `ISA.md` where they happened (A4 recycling recipes as sources, C3 NaN machine speeds, C16 the hand-named census and the drain rule, A2 the NUL byte that blinded grep). No count of them is kept here, because a count typed in this file went stale twice in one evening. Game locations are auto-detected and overridable with `FACTORIO_CORE` and `FACTORIO_USERDATA` (see `src/paths.ts`).
 
 ## Architecture
 
@@ -59,6 +60,8 @@ The default-recipe rule is ordered and stated in the output: main product over b
 
 `next.ts` is a set operation between the technology graph and the researched set a state file reports: a technology is researchable exactly when it is unresearched and every prerequisite is researched. `--for=` walks the prerequisite closure of the target and subtracts what is done. Technology names the snapshot does not know are listed, never dropped.
 
+`target.ts` judges an audited print against a rate. It takes the audit's own figures and one ratio, target over what the print makes, and scales everything by it: how many of the print the target wants, spare or missing machines per step (a print scales as a unit, so steps that make none of the target item scale too), whether the belt tier the print places carries the target and at what saturation, and inserters per machine at the rotation ceiling. It measures nothing new, so it is right exactly where the audit is right and wrong in the same place. Without `--rate` it is never called and `bp` output is unchanged.
+
 `power.ts` joins the census a state read returned to the energy fields in the snapshot (ADR-7). Generation per source is derived and the derivation is printed in the row; the steam chain is priced from boiler consumption and engine fluid usage against steam's declared heat capacity; the solar average is computed from the day-night curve the collector records on the surface, never from a remembered factor. The census class list is derived from every prototype declaring an energy source, and usage, drain and buffer per class are the engine's own resolved values copied from the collector, because no single drain rule matches both an assembling machine and a radar. Per-event draws (inserter movements, radar sectors) are named in their own table and never converted to watts.
 
 `render.ts` formats tables. `cli.ts` is the only entry point and the only place that formats output.
@@ -66,7 +69,7 @@ The default-recipe rule is ordered and stated in the output: main product over b
 ## Constraints that must hold
 
 - **Read-only.** No write anywhere outside the project root. `ISA.md` anti-claim A1 is the falsifier, and it is checked with `find ~/.factorio -newermt`, not by reading the code.
-- **No hardcoded game statistics.** Every number comes from the snapshot or from what the engine reports about a save. The only literals in lookup paths are the declared constants, each named and commented at its definition. The inventory is produced, never typed: `grep -rnE "^(export )?const [A-Z][A-Z_]+ = [0-9.]+" src/`, and `ISA.md` anti-claim A2 records what that grep returned at the last verified commit (ten distinct names across `proto.ts`, `machines.ts`, `belts.ts`, `state.ts` and `power.ts`, one of them, `BENCHMARK_TICKS`, a commented choice rather than a game fact). A count typed into a document rotted twice in one evening; run the grep.
+- **No hardcoded game statistics.** Every number comes from the snapshot or from what the engine reports about a save. The only literals in lookup paths are the declared constants, each named and commented at its definition. The inventory is produced, never typed: `grep -arnE "^(export )?const [A-Z][A-Z_]+ = [0-9.]+" src/`, and `ISA.md` anti-claim A2 records what that grep returned at the last verified commit (ten distinct names across `proto.ts`, `machines.ts`, `belts.ts`, `state.ts` and `power.ts`, one of them, `BENCHMARK_TICKS`, a commented choice rather than a game fact). A count typed into a document rotted twice in one evening; run the grep. Run it with `-a`, and check `file src/*.ts | grep -v text` prints nothing first: a NUL byte in `audit.ts` once made grep skip that file silently, so every probe over `src/` reported clean on fifteen of sixteen files (ISA A2, 2026-09-05).
 - **Never invent a number the data cannot support.** Inserter throughput beyond the rotation ceiling, and quality-scaled module effects, are both gaps. They are reported as gaps in the command output. Adding a plausible multiplier for either is a regression, not a feature.
 - **Never state a game fact without naming the snapshot.** Every command prints the version, build, mod set and dump date in its header.
 - Strict TypeScript with `noUncheckedIndexedAccess`; index access needs `!` or a guard.
