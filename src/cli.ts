@@ -1154,6 +1154,34 @@ function cmdPower(args: Args): void {
     ),
   );
 
+  if (r.perEvent.length > 0) {
+    console.log(sub("Draws per event, not per second"));
+    console.log(
+      table(
+        [
+          { header: "machine" },
+          { header: "count", align: "right" },
+          { header: "per event", align: "right" },
+          { header: "field" },
+          { header: "idle drain each", align: "right" },
+        ],
+        r.perEvent.map((e) => [
+          e.name,
+          String(e.count),
+          e.joules >= 1e6 ? `${num(e.joules / 1e6)} MJ` : `${num(e.joules / 1000)} kJ`,
+          e.field,
+          formatWatts(e.drainEach),
+        ]),
+      ),
+    );
+    console.log(
+      "\n  Their idle drain is in the total above, because it is paid every tick.\n" +
+        "  The per-event cost is not, because turning it into watts needs a rate of\n" +
+        "  swings or shots per second that no prototype declares. Same wall as the\n" +
+        "  inserter throughput figure, and it is not worth guessing past.",
+    );
+  }
+
   const gen = r.solar?.averageTotal !== null && r.solar?.averageTotal !== undefined
     ? r.generationTotal - r.solar.peakTotal + r.solar.averageTotal
     : r.generationTotal;
@@ -1198,8 +1226,18 @@ function cmdPower(args: Args): void {
     console.log(bullet(r.unknown));
   }
 
+  const classes = state.save.censusClasses?.length;
   console.log(
-    "\n  Draw is a ceiling: every machine running at once, which no base does.\n" +
+    (r.fromEngine
+      ? "\n  Draw figures are the engine's own resolved values, copied rather than\n" +
+        "  inferred: a radar declaring no drain resolves to zero, an assembling\n" +
+        "  machine declaring none resolves to a thirtieth of its usage, and no\n" +
+        "  single rule gives both.\n"
+      : "\n  This state file predates the engine's resolved figures, so drain is\n" +
+        "  inferred from the prototype and is wrong for classes like radar and\n" +
+        "  lamp. Re-read the save to fix it: bun run state\n") +
+      (classes ? `  The census covered ${String(classes)} entity classes, every one the game\n  declares with an energy source of any kind.\n` : "") +
+      "\n  Draw is a ceiling: every machine running at once, which no base does.\n" +
       "  Idle drain applies whatever the machine is doing. Generation is nameplate\n" +
       "  capacity, not what your grid actually delivered, which is a runtime figure\n" +
       "  this tool does not read. Every watt above is derived from the prototype\n" +

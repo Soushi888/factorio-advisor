@@ -121,6 +121,12 @@ A state file written before the curve was collected has no curve. That case prin
 
 **Nameplate is not capacity.** Counting every engine built overstates generation when the boilers cannot make enough steam for them. The steam-limited figure is computed and the balance is drawn against it, with the gap named. On the save this was built against, 407 engines are built and 115 boilers can feed 230 of them, so 177 engines have no boiler behind them.
 
+**The census class list is derived, and that is the whole lesson of U3b.** The first version named twelve entity classes by hand and omitted inserter, roboport, radar, lamp, pump, electric-turret and accumulator. The draw figure called itself a ceiling with everything running, and was short by 73 MW on the base it was built against, with 5521 inserters and 645 accumulators simply absent. A hand-written list cannot fail safely, because nothing warns you about the class you did not think of. The collector now asks the running game for every entity class declaring an energy source of any kind, which on this snapshot is 31 classes, and counts those. A class added by a future version arrives on its own.
+
+**Drain is copied from the engine, not inferred.** The obvious rule, a thirtieth of usage where the prototype omits `drain`, is correct for an assembling machine and wrong for a radar: measured, `radar.energy_usage` is 5000 J per tick with drain 0, while `assembling-machine-2` is 2500 J per tick with drain 83.33, which is exactly usage/30. One rule cannot give both, so the collector records what the engine resolved and the report copies it. Where a state file predates that, the old inference is used and the output says so.
+
+**Per-event draw is separated, not converted.** An inserter spends `energy_per_movement` per swing and a radar `energy_per_sector` per scan. Their idle drain is continuous and is counted; the per-event cost is reported in its own table and excluded from the total, because a rate of swings per second is exactly the quantity ADR-3 already refuses to invent for inserter throughput. These fields come from the snapshot rather than the runtime, which was checked: the runtime does not expose them under those names.
+
 **What is still not modelled**, and is printed as such: what the grid actually delivered, which is a runtime figure; and the draw figure is a ceiling, since no base runs every machine at once.
 
 ## Module map

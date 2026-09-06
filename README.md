@@ -112,7 +112,13 @@ Every watt is derived, and the `derived from` column tells you how, so you can r
 
 Solar reports both peak and the average over a day-night cycle, and the average is not a remembered constant. The cycle length is a prototype field (`planet.surface_properties.day-night-cycle`, 25200 ticks on Nauvis) and the curve itself is read off the surface when `state` runs. Lit from dawn round to dusk, dark from evening to morning, linear between, which on Nauvis gives 0.7. If you are reading an older state file that predates the curve being collected, it says so and reports peak only rather than inventing a factor.
 
-Two honest limits, both printed. Draw is a ceiling, since no base runs every machine at once. And generation is nameplate capacity, not what your grid actually delivered, which is a runtime figure this tool does not read. Where the boilers cannot feed the engines built, the steam-limited figure is computed and the balance is drawn against that instead, because the nameplate number would otherwise be a fiction.
+The census counts every entity class the game declares with an energy source of any kind, and that list is read off the running game rather than typed here. The first version listed twelve classes by hand and silently missed inserters, roboports, radars, lamps, pumps, turrets and accumulators, which understated the draw ceiling by 73 MW on a real base. A hand-written list cannot fail safely: nothing warns you about the class you forgot.
+
+Drain is copied from the engine, not inferred. A radar declaring no drain resolves to zero; an assembling machine declaring none resolves to a thirtieth of its usage. No single rule produces both, so no rule is applied.
+
+Some machines draw per event rather than per second. An inserter spends `energy_per_movement` on each swing, a radar `energy_per_sector` on each scan. Their idle drain is in the total, because it is paid every tick, but the per-event cost is listed separately and left out, since converting it to watts needs a swings-per-second that no prototype declares. That is the same wall the inserter throughput figure hits, and it is not worth guessing past.
+
+Three honest limits, all printed. Draw is a ceiling, since no base runs every machine at once. Generation is nameplate capacity, not what your grid actually delivered, which is a runtime figure this tool does not read yet. And where the boilers cannot feed the engines built, the steam-limited figure is computed and the balance drawn against that, because the nameplate number would otherwise be a fiction.
 
 ### bp
 

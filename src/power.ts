@@ -39,6 +39,26 @@ export interface ConsumptionRow {
   each: number;
   drainEach: number;
   total: number;
+  /** True when the figures came from the engine rather than from a rule. */
+  resolved: boolean;
+}
+
+/**
+ * A consumer whose draw is per event, not per second.
+ *
+ * An inserter spends `energy_per_movement` on each swing; a laser turret spends
+ * `energy_per_shot`. Turning either into a rate needs a swings-per-second or a
+ * shots-per-second that no prototype declares, which is the same wall the
+ * inserter throughput figure already hits. So these are counted, their per-event
+ * cost is reported, and they are left out of the total with that said plainly.
+ */
+export interface PerEventRow {
+  name: string;
+  count: number;
+  field: string;
+  joules: number;
+  /** The continuous drain these do have, which IS in the total. */
+  drainEach: number;
 }
 
 export interface SteamChain {
@@ -75,11 +95,43 @@ export interface PowerReport {
   consumption: ConsumptionRow[];
   consumptionTotal: number;
   drainTotal: number;
+  perEvent: PerEventRow[];
   solar: SolarReport | null;
   steam: SteamChain | null;
+  /** True when every consumption figure came from the engine's own resolution. */
+  fromEngine: boolean;
   accumulators: { count: number; capacity: number; outputLimit: number } | null;
   /** Census entries whose prototype this snapshot does not declare. */
   unknown: string[];
+}
+
+/** Runtime energy fields are per tick; watts is what a reader wants. */
+function perTickToWatts(v: number | undefined): number {
+  return v === undefined ? 0 : v * TICKS_PER_SECOND;
+}
+
+/**
+ * The per-event cost of a consumer that has one, or null.
+ *
+ * These come from the snapshot rather than from the engine: the runtime does not
+ * expose `energy_per_movement` and friends under those names, while the
+ * prototype declares them plainly. Checked, not assumed: a probe asking the
+ * runtime for them returned nothing for `fast-inserter`, whose prototype carries
+ * `energy_per_movement: "7kJ"`.
+ */
+const PER_EVENT_FIELDS = ["energy_per_movement", "energy_per_shot", "energy_per_sector"] as const;
+
+function perEventOf(
+  name: string,
+  count: number,
+  proto: Raw,
+  drainEach: number,
+): PerEventRow | null {
+  for (const field of PER_EVENT_FIELDS) {
+    const j = joules(proto[field]);
+    if (j > 0) return { name, count, field, joules: j, drainEach };
+  }
+  return null;
 }
 
 /** Find an entity prototype by name, skipping the item class of the same name. */
@@ -153,8 +205,11 @@ export function powerReport(
     throw new Error(`No force called "${forceName}" in that state file. Forces: ${names}.`);
   }
 
+  const resolved = force.energy;
+  let fromEngine = resolved !== undefined;
   const generation: GenerationRow[] = [];
   const consumption: ConsumptionRow[] = [];
+  const perEvent: PerEventRow[] = [];
   const unknown: string[] = [];
   let solar: SolarReport | null = null;
   let accumulators: PowerReport["accumulators"] = null;
@@ -242,13 +297,33 @@ export function powerReport(
       continue; // Heat, not electricity. Reported in the steam chain instead.
     }
 
-    // Everything else: an electric consumer, if it declares one.
+    // Everything else: an electric consumer.
+    //
+    // Where the state file carries the engine's resolved figures, those are used
+    // verbatim. They are the only reliable source for drain: a radar declaring
+    // no drain resolves to zero, an assembling machine declaring none resolves
+    // to a thirtieth of its usage, and no single rule gives both.
+    const res = resolved?.[name];
     const es = proto["energy_source"] as Raw | undefined;
+    if (res) {
+      if (!res.electric) continue;
+      const each = perTickToWatts(res.maxUsagePerTick ?? res.usagePerTick);
+      const drainEach = perTickToWatts(res.drainPerTick);
+
+      const event = perEventOf(name, count, proto, drainEach);
+      if (event) perEvent.push(event);
+      if (each === 0 && drainEach === 0) continue;
+      if (event && each === 0) continue; // its continuous part is drain alone, already counted there
+      consumption.push({ name, count, each, drainEach, total: (each + drainEach) * count, resolved: true });
+      continue;
+    }
+
+    // No resolved figures: an older state file. Fall back to the prototype, and
+    // say so, rather than refusing to answer.
     if (es?.["type"] !== "electric") continue;
-    const each = watts(proto["energy_usage"]);
+    const each = watts(proto["energy_usage"] ?? proto["energy_usage_per_tick"]);
     if (each === 0) continue;
-    // `drain` defaults to a thirtieth of usage when the prototype omits it, the
-    // same declared constant `machines.ts` already uses.
+    fromEngine = false;
     const drainEach = es["drain"] !== undefined ? watts(es["drain"]) : each / 30;
     consumption.push({
       name,
@@ -256,6 +331,7 @@ export function powerReport(
       each,
       drainEach,
       total: (each + drainEach) * count,
+      resolved: false,
     });
   }
 
@@ -292,8 +368,26 @@ export function powerReport(
   generation.sort((a, b) => b.total - a.total);
   consumption.sort((a, b) => b.total - a.total);
 
+  // A consumer whose only continuous cost is drain still draws it, every tick,
+  // whatever it is doing. Inserters idling are 5521 x 0.5 kW here, which is not
+  // a rounding error.
+  for (const e of perEvent) {
+    if (e.drainEach > 0 && !consumption.some((c) => c.name === e.name)) {
+      consumption.push({
+        name: e.name,
+        count: e.count,
+        each: 0,
+        drainEach: e.drainEach,
+        total: e.drainEach * e.count,
+        resolved: true,
+      });
+    }
+  }
+
   return {
     generation,
+    perEvent: perEvent.sort((a, b) => b.count - a.count),
+    fromEngine,
     generationTotal: generation.reduce((n, r) => n + r.total, 0),
     consumption,
     consumptionTotal: consumption.reduce((n, r) => n + r.total, 0),

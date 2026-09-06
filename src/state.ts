@@ -59,7 +59,24 @@ export interface SurfaceDay {
   dawn: number;
 }
 
+/** Energy figures the engine resolved, per prototype. Ticks, not watts. */
+export interface ResolvedEnergy {
+  electric?: boolean;
+  usagePerTick?: number;
+  maxUsagePerTick?: number;
+  outputPerTick?: number;
+  drainPerTick?: number;
+  buffer?: number;
+  outputFlowLimit?: number;
+  /** Per-event costs, in joules. Not a continuous draw. */
+  perMovement?: number;
+  perShot?: number;
+  perSector?: number;
+}
+
 export interface ForceState {
+  /** Present from U3b onward; absent in older state files. */
+  energy?: Record<string, ResolvedEnergy>;
   technologies: {
     researched: string[];
     current: string | null;
@@ -88,6 +105,8 @@ export interface GameState {
     readAt: string;
     /** Absent in state files written before the curve was collected. */
     day?: SurfaceDay;
+    /** Entity classes the census counted, derived from the game's prototypes. */
+    censusClasses?: string[];
   };
   forces: Record<string, ForceState>;
 }
@@ -133,6 +152,77 @@ script.on_nth_tick(1, function()
     return out
   end
 
+  -- Which entity classes to count.
+  --
+  -- The first version of this listed twelve class names by hand and silently
+  -- omitted radar, roboport, lamp, pump, electric turrets, inserters and
+  -- accumulators, which made a figure the tool called a ceiling into an
+  -- undercount. A hand-typed list cannot fail safely: nothing warns you about
+  -- the class you did not think of.
+  --
+  -- So the list is derived instead. Anything that declares an energy source of
+  -- any kind either draws power or makes it, and is therefore worth counting.
+  -- A class added by a future version arrives on its own.
+  local ENERGY_FIELDS = { "electric_energy_source_prototype", "burner_prototype",
+                          "heat_energy_source_prototype", "fluid_energy_source_prototype" }
+  local energy_types_cache = nil
+  local function energy_types()
+    if energy_types_cache then return energy_types_cache end
+    local seen, out = {}, {}
+    for _, proto in pairs(prototypes.entity) do
+      if not seen[proto.type] then
+        for _, field in ipairs(ENERGY_FIELDS) do
+          local ok, src = pcall(function() return proto[field] end)
+          if ok and src then
+            seen[proto.type] = true
+            out[#out + 1] = proto.type
+            break
+          end
+        end
+      end
+    end
+    energy_types_cache = out
+    return out
+  end
+
+  -- Resolved energy figures, per prototype, straight from the engine.
+  --
+  -- The prototype data does not let you infer drain reliably. An assembling
+  -- machine that declares none gets a thirtieth of its usage; a radar that
+  -- declares none gets zero. Measured: radar energy_usage is 5000 J/tick with
+  -- drain 0, while assembling-machine-2 is 2500 J/tick with drain 83.33, which
+  -- is exactly usage/30. One rule cannot produce both, so no rule is applied
+  -- here. The engine has already resolved these; they are copied, not derived.
+  --
+  -- Runtime energy fields are per tick. They are converted to watts on the
+  -- TypeScript side, where the tick constant is already declared.
+  local function energy_of(name)
+    local proto = prototypes.entity[name]
+    if not proto then return nil end
+    local o = {}
+    local function try(field, into)
+      local ok, v = pcall(function() return proto[field] end)
+      if ok and type(v) == "number" then o[into] = v end
+    end
+    try("energy_usage", "usagePerTick")
+    try("max_energy_usage", "maxUsagePerTick")
+    try("max_power_output", "outputPerTick")
+    try("energy_per_movement", "perMovement")
+    try("energy_per_shot", "perShot")
+    try("energy_per_sector", "perSector")
+    local ok, es = pcall(function() return proto.electric_energy_source_prototype end)
+    if ok and es then
+      o.electric = true
+      local o2, v2 = pcall(function() return es.drain end)
+      if o2 and type(v2) == "number" then o.drainPerTick = v2 end
+      local o3, v3 = pcall(function() return es.buffer_capacity end)
+      if o3 and type(v3) == "number" then o.buffer = v3 end
+      local o4, v4 = pcall(function() return es.output_flow_limit end)
+      if o4 and type(v4) == "number" then o.outputFlowLimit = v4 end
+    end
+    return o
+  end
+
   local surfaces = {}
   for name in pairs(game.surfaces) do surfaces[#surfaces + 1] = name end
 
@@ -173,18 +263,17 @@ script.on_nth_tick(1, function()
     for _, surface in pairs(game.surfaces) do
       merge(items, collect_flows(force.get_item_production_statistics(surface)))
       merge(fluids, collect_flows(force.get_fluid_production_statistics(surface)))
-      local found = surface.find_entities_filtered{
-        force = force,
-        type = { "assembling-machine", "furnace", "mining-drill", "lab",
-                 "rocket-silo", "reactor", "generator", "solar-panel",
-                 "boiler", "beacon", "agricultural-tower", "asteroid-collector" },
-      }
+      local found = surface.find_entities_filtered{ force = force, type = energy_types() }
       for _, e in pairs(found) do
         machines[e.name] = (machines[e.name] or 0) + 1
       end
     end
 
+    local energy = {}
+    for name in pairs(machines) do energy[name] = energy_of(name) end
+
     forces[force_name] = {
+      energy = energy,
       technologies = {
         researched = researched,
         current = force.current_research and force.current_research.name or nil,
@@ -199,6 +288,7 @@ script.on_nth_tick(1, function()
     tick = game.tick,
     surfaces = surfaces,
     day = day,
+    censusClasses = energy_types(),
     forces = forces,
   }), false)
 end)
@@ -347,6 +437,7 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
     tick: number;
     surfaces: string[];
     day?: SurfaceDay;
+    censusClasses?: string[];
     forces: Record<string, ForceState>;
   };
 
@@ -366,6 +457,7 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
       surfaces: raw.surfaces,
       readAt: new Date().toISOString(),
       ...(raw.day ? { day: raw.day } : {}),
+      ...(raw.censusClasses ? { censusClasses: raw.censusClasses } : {}),
     },
     forces: raw.forces,
   };
