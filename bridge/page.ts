@@ -38,19 +38,26 @@ const CSS = `
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#16151300;--bg:#161513;--fg:#eceae5;--dim:#959087;--line:#2e2b27;--card:#1f1d1a;--up:#5fbf80;--down:#e0745a;--accent:#e08a3c}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+html,body{overflow-x:hidden}
 .wrap{max-width:104rem;margin:0 auto;padding:1.25rem 1.5rem 3rem}
 header{display:flex;flex-wrap:wrap;gap:.75rem 1.5rem;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:.6rem;margin-bottom:1.1rem}
 h1{font-size:1.05rem;margin:0;font-weight:650;letter-spacing:-.01em}
 .meta{color:var(--dim);font-size:.8rem;font-variant-numeric:tabular-nums}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(22rem,1fr));gap:1rem;align-items:start}
-section{background:var(--card);border:1px solid var(--line);border-radius:.5rem;padding:.85rem .95rem}
+/* min-width:0 is the whole fix for N6. A grid item defaults to min-width:auto,
+   so one long technology name in the Research card widened its track past 22rem,
+   pushed the grid past the 104rem wrap and overflowed the page horizontally,
+   which the dashboard rule forbids. The wrap rules below stop any single long
+   token doing it again through a different card. */
+section{background:var(--card);border:1px solid var(--line);border-radius:.5rem;padding:.85rem .95rem;min-width:0}
+section>*{min-width:0}
 h2{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:0 0 .6rem;font-weight:600}
 .figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(8rem,1fr));gap:.55rem}
 .fig{display:flex;flex-direction:column;gap:.1rem}
-.fig .v{font-size:1.15rem;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.fig .v{font-size:1.15rem;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em;overflow-wrap:anywhere}
 .fig .l{font-size:.7rem;color:var(--dim)}
-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
-td,th{text-align:left;padding:.2rem .4rem .2rem 0;border-bottom:1px solid var(--line);font-size:.82rem}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;table-layout:fixed}
+td,th{text-align:left;padding:.2rem .4rem .2rem 0;border-bottom:1px solid var(--line);font-size:.82rem;overflow-wrap:anywhere}
 th{color:var(--dim);font-weight:500;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em}
 td.n{text-align:right;font-variant-numeric:tabular-nums}
 tr:last-child td{border-bottom:0}
@@ -58,7 +65,7 @@ tr:last-child td{border-bottom:0}
 .cols{columns:17.5rem;column-gap:1.25rem}
 .cols li{break-inside:avoid}
 ul{margin:0;padding-left:1.1rem}
-li{font-size:.82rem;margin:.1rem 0}
+li{font-size:.82rem;margin:.1rem 0;overflow-wrap:anywhere}
 .quiet{color:var(--dim);font-style:italic;font-size:.85rem}
 .hist{font-size:.78rem;color:var(--dim)}
 .hist a{color:var(--accent);text-decoration:none}

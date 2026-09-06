@@ -149,6 +149,8 @@ Every figure on the page carries `data-source` and `data-field` naming the state
 
 `reports/` is gitignored: it is derived from saves and rebuilt by running the command again.
 
+Run the loop from the main checkout only. Reading a save writes `data/state/<save>.json`, and a watcher in one git worktree plus a command in another would share that file with nothing coordinating them.
+
 ### gen
 
 ```bash
