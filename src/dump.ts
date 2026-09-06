@@ -33,7 +33,7 @@ export interface Manifest {
   core: string;
 }
 
-function writeRuntimeConfig(core: string): string {
+export function writeRuntimeConfig(core: string): string {
   const configDir = join(RUNTIME_DIR, "config");
   mkdirSync(configDir, { recursive: true });
   const configPath = join(configDir, "config.ini");

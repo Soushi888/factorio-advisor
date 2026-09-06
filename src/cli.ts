@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { formatWatts } from "./energy.ts";
-import { sync, type Manifest } from "./dump.ts";
+import { readManifest, sync, type Manifest } from "./dump.ts";
 import { load, type Data } from "./proto.ts";
 import { RecipeIndex } from "./recipes.ts";
 import { machinesFor, multipliers, parseModules, runOne, type ModuleLoadout } from "./machines.ts";
@@ -9,6 +9,7 @@ import { beltOptions, inserterCeilings } from "./belts.ts";
 import { costOf, dependents, labsFor, researchPath, totalCost, unlocksOf } from "./tech.ts";
 import { decode, flatten, describeKind } from "./blueprint.ts";
 import { audit, byRecipe } from "./audit.ts";
+import { readState } from "./state.ts";
 import { bullet, heading, indent, num, pct, rate, sub, table } from "./render.ts";
 
 /**
@@ -721,6 +722,103 @@ function printAudit(result: ReturnType<typeof audit>, label: string): void {
   );
 }
 
+async function cmdState(args: Args): Promise<void> {
+  // `--save=game 4` and `--save "game 4"` both reach here: the parser stores a
+  // valueless flag as "true", in which case the name is the next positional.
+  const flagged = args.flags.get("save");
+  const save = flagged && flagged !== "true" ? flagged : args.positional.join(" ");
+  if (!save.trim()) {
+    throw new Error(
+      'Which save? e.g. bun run state --save "game 4"\n' +
+        "The save is copied into this project and read there; the original is never opened.",
+    );
+  }
+  const top = Number(args.flags.get("top") ?? "10");
+  const forceName = args.flags.get("force") ?? "player";
+
+  const state = await readState({ save: String(save) });
+  const manifest = readManifest();
+  console.log("");
+  console.log(header(manifest));
+  console.log(
+    `save: ${state.save.name} at tick ${String(state.save.tick)} ` +
+      `(${state.save.hoursPlayed.toFixed(1)} h played), ` +
+      `surfaces: ${state.save.surfaces.join(", ")}`,
+  );
+
+  const force = state.forces[forceName];
+  if (!force) {
+    const names = Object.keys(state.forces).join(", ");
+    throw new Error(`No force called "${forceName}" in this save. Forces: ${names}.`);
+  }
+
+  console.log(heading(`Research, force "${forceName}"`));
+  const researchedCount = force.technologies.researched.length;
+  console.log(
+    `  ${researchedCount} technologies researched.  ` +
+      `current: ${force.technologies.current ?? "(nothing being researched)"}`,
+  );
+  if (force.technologies.queue.length > 0) {
+    console.log(`  queue: ${force.technologies.queue.join(" -> ")}`);
+  }
+
+  const items = Object.entries(force.production.item)
+    .sort((a, b) => b[1].perMinute - a[1].perMinute)
+    .slice(0, top);
+  console.log(heading(`Top ${items.length} items produced`));
+  console.log(
+    table(
+      [
+        { header: "item" },
+        { header: "per min", align: "right" },
+        { header: "per s", align: "right" },
+        { header: "made total", align: "right" },
+        { header: "used total", align: "right" },
+      ],
+      items.map(([name, f]) => [
+        name,
+        f.perMinute.toFixed(1),
+        (f.perMinute / 60).toFixed(2),
+        String(f.output),
+        String(f.input),
+      ]),
+    ),
+  );
+
+  const fluids = Object.entries(force.production.fluid)
+    .sort((a, b) => b[1].perMinute - a[1].perMinute)
+    .slice(0, top);
+  if (fluids.length > 0) {
+    console.log(heading(`Top ${fluids.length} fluids produced`));
+    console.log(
+      table(
+        [
+          { header: "fluid" },
+          { header: "per min", align: "right" },
+          { header: "made total", align: "right" },
+        ],
+        fluids.map(([name, f]) => [name, f.perMinute.toFixed(1), String(f.output)]),
+      ),
+    );
+  }
+
+  const machines = Object.entries(force.machines).sort((a, b) => b[1] - a[1]);
+  const machineTotal = machines.reduce((n, [, c]) => n + c, 0);
+  console.log(heading(`Machines placed (${String(machineTotal)} total)`));
+  console.log(
+    table(
+      [{ header: "prototype" }, { header: "count", align: "right" }],
+      machines.map(([name, count]) => [name, String(count)]),
+    ),
+  );
+
+  console.log(
+    "\n  Rates are the game's own one-hour average, in items per minute. Totals are\n" +
+      "  cumulative since the map was created. Nothing was written to your Factorio\n" +
+      "  directories: the save was copied into this project and read from the copy.",
+  );
+}
+
 function usage(): void {
   console.log(
     `factorio-advisor: read-only prototype solver and blueprint auditor.
@@ -732,6 +830,7 @@ function usage(): void {
   bun run tech <name> [--path]            cost, prerequisites, research path
   bun run belt [item] --rate=<n>          belt throughput and saturation
   bun run bp --file=<path>                decode and audit a blueprint
+  bun run state --save "game 4"           live state read from a copy of a save
 
 Flags for ratio:
   --rate=45 | 90/m | 5400/h               target output rate
@@ -741,8 +840,14 @@ Flags for ratio:
   --recipe=<product>=<recipe>             override a recipe choice
   --raw=iron-plate,copper-plate           treat these as bought in
 
-Nothing here writes to your game. sync launches Factorio headless with its
-write-data redirected into this project; every other command reads the snapshot.`,
+Flags for state:
+  --save="game 4"                         which save to read (copied, never opened)
+  --force=player                          which force to report on
+  --top=10                                how many items and fluids to list
+
+Nothing here writes to your game. sync and state launch Factorio headless with
+their write-data redirected into this project, and state reads a copy of the
+save rather than the save itself; every other command reads the snapshot.`,
   );
 }
 
@@ -772,6 +877,9 @@ async function main(): Promise<void> {
       break;
     case "bp":
       cmdBp(args);
+      break;
+    case "state":
+      await cmdState(args);
       break;
     default:
       usage();

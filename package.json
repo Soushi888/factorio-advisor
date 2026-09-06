@@ -12,6 +12,7 @@
     "tech": "bun src/cli.ts tech",
     "belt": "bun src/cli.ts belt",
     "bp": "bun src/cli.ts bp",
+    "state": "bun src/cli.ts state",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

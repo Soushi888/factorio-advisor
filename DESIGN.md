@@ -85,6 +85,28 @@ Given a target rate for an item, the chain expands depth first over the recipe g
 
 Byproducts are tracked and reported as surplus, not silently discarded.
 
+## ADR-6: live state comes from a copy of the save, ticked by the engine itself
+
+Tier C was left open because the save is version-locked binary and nothing outside the engine parses it. That framing turned out to name the wrong obstacle. We never needed to parse the save. We needed the engine to read it for us and tell us what it saw.
+
+Three facts make that cheap, and each was verified against the real binary rather than recalled:
+
+1. `factorio --benchmark <save> --benchmark-ticks N` loads a save and runs the update loop. It is not a server, so it wants no multiplayer state and no credentials.
+2. A save carries its own `control.lua`. Appending to it needs no mod, so the mod set never changes and a save made with mods installed still loads.
+3. Scripts run and `on_nth_tick` fires with no player connected, and `helpers.write_file` lands under the write-data directory, which ADR-1 already redirects into this project.
+
+So `bun run state --save "game 4"` copies the save into `.factorio-runtime/saves/`, appends a collector to the copy's control script, runs the binary against the copy, reads one JSON file back, and writes `data/state/<save>.json`.
+
+The player's save is never opened in place and never written back. Verified 2026-09-05 on `game 4.zip`: after a full run, `find` over `~/.factorio` and over the Steam install both returned nothing newer than the run start, and the original save kept its 2026-07-10 mtime and its digest.
+
+**Rejected alternative.** A generated mod under `.factorio-runtime/mods/` was the obvious design and is worse: it changes the mod set the save is loaded with, which risks a mismatch refusal on exactly the saves a player actually has. The save's own script is already there and already runs.
+
+**One rate, measured rather than assumed.** `LuaFlowStatistics.get_flow_count` returns a rate, not a total, and its unit is per minute. The same call on `iron-plate` over the one-hour window gave 113774.95 with `count = true` and 1896.249 without, and 113774.95 / 60 = 1896.249 exactly. Cumulative totals come from `input_counts` and `output_counts`, which are unambiguous.
+
+Two engine constants are declared here, in the ADR-3 sense: `TICKS_PER_SECOND` at 60, to turn a tick count into hours played, and `BENCHMARK_TICKS` at 60, which is a choice rather than a game fact and is commented as one. The collector reports what the game says and computes nothing the snapshot could compute instead.
+
+**What this does not do.** It reads a save on disk, so it is as fresh as the last time the game saved, not as fresh as the running game. Nothing here connects to a live session.
+
 ## Module map
 
 Bottom up, one data flow, mirroring the sibling project.
@@ -100,6 +122,7 @@ solve.ts     target rate -> machine counts, raw inputs, byproducts, power, pollu
 belts.ts     belt and inserter throughput, saturation
 tech.ts      prerequisite closure, cumulative science cost, what unlocks a recipe, research path
 blueprint.ts decode and encode blueprint strings
+state.ts     copy a save, inject a collector, run the engine, read live state back
 audit.ts     entity census, ratio check against the solver, belt saturation, module and beacon coverage
 render.ts    tables and trees for the terminal
 cli.ts       the only entry point and the only place that formats output
@@ -119,17 +142,18 @@ bun run tech logistics-3                  # cost, prerequisites, unlocks
 bun run tech --path=kovarex-enrichment-process   # full research path with cumulative science
 bun run belt iron-plate --rate=45         # belts and inserters needed, saturation
 bun run bp --file=blueprint.txt           # decode and audit a blueprint
+bun run state --save "game 4"             # live state read from a copy of a save
 bun run typecheck
 ```
 
 ## Constraints that must hold
 
 - **Read-only, and stricter than "does not corrupt".** No writes anywhere under `~/.factorio` or the Steam install. No save is opened. No mod is installed. The engine runs exactly once per `sync`, headless, with its write-data redirected into this project.
-- **No hardcoded game statistics.** Only the four documented defaults in ADR-3, each commented at its use site.
+- **No hardcoded game statistics.** Only the declared engine constants of ADR-3 and ADR-6, each named and commented at its definition.
 - **Never state a game fact without the snapshot behind it.** Every command prints the snapshot's game version and dump date in its header, the way the sibling prints the save name.
 - Strict TypeScript with `noUncheckedIndexedAccess`.
 - Bun only, never npm.
 
 ## Deliberately out of scope
 
-Live game state (Tier C: a helper mod writing to `script-output`, or RCON). It is a different trust posture and a separate decision.
+Modded runs. The snapshot is vanilla Space Age by construction, and a state read reports whatever the save contains without interpreting mod prototypes it has never seen.
