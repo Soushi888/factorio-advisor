@@ -23,6 +23,9 @@ import type { CraftingMachine, Data, Proto } from "./proto.ts";
  * 0, 4, 8 and 12 and nothing else, and the parity rule only closes at 83 of 83
  * when 4 and 12 are the axes that swap width and height.
  *
+ * Sizes are read, never recalled: `electromagnetic-plant` is 4x4 despite looking
+ * like a 3x3, and `selection_box` says so.
+ *
  * **An inserter's direction names the side it picks up FROM, not the side it
  * delivers to.** Asked of the engine, not assumed: an inserter placed facing
  * north reports `pickup_position` at y-1 and `drop_position` at y+1.2, so it

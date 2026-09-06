@@ -169,6 +169,8 @@ The consequence was a row that read correctly and did nothing. Its input inserte
 
 Nothing static could have caught it. The entity census, the ratios, the belt saturation and the decode round-trip are all indifferent to which way an inserter faces, and all four passed on the broken row. That is the argument for ADR-5 level three in one example, and the sandbox found it on its first run.
 
+**Two engine facts found the same night, kept because each cost a run.** `require` works only while a scenario's `control.lua` is being parsed: called inside an event handler it raises "Require can't be used outside of control.lua parsing" and kills the run, so anything a handler needs is required at the top and closed over. And `electromagnetic-plant` is 4x4, not the 3x3 it resembles; `footprintOf` reads that correctly from `selection_box`, which is exactly why footprints are read rather than remembered.
+
 **A missing field is a gap, never a constant.** A prototype with no `selection_box` has an unknown footprint, so nothing is placed for it and the omission is printed. Inventing a size would put entities in the wrong tiles, which is worse than placing nothing.
 
 **Fractional machines round up** (decided with Soushi, 2026-09-05). A player building to a target wants the target met and reads surplus as headroom, so the row overbuilds and prints the overcapacity, which also goes into the blueprint label so it survives into the game. `--machines=<n>` pins a count instead and states the resulting rate, which can be a shortfall and is labelled as one. The belt tier is chosen for the rounded-up rate, and a row that outruns its belt prints a warning rather than a quiet 140 percent.
