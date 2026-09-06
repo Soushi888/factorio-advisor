@@ -16,6 +16,9 @@ bun run state --save "game 4"             # research, production rates, machine 
 bun run next                              # what is researchable right now, from the last state read.
 bun run next --for=carbon-fiber           # the unresearched path from here to what unlocks an item or tech.
 bun run power                             # generation against draw, priced from the census the last state read returned.
+bun run gen electronic-circuit --rate=45  # lay one recipe step out as a row and print the blueprint string. Warns on input belts and inserters.
+bun run report                            # one report for the newest save under reports/, a diff against the previous report of that save.
+bun run watch                             # leave it running from the MAIN tree; a save in game becomes a report and reports/index.html.
 bun run search asteroid                   # find prototypes by name across every class
 bun run recipe rocket-fuel                # ingredients, results, every machine that can run it, unlocking tech
 bun run ratio processing-unit --rate=5    # full production chain, machine counts, raw inputs, power, pollution
@@ -62,9 +65,13 @@ The default-recipe rule is ordered and stated in the output: main product over b
 
 `target.ts` judges an audited print against a rate. It takes the audit's own figures and one ratio, target over what the print makes, and scales everything by it: how many of the print the target wants, spare or missing machines per step (a print scales as a unit, so steps that make none of the target item scale too), whether the belt tier the print places carries the target and at what saturation, and inserters per machine at the rotation ceiling. It measures nothing new, so it is right exactly where the audit is right and wrong in the same place. Without `--rate` it is never called and `bp` output is unchanged.
 
+`layout.ts` lays one recipe step out as a row for `bun run gen` (ADR-9): machines from the ratio solver rounded up with the overcapacity stated, one inserter per machine per side with the tier chosen by rotation ceiling, an input belt above and an output belt below sized against demand, encoded through `blueprint.ts`. Two measured facts carry it: the tile footprint is `selection_box`, never `collision_box` (which is inset for movement), and Factorio 2.0 uses sixteen directions, so East is 4 and West 12, both checked against the shipped 83-entity print rather than recalled. Input demand, belt counts and the inserter ceiling print as warnings when the row cannot be fed as laid; a chain or a bus is out of scope and the output says so.
+
 `power.ts` joins the census a state read returned to the energy fields in the snapshot (ADR-7). Generation per source is derived and the derivation is printed in the row; the steam chain is priced from boiler consumption and engine fluid usage against steam's declared heat capacity; the solar average is computed from the day-night curve the collector records on the surface, never from a remembered factor. The census class list is derived from every prototype declaring an energy source, and usage, drain and buffer per class are the engine's own resolved values copied from the collector, because no single drain rule matches both an assembling machine and a radar. Per-event draws (inserter movements, radar sectors) are named in their own table and never converted to watts.
 
-`render.ts` formats tables. `cli.ts` is the only entry point and the only place that formats output.
+`render.ts` formats tables. `cli.ts` is the only entry point of the advisor and the only place that formats its output.
+
+`bridge/` is the loop around the advisor, a separate layer with one direction of dependency: it imports `src/`, and nothing in `src/` imports it, which `grep -rn "from \"\.\./bridge\|from \"\.\./mod" src/` must keep returning empty (AD-1 in the design annex). `bridge/watch.ts` polls the save directory read-only and, when a save stops changing, runs the same save-copy read `state` does; `bridge/report.ts` writes `reports/<save>-<tick>.md`, a diff against the previous report of that save (rate changes above a printed threshold, power delivered, evolution, research) and says so when nothing moved, keyed by tick so the same save never produces two reports; `bridge/page.ts` regenerates `reports/index.html` with a `data-source` and `data-field` on every figure. Run the loop from the main tree only: it writes `data/state/<save>.json` as a side effect and worktrees share that file by symlink. `mod/`, when it exists, is a third layer with its own README and doctrine, installed by Soushi in his own game; the advisor commands never send input to the game, and that sentence is about `src/`, not about the mod.
 
 ## Constraints that must hold
 
