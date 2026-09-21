@@ -33,6 +33,9 @@ The `snapshot` block matters more than it looks: a state file is only meaningful
 | `electric` | `networks`, and `production` / `consumption` in **watts**, per prototype. What the grid actually delivered over the last hour. |
 | `energy` | The engine's own resolved usage, drain and buffer per prototype in the census, copied rather than inferred, because no single drain rule fits both an assembling machine and a radar. |
 | `logistic` | Contents of every logistic network on every surface, summed by item. |
+| `networks` | One entry per logistic network: roboports, chests by role, and the robot fleet counted twice. `all` is what the network owns and `available` is what is idle in a roboport; a network whose available count is zero while its fleet is large is saturated, and that gap is the only figure here that says whether the robots are keeping up. |
+| `trains` | Every train: locomotives, wagons, the stops on its schedule, what it is carrying, and the engine's own name for its state. |
+| `stops` | Every train stop name with its positions. The only labels in a save that a person wrote rather than a prototype. |
 
 ### `Flow`, and the direction trap
 
@@ -58,15 +61,40 @@ One entry per surface. Two resolutions, because one does not fit:
 | `bounds` | Tile bounds of everything below, so a renderer needs no second pass. |
 | `cells[]` | Per chunk: `byType` counts of the force's placed entities, `total`, and the surface's `pollution` at that chunk. |
 | `ore[]` | Per chunk: remaining `amount` per resource name, summed. |
-| `points[]` | Exact tile positions, only for prototypes with fewer placed instances than `MAP_POINT_LIMIT`. Which prototypes qualify is derived from the census, never listed. |
+| `points[]` | Exact tile positions, per prototype, for everything inside `MAP_POINT_BUDGET`. This save spends 66467 of 400000, so nothing is dropped; what would be dropped is named in `pointsDropped` rather than quietly missing. |
+| `pointsDropped[]` | Prototypes whose positions did not fit the budget, with what they cost. Absent on a save that fits. |
+| `water[]` | Water, tile by tile, as horizontal runs `[x, y, length]`. Runs because a lake is mostly long rows of the same thing; tiles because a coastline at chunk resolution is a staircase that matches no shoreline in the game. 8739 runs on this save. |
+| `oreRuns{}` | The same runs per resource name. The chunk sums above answer "how much is left"; the runs answer "what shape is the patch", which is what decides whether a drill array fits. |
+| `terrain[]` | One entry per charted chunk, with its water tile count. Charted, because the map is meant to be comparable to the one Soushi opens in game and that one shows what he has charted. |
+| `chartedBounds` | The extent of `terrain[]`, kept separate from `bounds` on purpose: the charted region is far larger than the base, and letting it set the bounds would open the map on a view of mostly nothing. |
+| `enemy[]` | Nests and worms per chunk over the charted region. 1407 nests and 1614 worms on this save. |
 
 **Tile ghosts are excluded.** This save holds 136,298 of them, planned landfill, eighty percent of everything placed, and they set the density shading of the whole map on their own. Entity ghosts stay, because planned construction is part of the base.
 
-**There is no terrain.** The collector reads entities and resources, not tiles. A map that drew water it had not measured would be a picture rather than a report, so the page says so in its footer.
+**There is one piece of terrain, and it is measured.** Water is counted with `count_tiles_filtered` against the tile prototypes that declare a fluid, then run-length encoded per row. Nothing else about the ground is read: no cliffs, no trees, no decoratives. A map that drew what it had not measured would be a picture rather than a report, and the page says in its footer exactly which of the two it is.
 
 ## `data/state/<save>-belts.json`
 
 Written only when the belt survey is asked for, because it is large. Every transport belt, underground, splitter and loader with position, direction and per-lane contents.
+
+One record per belt-like entity:
+
+```
+{ n, t, x, y, d, u, l }
+```
+
+| Field | What it is |
+|---|---|
+| `n` | Prototype name. |
+| `t` | Entity type: which of belt, underground, splitter or loader. |
+| `x`, `y` | Position, in the save's own tile coordinates. |
+| `d` | Direction, in the sixteen-direction scheme 2.0 uses. |
+| `u` | Which end of an underground pair this is, absent for everything else. |
+| `l` | One entry per transport line, so two for a belt and four for a splitter. |
+
+Each lane in `l` is `[item, count, distinct, span]`. `item` and `count` are the commonest item on that lane and how many of it; `distinct` is how many different items the lane holds, which is what tells a contaminated lane from a clean one; `span` is the line's own `line_length`.
+
+Offered by the `bus` session, which wrote the survey, and placed here because this file is the schema's home.
 
 **A transport line's `line_length` is 1 per belt entity**, 1.15 on a curve, not the merged segment length. So a lane's `get_contents` count is that tile's own, and a lane holding 4 items on a span of 1 is exactly full. Measured, and the opposite assumption would have carried a whole density model.
 
@@ -88,6 +116,9 @@ The read-only property is anti-claim A1, and its usual probe is `find ~/.factori
 | `power.ts` | Census and `energy`, joined to the snapshot's energy fields. |
 | `next.ts` | The researched set, subtracted from the technology graph. |
 | `bus.ts` | The belts file, cross-checked against this one's tick. |
+| `layers.ts` | The geometry, at both resolutions: positions for entities, runs for water and ore, chunks for what is only known per chunk. |
+| `bottlenecks.ts` | Production flows and the census, charged against the prototypes' own crafting speeds. |
+| `plan.ts` | Whatever paths a written plan declares, resolved at render time. |
 | `bridge/report.ts` | Two of these files, diffed. |
 
 A change to this schema is therefore a change to seven readers, which is why `flowOf()` exists rather than every caller reaching into the raw shape.

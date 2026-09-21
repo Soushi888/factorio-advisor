@@ -38,13 +38,23 @@ The save is copied into `.factorio-runtime/saves/` and read there; his own save 
 | `bun run bp --file=print.txt` | Decode and audit a blueprint or book: real loadouts, which beacons physically reach, the netted bottleneck. |
 | `bun run bp --file=print.txt --rate=45` | The same print judged against a target rate: scale, spare machines, belt tier, inserter ceiling. |
 | `bun run gen electronic-circuit --rate=45` | Lay one recipe step out as a placeable row and print the blueprint string. |
+| `bun run bp --file=print.txt --draw` | Draw that print to scale under `.local/`: every entity at the footprint its prototype declares, belts arrowed by travel direction, the short-fed machines outlined from the audit's own flows. `--render` is the same flag; `--svg` writes the bare file; `--out=` places either. |
+| `bun run gen ... --draw` | The same drawing, straight off the row the generator built, with no round trip through the encoder. |
 
 ## Useful flags
 
 - `ratio`: `--machine=assembling-machine-2` to hold it to what he has, `--modules=`, `--beacons=`, `--recipe=<product>=<recipe>`, `--raw=iron-plate,copper-plate`.
 - `advise`: `--spm=`, `--force=`, `--top=`.
 - `bottleneck`: `--save=`, `--force=`, `--top=` (how many tightness rows).
-- `state`: `--save=`, `--force=`, `--top=`.
+- `state`: `--save=`, `--force=`, `--top=`, `--belts` (writes the belt survey too, which is large).
+- `report`: `--save=`, `--threshold=`, `--now` (one report and exit), `--page` (redraw `reports/index.html` from the state file on disk, no engine run).
+- `bp` and `gen`: `--draw` or `--render`, `--svg`, `--out=<path>`.
+
+## The dashboard
+
+`bun run report` writes `reports/index.html`: one zoomable, layered map drawn tile by tile in the save's own coordinates, the written plan from `data/plans/<save>.json` when there is one, the derived advice, and six sections. `bun run report --page` redraws it from the last read without launching the engine, which is the loop for working on the page.
+
+The map uses the game's own icons, resolved out of the installed game by `src/icons.ts`. **They are never copied into this repository**: that is Wube's art and the repo is public.
 
 ## What they refuse, on purpose
 

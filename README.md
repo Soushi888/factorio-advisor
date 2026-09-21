@@ -13,7 +13,13 @@ bun run bus --save="game 4"      # your buses: lanes, what they carry, how satur
 bun run watch                    # leave it running: every save becomes a report
 ```
 
-`report` writes `reports/index.html`, a dashboard cut into science, energy, defence, production, logistics and mining. Each section carries its figures, the advice that belongs to it, and a map drawn from your save's own coordinates, so a recommendation like "put the next copper outpost at 0, 1152" can be checked against the picture. There is no terrain on those maps: the tool reads entities and resources, not tiles, and it does not draw what it has not measured.
+![The dashboard: one layered map of the base on the left, the plan and the sections on the right](docs/dashboard.png)
+
+`report` writes `reports/index.html`: one zoomable, layered map of your base beside a reading cut into science, energy, defence, production, logistics and mining. Each section carries its figures, its tables, the advice that belongs to it, and the map layer its header turns on, so a recommendation like "put the next copper outpost at 0, 1152" is one click from the place it names.
+
+The map is drawn tile by tile in your save's own coordinates. Every entity is at the footprint its prototype declares and the position the engine reported; water and ore are at tile resolution; the charted extent and the enemy nests inside it are there for context. Nothing on it is drawn that was not measured, and the footer says which is which. The icons are the game's own, read out of your installation at render time and never copied into this repository.
+
+`bun run report --page` redraws the page from the last read without launching anything, which is the loop for working on the dashboard rather than on the base.
 
 Every recommendation carries the measurement that produced it. That is the point of the project: not "build more smelters", but "iron ore is running 263/min behind what your furnaces eat, and the patch under your 82 drills has 4.8M left against an untouched 11.4M at -128, 1376".
 

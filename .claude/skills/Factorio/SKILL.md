@@ -35,9 +35,9 @@ Second rule, downstream of the first: **every recommendation carries the measure
 
 ## What the tool can and cannot see
 
-It sees: research and the technology graph, production and consumption per item and per fluid as one-hour averages, the machine census, the electric network's delivered watts, evolution and pollution, the logistic network's contents, and since 2026-09-21 the geometry, meaning entities per chunk by type, ore per chunk, and exact positions for prototypes under the point limit.
+It sees: research and the technology graph, production and consumption per item and per fluid as one-hour averages, the machine census, the electric network's delivered watts, evolution and pollution, the logistic network's contents and robot fleets, every train with its schedule and its cargo, every train stop by the name Soushi gave it, and the geometry tile by tile: every placed entity's position, water and ore as tile runs, the charted extent, and the enemy nests inside it.
 
-It does not see: terrain, water, cliffs, the running session, or anything newer than the last save on disk. **When Soushi is mid-game, the answer usually starts with asking him to hit Ctrl+S.**
+It does not see: which recipe a given machine is set to, what modules are in it, cliffs, trees, the running session, or anything newer than the last save on disk. **When Soushi is mid-game, the answer usually starts with asking him to hit Ctrl+S.**
 
 ## Workflow Routing
 
@@ -50,6 +50,8 @@ It does not see: terrain, water, cliffs, the running session, or anything newer 
 ## Quick reference
 
 - Refresh from a save: `bun run report --save="game 4"` from the **main tree** (worktrees share `data/state/` by symlink).
+- Redraw the page without re-reading the save: `bun run report --page`. This is the loop for working on the dashboard rather than on the base.
+- What is holding the factory back: `bun run bottleneck`.
 - The standing loop: `bun run watch`, which turns each save into a report and refreshes `reports/index.html`.
 - The synthesis alone: `bun run advise --spm=45`.
 - Every command and what it refuses to answer: `Commands.md`.
@@ -61,7 +63,8 @@ It does not see: terrain, water, cliffs, the running session, or anything newer 
 - **Never claim the game state without a fresh read.** The state file is as old as the last save; say its age.
 - **Never commit in this repo without Soushi's word,** and check `.local/convene/` first: other agent sessions work this repo under a covenant, and a hold precedes an edit.
 - **Never invent a machine he does not have.** The solver picks the best prototype in the snapshot; his census says what is actually placed.
-- **Never announce a page without opening it.** Web output is verified in real Chrome through `Interceptor` before Soushi is told it exists.
+- **Never announce a page without opening it.** Web output is verified in real Chrome through `Interceptor` before Soushi is told it exists, zoomed in as well as out.
+- **Never copy the game's assets into this repository.** The icons are Wube's art and the repo is public; `src/icons.ts` points at Soushi's own installation by file URL, and that is the only sanctioned path.
 
 ## Examples
 

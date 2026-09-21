@@ -321,7 +321,7 @@ const SCRIPT = `
     // real footprint rather than a fat blob. Water and ore get a thinner one:
     // they are already large shapes and only need their edge closed up.
     var k = Math.max(0, Math.min(1, (px - 4) / 60));
-    svg.style.setProperty("--mk", (2.6 - 2.1 * k).toFixed(2));
+    svg.style.setProperty("--mk", (3.2 - 2.7 * k).toFixed(2));
     svg.style.setProperty("--tile", (1.1 - 0.9 * k).toFixed(2));
     svg.style.setProperty("--lbl", (13 / d.s).toFixed(2));
   }
