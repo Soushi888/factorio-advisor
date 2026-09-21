@@ -13,6 +13,7 @@ import { decode, flatten, describeKind } from "./blueprint.ts";
 import { audit, byRecipe, type AuditResult } from "./audit.ts";
 import { judge } from "./target.ts";
 import { beltFor, buildRow } from "./layout.ts";
+import { drawPrint, printPage, type DrawnPrint } from "./draw.ts";
 import { flowOf, newestSave, readState, readStateFile, slugify, type GameState } from "./state.ts";
 import { busAreas, judge as judgeBus, readSurvey, surveyPath, type BusReport } from "./bus.ts";
 import { mapOf, renderMap, type Area } from "./map.ts";
@@ -586,11 +587,75 @@ function cmdBp(args: Args): void {
   // did before this flag existed, and printAudit is untouched.
   const rateFlag = valueFlag(args, "rate");
   const itemFlag = valueFlag(args, "item");
+  const wantDraw = args.flags.has("draw") || args.flags.has("render");
 
+  const drawings: DrawnPrint[] = [];
+  const results: AuditResult[] = [];
   for (const { path, bp } of prints) {
     const result = audit(data, index, bp, bp.label ?? path);
     printAudit(result, bp.label ?? path);
     if (rateFlag) reportAgainstTarget(data, result, rateFlag, itemFlag);
+    if (wantDraw) {
+      drawings.push(drawPrint(data, bp, result));
+      results.push(result);
+    }
+  }
+
+  if (wantDraw) {
+    writeDrawing(data, drawings, results, file ?? "a pasted string", args);
+  }
+}
+
+/**
+ * Write the drawing, as a page by default and as a bare SVG on `--svg`.
+ *
+ * Two formats because two readers want different things: the page carries the
+ * legend, the gaps and the audit's shortfall table, and the bare file drops into
+ * anything that renders SVG. The geometry is the same string in both.
+ */
+function writeDrawing(
+  data: Data,
+  drawings: DrawnPrint[],
+  results: AuditResult[],
+  source: string,
+  args: Args,
+): void {
+  const bare = args.flags.has("svg");
+  const dir = join(PROJECT_ROOT, ".local");
+  mkdirSync(dir, { recursive: true });
+  const stem = slugify(drawings[0]?.label ?? "blueprint") || "blueprint";
+  const out = args.flags.get("out") ?? join(dir, `print-${stem}.${bare ? "svg" : "html"}`);
+
+  const body = bare
+    ? drawings.map((d) => d.svg).join("\n")
+    : printPage({ drawings, results, snapshot: header(data.manifest), source });
+  writeFileSync(out, body + "\n");
+
+  const drawn = drawings.reduce((n, d) => n + d.entityCount, 0);
+  console.log(heading("Drawn to scale"));
+  console.log(`  ${out}`);
+  console.log(
+    `  ${String(drawn)} entities across ${String(drawings.length)} print` +
+      `${drawings.length === 1 ? "" : "s"}, each at its prototype's selection box.`,
+  );
+  for (const d of drawings) {
+    if (d.entityCount === 0) {
+      console.log(`  ${d.label}: decodes and holds no entities, so it draws empty.`);
+    }
+    if (d.guessed.length > 0) {
+      console.log(
+        `  ${d.label}: ${String(d.guessed.reduce((n, g) => n + g.count, 0))} entities have no ` +
+          `selection box in this snapshot and are drawn as one tile (${d.guessed
+            .map((g) => g.name)
+            .join(", ")}).`,
+      );
+    }
+    if (d.diagonal.length > 0) {
+      console.log(
+        `  ${d.label}: ${String(d.diagonal.reduce((n, g) => n + g.count, 0))} entities sit on a ` +
+          `diagonal direction and are drawn unrotated (${d.diagonal.map((g) => g.name).join(", ")}).`,
+      );
+    }
   }
 }
 
@@ -1656,6 +1721,14 @@ function cmdGen(args: Args): void {
 
   console.log("\nBlueprint string:\n");
   console.log(row.string);
+
+  // Straight off the object the row builder just produced, with no round trip
+  // through the encoder: a drawing of what `gen` laid out must be a drawing of
+  // THAT, not of whatever a re-decode of its string happens to give back.
+  if (args.flags.has("draw") || args.flags.has("render")) {
+    const drawn = audit(data, index, row.blueprint, label);
+    writeDrawing(data, [drawPrint(data, row.blueprint, drawn)], [drawn], "bun run gen", args);
+  }
 }
 
 function usage(): void {
