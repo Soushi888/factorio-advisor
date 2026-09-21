@@ -36,6 +36,7 @@ import type { GameState, SurfaceMap } from "./state.ts";
 import { type Area } from "./map.ts";
 import type { Data, Proto } from "./proto.ts";
 import { footprintOf } from "./layout.ts";
+import { cutterAvailable, dataUri, spritesFor, PIXELS_PER_TILE } from "./sprites.ts";
 
 /** A mark for the legend key, so no layer is told apart by colour alone. */
 export type Mark = "dot" | "square" | "fill" | "box";
@@ -613,7 +614,7 @@ export function mapModel(input: ModelInput): MapModel {
 
   layers.push(entityLayer("rail", "Rail network", "#9aa3b0", "square", "base", DOMAINS.rail, ctx, true));
   layers.push(entityLayer("belts", "Belts and inserters", "#d8b64a", "square", "base", DOMAINS.belts, ctx, true));
-  layers.push(entityLayer("pipes", "Pipes and tanks", "#4ab0c0", "square", "base", DOMAINS.pipes, ctx, true));
+  layers.push(entityLayer("pipes", "Pipes and tanks", "#3f8a96", "square", "base", DOMAINS.pipes, ctx, true));
   layers.push(entityLayer("walls", "Walls", "#9a7f6a", "square", "base", DOMAINS.walls, ctx, true));
   layers.push(entityLayer("power", "Power", "#e8c25a", "dot", "base", DOMAINS.power, ctx, true));
   const powerLayer = layers[layers.length - 1];
@@ -682,6 +683,90 @@ export function mapModel(input: ModelInput): MapModel {
       note: `${String(stops.length)} names across ${String(stops.reduce((n, s) => n + s.count, 0))} stops`,
       body: shown.join(""),
     });
+  }
+
+  // The base as the game paints it, revealed by zooming in.
+  //
+  // The rectangles above are the map; this is the ground truth under it, and it
+  // is the same art the game draws, cut out of the installation by `sprites.ts`
+  // at the cell each prototype declares. It is a separate layer because it can
+  // only be afforded close in: a few thousand images are free while they are
+  // hidden and expensive while they are not, so the page reveals them at the
+  // zoom where a machine is big enough to recognise and hides them again above
+  // it.
+  //
+  // Two honest limits, both stated in the layer's note. A state file records a
+  // position and not a direction, so everything is drawn at its north-facing
+  // frame, which is right for a machine and wrong for a belt; the belt layer's
+  // rectangles remain the truthful drawing of a belt. And only prototypes with
+  // fewer placed instances than the cap get art, because 30000 images is not a
+  // map, it is a stall.
+  const ART_CAP = 1200;
+  if (input.data && cutterAvailable()) {
+    const defs: string[] = [];
+    const pieces: string[] = [];
+    let drawn = 0;
+    let skipped = 0;
+    for (const [name, points] of Object.entries(map.points)) {
+      if (points.length === 0) continue;
+      // Art is for what a player recognises by shape. A prototype whose own
+      // footprint is a single tile is a pixel at any zoom a whole base fits in,
+      // and its rectangle says as much as its picture would; a machine two
+      // tiles on a side is recognisable and worth the weight. The rule is the
+      // prototype's own selection box rather than a list of names.
+      const shape = ctx.shapes.get(name);
+      if (points.length > ART_CAP || !shape || shape.w * shape.h < 4) {
+        skipped += points.length;
+        continue;
+      }
+      const cuts = spritesFor(input.data, { name });
+      const cut = cuts.filter((c) => !c.shadow).pop() ?? null;
+      if (!cut) continue;
+      // Embedded rather than linked, and this is not a preference. A page
+      // opened from a file URL is its own opaque origin, so an SVG `image`
+      // pointing at another file is cross-origin and the browser refuses it,
+      // while an HTML `img` beside it loads the same file happily. Verified in
+      // the browser rather than reasoned about: the icons rendered and the
+      // sprites came back as broken-image glyphs until they were inlined.
+      const uri = dataUri(cut);
+      if (!uri) continue;
+      // The cell is in sheet pixels at a declared scale; a tile is 32 of them.
+      const w = (cut.w * cut.scale) / PIXELS_PER_TILE;
+      const h = (cut.h * cut.scale) / PIXELS_PER_TILE;
+      const id = `s-${name}`;
+      // One definition per prototype and one reference per entity, so the art
+      // is carried once however many of the machine are placed.
+      defs.push(
+        `<image id="${esc(id)}" width="${round(w)}" height="${round(h)}" href="${uri}"/>`,
+      );
+      for (const [x, y] of points) {
+        pieces.push(
+          `<use href="#${esc(id)}" x="${round(x + cut.shiftX - w / 2)}" ` +
+            `y="${round(y + cut.shiftY - h / 2)}"/>`,
+        );
+        drawn += 1;
+      }
+    }
+    if (drawn > 0) {
+      layers.push({
+        id: "art",
+        label: "The game's own art",
+        colour: "#c8cdd6",
+        mark: "fill",
+        group: "base",
+        on: true,
+        drawn,
+        census: drawn + skipped,
+        missing: [],
+        note:
+          `${String(defs.length)} machines drawn as themselves, ${String(drawn)} of them, revealed when you zoom in` +
+          (skipped > 0
+            ? ` · ${String(skipped)} left as rectangles: a single tile is a pixel at this scale, and over ${String(ART_CAP)} of one prototype is a stall rather than a map`
+            : "") +
+          ` · a save records a position and not a direction, so each one is its north-facing frame`,
+        body: `<defs>${defs.join("")}</defs>${pieces.join("")}`,
+      });
+    }
   }
 
   // ---- Places -----------------------------------------------------------

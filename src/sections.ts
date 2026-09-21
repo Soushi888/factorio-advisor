@@ -32,6 +32,16 @@ export interface Table {
   numeric: number[];
   /** What the table is of, when a section carries more than one. */
   caption?: string;
+  /**
+   * The prototype each row is about, when the first cell does not say it.
+   *
+   * A row reading "chemical" is about `chemical-science-pack`, and left to
+   * match its own text it finds the `automation` TECHNOLOGY or the `production`
+   * item group instead, which is how the science table came to wear three icons
+   * from three different parts of the game. Aligned with `rows`, null where a
+   * row names nothing.
+   */
+  iconNames?: Array<string | null>;
 }
 
 export interface SectionView {
@@ -173,6 +183,8 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
     tables: [{
       headers: ["pack", "made/min", "used/min", "spare"],
       numeric: [1, 2, 3],
+      // The rows read as short names; the icons come from the full prototype.
+      iconNames: advisory.packs.filter((p) => p.everMade).map((p) => p.name),
       rows: advisory.packs
         .filter((p) => p.everMade)
         .map((p) => [

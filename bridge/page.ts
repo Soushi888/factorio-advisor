@@ -206,6 +206,11 @@ footer{margin-top:1.25rem;color:var(--dim);font-size:.72rem;border-top:1px solid
    frame of a pan; this is the difference between a drag that tracks the cursor
    and one that catches up afterwards. Both come back the moment it settles. */
 #map.moving{shape-rendering:optimizeSpeed}
+/* The real art is free while it is hidden and costly while it is not, so it is
+   revealed only at the zoom where a machine is big enough to recognise, and
+   hidden again while the view is moving. */
+#map g[data-layer=art]{display:none}
+#map.close:not(.moving) g[data-layer=art].on{display:block}
 #map.moving .lbl,#map.moving .area{display:none}
 /* Water is ground, so it sits back: at full strength it is a blue field with a
    base somewhere underneath it rather than a coastline the base sits on. */
@@ -334,6 +339,8 @@ const SCRIPT = `
     svg.style.setProperty("--mk", (3.2 - 2.7 * k).toFixed(2));
     svg.style.setProperty("--tile", (1.1 - 0.9 * k).toFixed(2));
     svg.style.setProperty("--lbl", (13 / d.s).toFixed(2));
+    // A tile wide enough on screen for a machine to be recognisable as itself.
+    svg.classList.toggle("close", d.s >= 3);
   }
 
   // One repaint per animation frame, whatever the input device says.
@@ -869,7 +876,10 @@ function planSection(plan: PlanView): string {
  * 1536`). Anything else keeps its text, because a cell reading "Load Iron to
  * Unload Iron" is a stop name Soushi wrote and not a prototype.
  */
-function cellWithIcon(cell: string): string {
+function cellWithIcon(cell: string, name?: string | null): string {
+  // A row that says what it is about wins over any guess made from its text.
+  if (name && ICONS?.url(name)) return withIcon(name, cell);
+  if (name) return esc(cell);
   if (ICONS?.url(cell)) return withIcon(cell);
   // Sections print a prototype name as words, because "solar panel" reads
   // better in a table than "solar-panel". The hyphen goes back for the lookup
@@ -892,12 +902,12 @@ function tableOf(t: SectionView["tables"][number], src: string): string {
     `<tr>${t.headers.map((h, i) => `<th${numeric.has(i) ? ' class="n"' : ""}>${esc(h)}</th>`).join("")}</tr>` +
     t.rows
       .map(
-        (row) =>
+        (row, r) =>
           `<tr>${row
             .map((cell, i) =>
               numeric.has(i)
                 ? `<td class="n">${esc(cell)}</td>`
-                : `<td>${cellWithIcon(cell)}</td>`,
+                : `<td>${cellWithIcon(cell, i === 0 ? (t.iconNames?.[r] ?? null) : null)}</td>`,
             )
             .join("")}</tr>`,
       )
