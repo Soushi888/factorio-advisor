@@ -2,7 +2,7 @@ import type { Blueprint, BpEntity } from "./blueprint.ts";
 import type { AuditResult, Box } from "./audit.ts";
 import type { Data, Proto } from "./proto.ts";
 import { EAST, NORTH, SOUTH, WEST, footprintOf } from "./layout.ts";
-import { PIXELS_PER_TILE, dataUri, iconCut, spritesFor, type SpriteCut } from "./sprites.ts";
+import { PIXELS_PER_TILE, dataUri, iconCut, spritesFor, utilityCut, type SpriteCut } from "./sprites.ts";
 
 /**
  * Drawing a decoded print to scale (C29).
@@ -225,11 +225,34 @@ function esc(s: string): string {
 /**
  * The travel arrow, for belt-family entities only.
  *
- * Direction is sixteenths of a turn clockwise from north, which is why the
- * angle is `direction * 22.5` degrees and north is negative y. It is drawn only
- * where travel direction was actually measured: an underground pair states which
- * way it carries, and an inserter's direction names one of its two ends without
- * the print saying which, so inserters get their rotation and no arrow.
+ * The game has its own, and it is the one Soushi sees while playing:
+ * `utility-sprites` carries `indication_arrow`, the yellow chevron the engine
+ * draws over a belt to say which way it runs, pointing north at rotation zero.
+ * A direction is sixteenths of a turn clockwise from north, so the sprite turns
+ * by `direction * 22.5` degrees about the tile it sits on.
+ *
+ * It is drawn only where travel direction was actually measured: an underground
+ * pair states which way it carries, and an inserter's direction names one of its
+ * two ends without the print saying which, so inserters get their rotation and
+ * no arrow.
+ */
+function arrowImage(uri: string, cut: SpriteCut, p: Placed): string {
+  const cx = (p.box.x1 + p.box.x2) / 2;
+  const cy = (p.box.y1 + p.box.y2) / 2;
+  const w = (cut.w * cut.scale) / PIXELS_PER_TILE;
+  const h = (cut.h * cut.scale) / PIXELS_PER_TILE;
+  return (
+    `<image href="${uri}" x="${n(cx - w / 2)}" y="${n(cy - h / 2)}" ` +
+    `width="${n(w)}" height="${n(h)}" ` +
+    `transform="rotate(${n(p.direction * 22.5)} ${n(cx)} ${n(cy)})"/>`
+  );
+}
+
+/**
+ * The drawn arrow, kept only as the fallback.
+ *
+ * Used when the installation has no `indication_arrow` to cut, so a direction
+ * the drawing knows is never left unsaid.
  */
 function arrow(p: Placed): string {
   const cx = (p.box.x1 + p.box.x2) / 2;
@@ -267,6 +290,7 @@ const SVG_CSS = `
         vector-effect:non-scaling-stroke; stroke-linejoin:round; }
   .dir { fill:none; stroke:#f2e37a; stroke-width:1.3; stroke-linecap:round;
          vector-effect:non-scaling-stroke; opacity:.75; }
+  .arrows { opacity:.9; }
   /* The category boxes are the fallback, not the drawing: a prototype with a
      sprite is shown as itself, and the boxes are a layer the page turns on. */
   .schematic { display:none; }
@@ -442,8 +466,14 @@ export function drawPrint(data: Data, bp: Blueprint, result: AuditResult): Drawn
       );
     }
     if (family.id === "belt") {
-      const ticks = list.map((p) => arrow(p)).join("");
-      if (ticks) parts.push(`<path class="dir" style="--c:${family.colour}" d="${ticks}"/>`);
+      const cut = utilityCut(data, "indication_arrow");
+      const uri = cut ? dataUri(cut) : null;
+      if (cut && uri) {
+        parts.push(`<g class="arrows">${list.map((p) => arrowImage(uri, cut, p)).join("")}</g>`);
+      } else {
+        const ticks = list.map((p) => arrow(p)).join("");
+        if (ticks) parts.push(`<path class="dir" style="--c:${family.colour}" d="${ticks}"/>`);
+      }
     }
   }
 
