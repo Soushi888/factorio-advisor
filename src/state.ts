@@ -169,12 +169,71 @@ export function isLegacyFlows(state: GameState, force = "player"): boolean {
   return first !== undefined && first.producedPerMinute === undefined;
 }
 
+/**
+ * A logistic network: one roboport cluster and the robots working inside it.
+ *
+ * Robots are counted twice on purpose. `all` is the fleet the network owns;
+ * `available` is the part of it sitting idle in a roboport right now. A network
+ * whose available count is at zero while its fleet is large is saturated: every
+ * robot is in the air, and the next request waits. That gap is the only
+ * measurement here that says whether a robot network is keeping up.
+ */
+export interface LogisticNetwork {
+  surface: string;
+  /** Roboports in the network. */
+  cells: number;
+  logisticRobots: { all: number; available: number };
+  constructionRobots: { all: number; available: number };
+  /** Chests, by the role they play in the network. */
+  providers?: number;
+  requesters?: number;
+  storage?: number;
+  /** Tile bounds of the roboports, so the map can draw the network's reach. */
+  bounds?: { minX: number; minY: number; maxX: number; maxY: number };
+}
+
+/** A train: what it is made of, and the stops it is told to visit. */
+export interface Train {
+  id: number;
+  surface: string;
+  locomotives: number;
+  cargoWagons: number;
+  fluidWagons: number;
+  /** The stop names on its schedule, in order. */
+  schedule: string[];
+  /** The engine's own word for what it is doing, never interpreted here. */
+  state?: string;
+  /**
+   * Held up: at a signal, at a full destination, or with no path.
+   *
+   * Decided in the collector against `defines.train_state` rather than in
+   * TypeScript against a list of numbers, so the judgment stays the engine's.
+   */
+  waiting?: boolean;
+  /** What it is carrying, summed over its wagons. */
+  contents?: Record<string, number>;
+}
+
+/** A train stop name, and how many stops carry it. */
+export interface TrainStop {
+  name: string;
+  count: number;
+  /** One position per stop of that name. */
+  at: Array<[number, number]>;
+}
+
 export interface ForceState {
   /** Present from U5 onward. */
   electric?: ElectricState;
   research?: ResearchState;
   /** Logistic network contents by item, summed across networks. */
   logistic?: Record<string, number>;
+  /** One entry per logistic network on every surface, for the robot half of logistics. */
+  networks?: LogisticNetwork[];
+  /** Every train on the force, with what it is made of and where it is told to go. */
+  trains?: Train[];
+  /** Every train stop, by name, with how many carry that name. */
+  stops?: TrainStop[];
   /** Present from U3b onward; absent in older state files. */
   energy?: Record<string, ResolvedEnergy>;
   technologies: {
@@ -612,6 +671,7 @@ script.on_nth_tick(1, function()
 
     -- Logistic network contents, summed over every network on every surface.
     local logistic = {}
+    local networks = {}
     for _, surface in pairs(game.surfaces) do
       local nets = force.logistic_networks[surface.name]
       if nets then
@@ -626,9 +686,134 @@ script.on_nth_tick(1, function()
               end
             end
           end
+          -- The robot fleet, and how much of it is idle. Every field is the
+          -- network's own; nothing here is derived.
+          local okn = pcall(function()
+            local n = {
+              surface = surface.name,
+              cells = #net.cells,
+              logisticRobots = {
+                all = net.all_logistic_robots,
+                available = net.available_logistic_robots,
+              },
+              constructionRobots = {
+                all = net.all_construction_robots,
+                available = net.available_construction_robots,
+              },
+              providers = #net.providers,
+              requesters = #net.requesters,
+              storage = #net.storages,
+            }
+            local nminx, nminy, nmaxx, nmaxy
+            for _, c in pairs(net.cells) do
+              local p = c.owner.position
+              if not nminx or p.x < nminx then nminx = p.x end
+              if not nmaxx or p.x > nmaxx then nmaxx = p.x end
+              if not nminy or p.y < nminy then nminy = p.y end
+              if not nmaxy or p.y > nmaxy then nmaxy = p.y end
+            end
+            if nminx then
+              n.bounds = { minX = nminx, minY = nminy, maxX = nmaxx, maxY = nmaxy }
+            end
+            networks[#networks + 1] = n
+          end)
         end
       end
     end
+
+    -- Trains and stops.
+    --
+    -- A stop name is the only label the save carries that Soushi wrote himself,
+    -- which makes it the one thing on this map that reads in his own words
+    -- rather than in prototype names.
+    -- The engine's own names for a train's state, read field by field off
+    -- defines rather than enumerated: iterating defines.train_state with pairs
+    -- returned nothing on this build, which is how nineteen trains came back
+    -- reporting "6" instead of "arrive_station". Named here so nothing
+    -- downstream has to know what 6 means.
+    local train_state_names = {}
+    pcall(function()
+      local d = defines.train_state
+      train_state_names[d.on_the_path] = "on_the_path"
+      train_state_names[d.path_lost] = "path_lost"
+      train_state_names[d.no_schedule] = "no_schedule"
+      train_state_names[d.no_path] = "no_path"
+      train_state_names[d.arrive_signal] = "arrive_signal"
+      train_state_names[d.wait_signal] = "wait_signal"
+      train_state_names[d.arrive_station] = "arrive_station"
+      train_state_names[d.wait_station] = "wait_station"
+      train_state_names[d.manual_control_stop] = "manual_control_stop"
+      train_state_names[d.manual_control] = "manual_control"
+      train_state_names[d.destination_full] = "destination_full"
+    end)
+    -- Held up, as the engine defines it: waiting at a signal, waiting for a
+    -- stop that is occupied, or with no path at all.
+    local function train_is_waiting(state)
+      local ok, held = pcall(function()
+        local d = defines.train_state
+        return state == d.wait_signal or state == d.destination_full or state == d.no_path
+          or state == d.path_lost
+      end)
+      return ok and held or false
+    end
+    local trains, stops = {}, {}
+    pcall(function()
+      for _, surface in pairs(game.surfaces) do
+        for _, stop in pairs(surface.find_entities_filtered{ type = "train-stop", force = force }) do
+          local key = stop.backer_name or "?"
+          local e = stops[key]
+          if not e then e = { name = key, count = 0, at = {} }; stops[key] = e end
+          e.count = e.count + 1
+          e.at[#e.at + 1] = { stop.position.x, stop.position.y }
+        end
+        -- 2.0 moved the train list onto the train manager. Asked for per
+        -- surface and per force so a train is counted once and belongs to the
+        -- force being reported, never to whoever else shares the rails.
+        local found_trains = {}
+        pcall(function()
+          found_trains = game.train_manager.get_trains{ surface = surface, force = force }
+        end)
+        if #found_trains == 0 then
+          pcall(function() found_trains = surface.get_trains(force) end)
+        end
+        for _, train in pairs(found_trains) do
+          local locos = 0
+          for _, l in pairs(train.locomotives or {}) do
+            if type(l) == "table" then locos = locos + #l end
+          end
+          local sched = {}
+          local s = train.schedule
+          if s and s.records then
+            for _, r in pairs(s.records) do
+              if r.station then sched[#sched + 1] = r.station end
+            end
+          end
+          local contents = {}
+          local okc = pcall(function()
+            for name, count in pairs(train.get_contents and train.get_contents() or {}) do
+              if type(count) == "table" then
+                contents[count.name] = (contents[count.name] or 0) + count.count
+              else
+                contents[name] = (contents[name] or 0) + count
+              end
+            end
+          end)
+          trains[#trains + 1] = {
+            id = train.id,
+            surface = surface.name,
+            locomotives = locos,
+            cargoWagons = #train.cargo_wagons,
+            fluidWagons = #train.fluid_wagons,
+            schedule = sched,
+            state = train_state_names[train.state] or tostring(train.state),
+            waiting = train_is_waiting(train.state),
+            contents = okc and next(contents) ~= nil and contents or nil,
+          }
+        end
+      end
+    end)
+    local stop_list = {}
+    for _, e in pairs(stops) do stop_list[#stop_list + 1] = e end
 
     local research_progress = nil
     local okp, pv = pcall(function() return force.research_progress end)
@@ -641,6 +826,9 @@ script.on_nth_tick(1, function()
                    labProductivityBonus = force.laboratory_productivity_bonus,
                    progress = research_progress },
       logistic = logistic,
+      networks = networks,
+      trains = trains,
+      stops = stop_list,
       technologies = {
         researched = researched,
         current = force.current_research and force.current_research.name or nil,

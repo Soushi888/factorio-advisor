@@ -64,6 +64,7 @@ section{background:var(--card);border:1px solid var(--line);border-radius:.5rem;
 section>*{min-width:0}
 h2{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:0 0 .6rem;font-weight:600}
 .lead{font-size:.88rem;margin:0 0 .45rem;font-weight:500}
+.tcap{font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:.7rem 0 -.35rem;font-weight:600}
 .carry{font-size:.82rem;margin:0 0 .7rem;color:var(--dim);border-left:2px solid var(--accent);padding-left:.55rem}
 .figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(8rem,1fr));gap:.55rem}
 .fig{display:flex;flex-direction:column;gap:.1rem}
@@ -121,6 +122,12 @@ footer{margin-top:1.25rem;color:var(--dim);font-size:.72rem;border-top:1px solid
   stroke-width:calc(var(--mk)*1px);stroke-linejoin:round;paint-order:stroke}
 #map .tile{stroke:currentColor;vector-effect:non-scaling-stroke;
   stroke-width:calc(var(--tile)*1px);stroke-linejoin:round;paint-order:stroke;shape-rendering:crispEdges}
+/* Water is ground, so it sits back: at full strength it is a blue field with a
+   base somewhere underneath it rather than a coastline the base sits on. */
+#map .tile.water{opacity:.5}
+#map .cov{fill:currentColor;fill-opacity:.07;stroke:currentColor;stroke-opacity:.5;
+  vector-effect:non-scaling-stroke;stroke-width:1px}
+#map .cov.build{fill-opacity:.03;stroke-opacity:.18;stroke-dasharray:4 3}
 #map .lbl{font-size:calc(var(--lbl)*1px);fill:currentColor;paint-order:stroke;stroke:var(--void);
   stroke-width:calc(var(--lbl)*.3px);stroke-linejoin:round;text-anchor:middle;font-weight:650;
   letter-spacing:-.01em;pointer-events:none}
@@ -169,7 +176,7 @@ footer{margin-top:1.25rem;color:var(--dim);font-size:.72rem;border-top:1px solid
 .layers .n{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.75;font-size:.68rem}
 .layers .digit{opacity:.4;font-size:.6rem;width:.7rem;flex:0 0 auto}
 .layers .miss{display:none}
-.layers button[aria-pressed=true]+.miss{display:block;font-size:.62rem;color:var(--dim);
+.layers .miss.gap{display:block;font-size:.62rem;color:var(--down);
   padding:0 0 .15rem 1.75rem;line-height:1.25}
 .advice li[data-fx]{cursor:pointer;border-radius:.3rem}
 .advice li[data-fx]:hover,.advice li[data-fx]:focus-visible{background:color-mix(in srgb,var(--accent) 12%,transparent)}
@@ -384,13 +391,40 @@ const SCRIPT = `
   // A section has no single place, so its control turns on the layer that
   // explains it and fits the whole base. Panning a section somewhere would be
   // inventing a location the section never named.
+  // A section's button shows its own layer ALONE among the layers that draw the
+  // base. Turning it on while eleven others are already on changed nothing on
+  // screen, which is the same as the button not working. The ground and the
+  // places stay as they are, because a base with no coastline under it is not
+  // easier to read, it is only emptier. Reset puts every layer back.
+  var defaults = {};
+  toggles.forEach(function (b) {
+    defaults[b.getAttribute("data-toggle")] = b.getAttribute("aria-pressed") === "true";
+  });
+  function soloBase(id) {
+    toggles.forEach(function (b) {
+      var lid = b.getAttribute("data-toggle");
+      var g = svg.querySelector('g[data-layer="' + lid + '"]');
+      if (!g || g.getAttribute("data-group") !== "base") return;
+      setLayer(lid, lid === id);
+    });
+  }
   [].slice.call(document.querySelectorAll("[data-show]")).forEach(function (b) {
     b.addEventListener("click", function () {
-      setLayer(b.getAttribute("data-show"), true);
+      soloBase(b.getAttribute("data-show"));
       doFit();
       box.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "nearest" });
     });
   });
+  var reset = document.getElementById("reset");
+  if (reset) {
+    reset.addEventListener("click", function () {
+      toggles.forEach(function (b) {
+        var lid = b.getAttribute("data-toggle");
+        setLayer(lid, defaults[lid]);
+      });
+      doFit();
+    });
+  }
 
   document.addEventListener("keydown", function (e) {
     if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
@@ -492,7 +526,7 @@ function mapPane(model: MapModel): string {
   const groups = model.layers
     .map(
       (l) =>
-        `<g data-layer="${esc(l.id)}" class="${l.mark} ${l.on ? "on" : ""}" ` +
+        `<g data-layer="${esc(l.id)}" data-group="${esc(l.group)}" class="${l.mark} ${l.on ? "on" : ""}" ` +
         `fill="${esc(l.colour)}" color="${esc(l.colour)}">${l.body}</g>`,
     )
     .join("");
@@ -512,7 +546,7 @@ function mapPane(model: MapModel): string {
           `title="${esc(l.note || l.label)}">` +
           `<span class="digit">${digit <= 9 ? String(digit) : ""}</span>${layerKey(l)}` +
           `<span class="name">${esc(l.label)}</span><span class="n">${esc(n)}</span></button>` +
-          (l.note ? `<span class="miss">${esc(l.note)}</span>` : "") +
+          (l.missing.length > 0 ? `<span class="miss gap">${esc(l.note)}</span>` : "") +
           `</li>`
         );
       })
@@ -526,6 +560,7 @@ function mapPane(model: MapModel): string {
     `<button type="button" id="fit">Fit</button>` +
     `<button type="button" id="zin">+</button>` +
     `<button type="button" id="zout">&minus;</button>` +
+    `<button type="button" id="reset">All layers</button>` +
     `<span class="hint">wheel zooms at the cursor &middot; drag pans &middot; digits toggle layers &middot; f fits</span>` +
     `</div>` +
     `<div id="mapbox"><svg id="map" role="img" aria-label="Base map of ${esc(model.surface)}" ` +
@@ -541,10 +576,11 @@ function mapPane(model: MapModel): string {
   );
 }
 
-function tableOf(t: NonNullable<SectionView["table"]>, src: string): string {
+function tableOf(t: SectionView["tables"][number], src: string): string {
   if (t.rows.length === 0) return "";
   const numeric = new Set(t.numeric);
   return (
+    (t.caption ? `<p class="tcap">${esc(t.caption)}</p>` : "") +
     `<table data-source="${esc(src)}">` +
     `<tr>${t.headers.map((h, i) => `<th${numeric.has(i) ? ' class="n"' : ""}>${esc(h)}</th>`).join("")}</tr>` +
     t.rows
@@ -608,7 +644,7 @@ export function renderPage(input: PageInput): string {
             v.figures.map((x) => fig(x.value, src, x.field, x.label, x.tone ?? "")).join("") +
             `</div>`
           : "") +
-        (v.table ? tableOf(v.table, src) : "") +
+        v.tables.map((t) => tableOf(t, src)).join("") +
         (v.advice.length > 0 ? adviceList(v.advice, false) : "") +
         (layer && model
           ? `<button type="button" class="seemap" data-show="${esc(layer)}">` +

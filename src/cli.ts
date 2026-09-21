@@ -17,6 +17,7 @@ import { flowOf, newestSave, readState, readStateFile, slugify, type GameState }
 import { busAreas, judge as judgeBus, readSurvey, surveyPath, type BusReport } from "./bus.ts";
 import { mapOf, renderMap, type Area } from "./map.ts";
 import { advise, type Advisory, type Requirement } from "./advise.ts";
+import { bottlenecks } from "./bottlenecks.ts";
 import { gateFor, pathFromHere, researchable } from "./next.ts";
 import { effectiveGeneration, powerReport, solarAverageFactor } from "./power.ts";
 import { bullet, heading, indent, num, pct, rate, sub, table } from "./render.ts";
@@ -1675,6 +1676,7 @@ function usage(): void {
   bun run power                           generation against draw, from your census
   bun run gen <item> --rate=<n>           lay one recipe step out as a placeable row
   bun run advise [--spm=<n>]              where the base stands and what the next step costs
+  bun run bottleneck [--save=<name>]      machine classes by how busy they are, lines by what is spare
   bun run bus [--save=<name>] [--map]     the belt survey: buses, lanes, saturation, corridors
 
 Flags for ratio:
@@ -1693,6 +1695,11 @@ Flags for advise:
   --spm=45                                target rate per science pack, per minute
   --force=player                          which force to advise
   --top=18                                how many requirement gaps to list
+
+Flags for bottleneck:
+  --save="game 4"                         which save to answer from
+  --force=player                          which force to read
+  --top=20                                how many tightness rows to list
 
 Flags for state:
   --save="game 4"                         which save to read (copied, never opened)
@@ -1852,6 +1859,138 @@ function cmdAdvise(args: Args): void {
       `  The save has no map in it that this tool can read, so there is no advice\n` +
       `  here about layout, placement or where to put anything.`,
   );
+}
+
+/**
+ * `bun run bottleneck`: what is holding the factory back, read two ways.
+ *
+ * The two tables are deliberately not merged. One says whether a class of
+ * machine is the wall or is waiting on something upstream; the other says
+ * whether a line has anything left over for the next thing built on it. A base
+ * is usually short of one or the other, and the fix differs, so a single ranked
+ * score would hide which reading produced it.
+ */
+function cmdBottleneck(args: Args): void {
+  const data = load();
+  const index = new RecipeIndex(data);
+  const forceName = args.flags.get("force") ?? "player";
+  const state = requireState(args);
+
+  console.log(header(data.manifest));
+  console.log(stateHeader(state));
+
+  const r = bottlenecks(data, index, state, forceName);
+
+  if (r.legacy) {
+    console.log(
+      "\nThis state file predates the two-rate collector, so it carries consumption\n" +
+        "under a production label and neither reading here can be computed from it.\n" +
+        `Re-read the save: bun run state --save="${state.save.name}"`,
+    );
+    return;
+  }
+  if (r.utilisation.length === 0 && r.tightness.length === 0) {
+    console.log(`\nNo force called "${forceName}" in this state file, or nothing has run yet.`);
+    return;
+  }
+
+  console.log(heading("Machine classes, by how much of their time the output accounts for"));
+  console.log(
+    table(
+      [
+        { header: "class" },
+        { header: "placed", align: "right" },
+        { header: "busy", align: "right" },
+        { header: "of them", align: "right" },
+        { header: "charged mostly by" },
+      ],
+      r.utilisation.map((u) => [
+        u.machine,
+        String(u.count),
+        num(u.busyEquivalent, 1),
+        `${num(u.fraction * 100, 1)}%`,
+        u.charged[0]
+          ? `${u.charged[0].recipe} (${num(u.charged[0].busyEquivalent, 1)})` +
+            (u.charged[0].pool.length > 1
+              ? `, ${num(u.charged[0].share * 100, 0)}% of that recipe's pool`
+              : "") +
+            (u.charged[0].rule === "census" ? " [census pick]" : "")
+          : "nothing attributable",
+      ]),
+    ),
+  );
+  console.log(
+    "\n  busy is machine-equivalents: what the base made, divided by what one of\n" +
+      "  these makes per minute at its own crafting speed with no modules.\n" +
+      "  Where several classes could have run a recipe, the work is split between\n" +
+      "  them by crafting capacity (count times speed), because nothing in a save\n" +
+      "  says which machine ran what. Classes sharing a recipe therefore read the\n" +
+      "  same fraction, and the recipe charged is named on every row.",
+  );
+
+  const top = Number(valueFlag(args, "top") ?? "20");
+  const shown = r.tightness.slice(0, Number.isFinite(top) && top > 0 ? top : 20);
+  console.log(
+    heading(`Items and fluids, by what is left over (${shown.length} of ${r.tightness.length})`),
+  );
+  console.log(
+    table(
+      [
+        { header: "item" },
+        { header: "kind" },
+        { header: "made/min", align: "right" },
+        { header: "used/min", align: "right" },
+        { header: "spare/min", align: "right" },
+        { header: "spare/used", align: "right" },
+      ],
+      shown.map((t) => [
+        t.name,
+        t.kind,
+        num(t.madePerMinute, 1),
+        num(t.usedPerMinute, 1),
+        num(t.sparePerMinute, 1),
+        `${num(t.headroomRatio * 100, 1)}%`,
+      ]),
+    ),
+  );
+  console.log(
+    `\n  spare is made minus used over the last hour; spare/used is that against\n` +
+      `  the line's own demand, so 0% means it eats exactly what it makes and a\n` +
+      `  negative figure means the base is drawing down stock.\n` +
+      `  ${r.tightnessConsidered} items and fluids have demand at all; those under ` +
+      `${num(r.minDemandPerMinute, 0)}/min are not ranked.`,
+  );
+
+  console.log(heading("What that says"));
+  if (r.findings.length === 0) {
+    console.log("  Nothing crossed a threshold worth naming.");
+  }
+  for (const [i, x] of r.findings.entries()) {
+    console.log(`\n  ${i + 1}. ${x.text}`);
+    console.log(`     ${x.because}`);
+  }
+
+  if (r.unattributed.length > 0) {
+    const noMachine = r.unattributed.filter((u) => u.reason === "no-machine-built");
+    console.log(sub("Made, but charged to no class"));
+    console.log(
+      bullet(
+        r.unattributed
+          .slice(0, 8)
+          .map((u) =>
+            u.reason === "raw"
+              ? `${u.product}: mined or pumped, not crafted, ${num(u.producedPerMinute, 1)}/min`
+              : `${u.product}: ${u.recipe ?? "no recipe"} needs ${u.couldRun.join(", ") || "a machine"}, none placed`,
+          ),
+      ),
+    );
+    if (noMachine.length === 0) {
+      console.log("  All of these are raw: the world hands them over without a recipe.");
+    }
+  }
+
+  console.log(heading("Stated limits of this reading"));
+  console.log(bullet(r.limits));
 }
 
 /**
@@ -2126,6 +2265,9 @@ async function main(): Promise<void> {
       break;
     case "advise":
       cmdAdvise(args);
+      break;
+    case "bottleneck":
+      cmdBottleneck(args);
       break;
     case "bus":
       await cmdBus(args);
