@@ -1,4 +1,4 @@
-import { watch, reportOn } from "./watch.ts";
+import { watch, reportOn, rerenderPage } from "./watch.ts";
 import { DEFAULT_RATE_THRESHOLD_PER_MIN } from "./report.ts";
 import { newestSave } from "../src/state.ts";
 
@@ -32,6 +32,19 @@ const thresholdFlag = value("threshold");
 const threshold = thresholdFlag === null ? DEFAULT_RATE_THRESHOLD_PER_MIN : Number(thresholdFlag);
 if (!Number.isFinite(threshold) || threshold < 0) {
   throw new Error(`--threshold must be a number of items per minute.`);
+}
+
+// `--page` redraws the dashboard from the state file already on disk. It runs
+// no engine and writes no report, so it is the loop for working on the page
+// itself rather than on the base.
+if (flags.has("page")) {
+  const named = value("save");
+  const save = named ?? newestSave()?.name;
+  if (!save) throw new Error("No save found. Name one with --save=<name>.");
+  const page = rerenderPage(save, { threshold });
+  if (!page) throw new Error(`No state file read yet for ${save}. Run: bun run report --save="${save}"`);
+  console.log(`\n  page  ${page}  (redrawn from the last read, no engine run)`);
+  process.exit(0);
 }
 
 // `--now` writes one report for the newest save and exits, which is what a first

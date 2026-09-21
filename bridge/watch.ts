@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PROJECT_ROOT, findUserdata } from "../src/paths.ts";
-import { readState, type GameState } from "../src/state.ts";
+import { readState, readStateFile, type GameState } from "../src/state.ts";
 import { buildReport, renderMarkdown, DEFAULT_RATE_THRESHOLD_PER_MIN } from "./report.ts";
 import { advise, type Advisory } from "../src/advise.ts";
 import type { SectionView } from "../src/sections.ts";
@@ -176,6 +176,42 @@ export async function reportOn(
 }
 
 /**
+ * Redraw `reports/index.html` from the state file already on disk.
+ *
+ * No engine run and no new report: a report is a statement about a tick, and
+ * this is a different view of a tick already read. It exists because the page
+ * changes far more often than the base does, and re-reading a save to look at a
+ * layout change costs a minute of Factorio start-up for a file that has not
+ * moved.
+ */
+export function rerenderPage(save: string, opts: { threshold?: number } = {}): string | null {
+  const state = readStateFile(save);
+  if (!state) return null;
+  const derived = advisoryFor(state);
+  const report = buildReport(
+    state,
+    previousState(save, state.save.tick),
+    "player",
+    opts.threshold ?? DEFAULT_RATE_THRESHOLD_PER_MIN,
+    derived?.advisory ?? null,
+  );
+  const pagePath = join(REPORTS_DIR, "index.html");
+  mkdirSync(REPORTS_DIR, { recursive: true });
+  writeFileSync(
+    pagePath,
+    renderPage({
+      report,
+      state,
+      stateFile: `data/state/${slug(save)}.json`,
+      sections: derived?.views ?? [],
+      history: historyFor(save).filter((f) => f !== `${slug(save)}-${String(state.save.tick)}.md`),
+      model: modelFor(state, derived?.advisory ?? null),
+    }),
+  );
+  return pagePath;
+}
+
+/**
  * The one map's layers (C33).
  *
  * The bus corridors are included only when a belt survey exists for this save
@@ -183,6 +219,14 @@ export async function reportOn(
  * and the corridors would be drawn over a map they no longer match, which is the
  * same trap the `bus` command refuses at the command line.
  */
+function protoData(): ReturnType<typeof load> | null {
+  try {
+    return load();
+  } catch {
+    return null;
+  }
+}
+
 function modelFor(state: GameState, advisory: Advisory | null): ReturnType<typeof mapModel> | null {
   const surfaceMap = mapOf(state);
   if (!surfaceMap) return null;
@@ -210,6 +254,7 @@ function modelFor(state: GameState, advisory: Advisory | null): ReturnType<typeo
   return mapModel({
     state,
     map: surfaceMap,
+    data: protoData(),
     busAreas: corridors,
     adviceAreas,
     powerAreas: advisory?.blocks ?? [],

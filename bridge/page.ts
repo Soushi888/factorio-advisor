@@ -2,7 +2,7 @@ import type { ReportData } from "./report.ts";
 import type { GameState } from "../src/state.ts";
 import type { SectionView } from "../src/sections.ts";
 import type { Advice } from "../src/advise.ts";
-import type { MapModel, MapLayer } from "../src/layers.ts";
+import type { MapModel, MapLayer, LayerGroup } from "../src/layers.ts";
 
 /**
  * The dashboard.
@@ -44,8 +44,8 @@ function signed(v: number, places = 1): string {
 }
 
 const CSS = `
-:root{--bg:#f6f5f2;--fg:#1b1a18;--dim:#6b6862;--line:#ddd9d2;--card:#fff;--up:#1f7a3d;--down:#a3341f;--accent:#b3541e}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#161513;--fg:#eceae5;--dim:#959087;--line:#2e2b27;--card:#1f1d1a;--up:#5fbf80;--down:#e0745a;--accent:#e08a3c}}
+:root{--bg:#f6f5f2;--fg:#1b1a18;--dim:#6b6862;--line:#ddd9d2;--card:#fff;--up:#1f7a3d;--down:#a3341f;--accent:#b3541e;--void:#e8e4dc}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#161513;--fg:#eceae5;--dim:#959087;--line:#2e2b27;--card:#1f1d1a;--up:#5fbf80;--down:#e0745a;--accent:#e08a3c;--void:#0e0d0c}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
 .wrap{max-width:104rem;margin:0 auto;padding:1.25rem 1.5rem 3rem}
@@ -63,7 +63,8 @@ h1{font-size:1.05rem;margin:0;font-weight:650;letter-spacing:-.01em}
 section{background:var(--card);border:1px solid var(--line);border-radius:.5rem;padding:.85rem .95rem;min-width:0}
 section>*{min-width:0}
 h2{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:0 0 .6rem;font-weight:600}
-.lead{font-size:.88rem;margin:0 0 .7rem;font-weight:500}
+.lead{font-size:.88rem;margin:0 0 .45rem;font-weight:500}
+.carry{font-size:.82rem;margin:0 0 .7rem;color:var(--dim);border-left:2px solid var(--accent);padding-left:.55rem}
 .figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(8rem,1fr));gap:.55rem}
 .fig{display:flex;flex-direction:column;gap:.1rem}
 .fig .v{font-size:1.15rem;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em;overflow-wrap:anywhere}
@@ -103,15 +104,26 @@ footer{margin-top:1.25rem;color:var(--dim);font-size:.72rem;border-top:1px solid
    beside it, because a map that scrolls away from the sentence referring to it
    is a picture rather than an instrument. Below 70rem they stack and the map
    takes a fixed height, since sticky against a short viewport hides the text. */
-.split{display:grid;grid-template-columns:minmax(28rem,42fr) minmax(24rem,58fr);gap:1.25rem;align-items:start}
+.split{display:grid;grid-template-columns:minmax(30rem,47fr) minmax(24rem,53fr);gap:1.25rem;align-items:start}
 .mappane{position:sticky;top:1rem;height:calc(100vh - 2rem);display:flex;flex-direction:column;
   background:var(--card);border:1px solid var(--line);border-radius:.5rem;padding:.7rem .8rem;min-width:0}
 .mappane h2{margin-bottom:.4rem}
 .readpane{display:grid;grid-template-columns:repeat(auto-fit,minmax(24rem,1fr));gap:1rem;align-items:start;min-width:0}
-#mapbox{flex:1;min-height:0;position:relative;background:color-mix(in srgb,var(--fg) 4%,transparent);
+#mapbox{flex:1 1 auto;min-height:18rem;position:relative;background:var(--void);
   border-radius:.35rem;color:var(--fg);overflow:hidden;touch-action:none}
-#map{display:block;width:100%;height:100%;cursor:grab}
+/* The two sizes the map keeps in screen pixels rather than in tiles: the ink of
+   a mark, and the height of a label. Both are recomputed by the script on every
+   zoom, because a machine drawn at its true size on a 2655-tile base is a fifth
+   of a pixel and a map of those is a grey smudge. */
+#map{display:block;width:100%;height:100%;cursor:grab;--mk:2.6;--tile:1;--lbl:14}
 #map.dragging{cursor:grabbing}
+#map .fp{fill:currentColor;stroke:currentColor;vector-effect:non-scaling-stroke;
+  stroke-width:calc(var(--mk)*1px);stroke-linejoin:round;paint-order:stroke}
+#map .tile{stroke:currentColor;vector-effect:non-scaling-stroke;
+  stroke-width:calc(var(--tile)*1px);stroke-linejoin:round;paint-order:stroke;shape-rendering:crispEdges}
+#map .lbl{font-size:calc(var(--lbl)*1px);fill:currentColor;paint-order:stroke;stroke:var(--void);
+  stroke-width:calc(var(--lbl)*.3px);stroke-linejoin:round;text-anchor:middle;font-weight:650;
+  letter-spacing:-.01em;pointer-events:none}
 #map .area rect{fill-opacity:.1;stroke-width:2;vector-effect:non-scaling-stroke;stroke-dasharray:6 4}
 #map .area.warn rect{fill:var(--down);stroke:var(--down)}
 #map .area.good rect{fill:var(--up);stroke:var(--up)}
@@ -120,6 +132,10 @@ footer{margin-top:1.25rem;color:var(--dim);font-size:.72rem;border-top:1px solid
 #map g[data-layer].on{pointer-events:auto}
 #map g[data-layer]:not(.on){display:none}
 #map .flash rect{stroke-width:4;fill-opacity:.28}
+#xy{position:absolute;right:.4rem;bottom:.4rem;font-size:.68rem;font-variant-numeric:tabular-nums;
+  color:var(--fg);background:color-mix(in srgb,var(--card) 82%,transparent);border:1px solid var(--line);
+  border-radius:.25rem;padding:.05rem .35rem;pointer-events:none;opacity:0;transition:opacity .12s}
+#mapbox:hover #xy{opacity:1}
 .maptools{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center;margin-bottom:.45rem}
 .maptools button{font:inherit;font-size:.72rem;padding:.12rem .5rem;border:1px solid var(--line);
   border-radius:.3rem;background:var(--card);color:var(--fg);cursor:pointer}
@@ -128,22 +144,33 @@ footer{margin-top:1.25rem;color:var(--dim);font-size:.72rem;border-top:1px solid
 #scalebar{display:flex;align-items:center;gap:.4rem;margin-top:.4rem;color:var(--dim);font-size:.68rem;
   font-variant-numeric:tabular-nums}
 #scalebar .bar{height:.5rem;border:1px solid currentColor;border-top:0}
-.layers{list-style:none;margin:.5rem 0 0;padding:0;display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:.15rem .6rem;max-height:11rem;overflow:auto}
+/* The legend is the map's table of contents, so it is grouped the way a player
+   thinks: the ground, then what is standing on it, then the places a sentence
+   points at. Each entry is one click and carries its own count. */
+.legend-groups{flex:0 0 auto;margin-top:.45rem;display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.1rem .9rem;
+  max-height:15rem;overflow:auto}
+.lgroup h3{font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);
+  margin:.25rem 0 .15rem;font-weight:600}
+.layers{list-style:none;margin:0;padding:0}
 .layers li{margin:0}
-.layers button{display:flex;align-items:baseline;gap:.35rem;width:100%;text-align:left;font:inherit;
-  font-size:.72rem;background:none;border:0;padding:.12rem .2rem;border-radius:.25rem;color:var(--dim);cursor:pointer}
+.layers button{display:flex;align-items:center;gap:.4rem;width:100%;text-align:left;font:inherit;
+  font-size:.73rem;background:none;border:0;padding:.1rem .2rem;border-radius:.25rem;color:var(--dim);cursor:pointer}
 .layers button:hover,.layers button:focus-visible{background:color-mix(in srgb,var(--fg) 7%,transparent)}
 .layers button[aria-pressed=true]{color:var(--fg)}
-.layers .key{width:.7rem;height:.7rem;flex:0 0 auto;align-self:center;opacity:.35}
+.layers button .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.layers .key{width:.62rem;height:.62rem;flex:0 0 auto;opacity:.3}
 .layers button[aria-pressed=true] .key{opacity:1}
 .layers .key.dot{border-radius:50%}
-.layers .key.ring{border-radius:50%;background:none!important;border:2px solid currentColor}
-.layers .key.diamond{transform:rotate(45deg)}
+.layers .key.square{border-radius:.05rem}
+.layers .key.fill{border-radius:.1rem;opacity:.2}
+.layers button[aria-pressed=true] .key.fill{opacity:.65}
 .layers .key.box{border-radius:.1rem;background:none!important;border:1px dashed currentColor}
-.layers .n{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.8}
-.layers .digit{opacity:.45;font-size:.62rem;width:.8rem}
-.layers .miss{display:block;font-size:.62rem;color:var(--down);padding:0 0 .1rem 1.9rem}
+.layers .n{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.75;font-size:.68rem}
+.layers .digit{opacity:.4;font-size:.6rem;width:.7rem;flex:0 0 auto}
+.layers .miss{display:none}
+.layers button[aria-pressed=true]+.miss{display:block;font-size:.62rem;color:var(--dim);
+  padding:0 0 .15rem 1.75rem;line-height:1.25}
 .advice li[data-fx]{cursor:pointer;border-radius:.3rem}
 .advice li[data-fx]:hover,.advice li[data-fx]:focus-visible{background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .advice li[data-fx] b::after{content:" ⌖";color:var(--accent);font-weight:400}
@@ -196,10 +223,32 @@ const SCRIPT = `
     return { s: s, left: r.left + (r.width - vb.w * s) / 2, top: r.top + (r.height - vb.h * s) / 2 };
   }
 
+  // Two sizes the map holds in screen pixels while the view moves under them.
+  //
+  // A mark grows a little as the view closes in, from 3.6 px at the whole base
+  // to 9 px when a chunk fills a quarter of the pane, so a dot is findable at
+  // every zoom without ever pretending to be the machine's real footprint: the
+  // grid is what carries real size. A label is set in tile units computed from
+  // the scale, because text inside a viewBox is measured in tiles and a fixed
+  // font size would be a postage stamp at one zoom and a banner at the next.
+  function ink() {
+    var d = drawn();
+    var px = d.s * chunk;
+    // Far out, the stroke is the entity and has to be thick enough to see; close
+    // in it thins to a hairline so the rectangle underneath is the machine's
+    // real footprint rather than a fat blob. Water and ore get a thinner one:
+    // they are already large shapes and only need their edge closed up.
+    var k = Math.max(0, Math.min(1, (px - 4) / 60));
+    svg.style.setProperty("--mk", (2.6 - 2.1 * k).toFixed(2));
+    svg.style.setProperty("--tile", (1.1 - 0.9 * k).toFixed(2));
+    svg.style.setProperty("--lbl", (13 / d.s).toFixed(2));
+  }
+
   function apply() {
     svg.setAttribute("viewBox", vb.x + " " + vb.y + " " + vb.w + " " + vb.h);
     drawGrid();
     drawScale();
+    ink();
   }
 
   // Chunk lines, generated for the visible range only, and only once a chunk is
@@ -355,7 +404,18 @@ const SCRIPT = `
     if (n >= 1 && n <= toggles.length) setLayer(toggles[n - 1].getAttribute("data-toggle"));
   });
 
-  new ResizeObserver(function () { drawGrid(); drawScale(); }).observe(box);
+  // Where the pointer is, in the save's own tile coordinates, so a place on this
+  // map can be typed into the game rather than eyeballed against it.
+  var xy = document.getElementById("xy");
+  box.addEventListener("pointermove", function (e) {
+    if (!xy) return;
+    var d = drawn();
+    var ux = vb.x + (e.clientX - d.left) / d.s;
+    var uy = vb.y + (e.clientY - d.top) / d.s;
+    xy.textContent = Math.round(ux) + ", " + Math.round(uy);
+  });
+
+  new ResizeObserver(function () { drawGrid(); drawScale(); ink(); }).observe(box);
   apply();
 })();
 `;
@@ -417,32 +477,48 @@ function adviceList(items: Advice[], full: boolean): string {
  * beside it.
  */
 function layerKey(l: MapLayer): string {
-  const style = l.mark === "ring" || l.mark === "box" ? `color:${l.colour}` : `background:${l.colour}`;
+  const style = l.mark === "box" ? `color:${l.colour}` : `background:${l.colour}`;
   return `<span class="key ${l.mark}" style="${style}"></span>`;
 }
+
+const GROUP_TITLES: Array<[LayerGroup, string]> = [
+  ["ground", "The ground"],
+  ["base", "Your base"],
+  ["places", "Places"],
+];
 
 function mapPane(model: MapModel): string {
   const { viewBox: v } = model;
   const groups = model.layers
     .map(
       (l) =>
-        `<g data-layer="${esc(l.id)}" class="${l.on ? "on" : ""}" ` +
+        `<g data-layer="${esc(l.id)}" class="${l.mark} ${l.on ? "on" : ""}" ` +
         `fill="${esc(l.colour)}" color="${esc(l.colour)}">${l.body}</g>`,
     )
     .join("");
 
-  const legend = model.layers
-    .map((l, i) => {
-      const n = l.drawn === l.census ? String(l.drawn) : `${String(l.drawn)} of ${String(l.census)}`;
-      return (
-        `<li><button type="button" data-toggle="${esc(l.id)}" aria-pressed="${l.on ? "true" : "false"}">` +
-        `<span class="digit">${i < 9 ? String(i + 1) : ""}</span>${layerKey(l)}` +
-        `<span>${esc(l.label)}</span><span class="n">${esc(n)}</span></button>` +
-        (l.note ? `<span class="miss">${esc(l.note)}</span>` : "") +
-        `</li>`
-      );
-    })
-    .join("");
+  // The digit shortcut is assigned across the whole list in render order, so the
+  // number beside an entry is the key that toggles it, whichever group it is in.
+  let digit = 0;
+  const legend = GROUP_TITLES.map(([g, title]) => {
+    const items = model.layers.filter((l) => l.group === g);
+    if (items.length === 0) return "";
+    const rows = items
+      .map((l) => {
+        digit += 1;
+        const n = l.drawn === l.census ? String(l.drawn) : `${String(l.drawn)} of ${String(l.census)}`;
+        return (
+          `<li><button type="button" data-toggle="${esc(l.id)}" aria-pressed="${l.on ? "true" : "false"}" ` +
+          `title="${esc(l.note || l.label)}">` +
+          `<span class="digit">${digit <= 9 ? String(digit) : ""}</span>${layerKey(l)}` +
+          `<span class="name">${esc(l.label)}</span><span class="n">${esc(n)}</span></button>` +
+          (l.note ? `<span class="miss">${esc(l.note)}</span>` : "") +
+          `</li>`
+        );
+      })
+      .join("");
+    return `<div class="lgroup"><h3>${esc(title)}</h3><ul class="layers">${rows}</ul></div>`;
+  }).join("");
 
   return (
     `<aside class="mappane"><h2>${esc(model.surface)}</h2>` +
@@ -458,9 +534,9 @@ function mapPane(model: MapModel): string {
     `data-chunk="${String(model.cellTiles)}" preserveAspectRatio="xMidYMid meet">` +
     `<g id="grid" stroke="currentColor" stroke-width="0.5" opacity="0.14"></g>` +
     groups +
-    `</svg></div>` +
+    `</svg><span id="xy"></span></div>` +
     `<div id="scalebar"><span class="bar"></span><span class="txt"></span></div>` +
-    `<ul class="layers">${legend}</ul>` +
+    `<div class="legend-groups">${legend}</div>` +
     `</aside>`
   );
 }
@@ -526,6 +602,7 @@ export function renderPage(input: PageInput): string {
     cards.push(
       `<section data-section="${esc(v.id)}"><h2>${esc(v.title)}</h2>` +
         `<p class="lead">${esc(v.lead)}</p>` +
+        (v.carry ? `<p class="carry">${esc(v.carry)}</p>` : "") +
         (v.figures.length > 0
           ? `<div class="figs">` +
             v.figures.map((x) => fig(x.value, src, x.field, x.label, x.tone ?? "")).join("") +
@@ -536,9 +613,6 @@ export function renderPage(input: PageInput): string {
         (layer && model
           ? `<button type="button" class="seemap" data-show="${esc(layer)}">` +
             `Show ${esc(v.title.toLowerCase())} on the map</button>`
-          : "") +
-        (v.legend.length > 0
-          ? `<div class="legend">${v.legend.map((l) => `<span>${esc(l)}</span>`).join("")}</div>`
           : "") +
         `</section>`,
     );
