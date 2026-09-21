@@ -1,4 +1,4 @@
-import { machinesFor, runOne } from "./machines.ts";
+import { EMPTY_LOADOUT, machinesFor, multipliers, runOne } from "./machines.ts";
 import type { CraftingMachine, Data } from "./proto.ts";
 import type { Recipe, RecipeIndex } from "./recipes.ts";
 import { flowOf, isLegacyFlows, type GameState } from "./state.ts";
@@ -54,11 +54,15 @@ export interface ChargedRecipe {
   recipe: string;
   /** Machine-equivalents of work this recipe's output implies. */
   busyEquivalent: number;
-  /** The product whose rate set the charge. */
+  /** The product or ingredient whose measured rate set the charge. */
   product: string;
   producedPerMinute: number;
-  /** What one machine of this class makes of that product, per minute. */
+  /** What one machine of this class makes, or eats, of that per minute. */
   perMachinePerMinute: number;
+  /** Crafts a minute the whole base ran of this recipe, across every class. */
+  craftsPerMinute: number;
+  /** How that rate was fixed: a measurement, or the default rule as a fallback. */
+  pin: PinRule;
   /**
    * Why this recipe was attributed to this class.
    *
@@ -217,66 +221,275 @@ function runnable(index: RecipeIndex, researched: Set<string>, r: Recipe): boole
   return r.enabled || index.unlockedBy(r.name).some((t) => researched.has(t));
 }
 
-interface Attribution {
+/** How a recipe's craft rate was fixed, which is the provenance of its charge. */
+export type PinRule = "only-producer" | "only-consumer" | "residual";
+
+/** One recipe the base is running, at the rate its own measurements imply. */
+interface RecipeRun {
   recipe: Recipe;
   pool: CraftingMachine[];
-  rule: "default" | "census";
+  craftsPerMinute: number;
+  /** Capacity-weighted productivity of the pool, from declared machine effects. */
+  productivity: number;
+  pin: PinRule;
+  /** The product or ingredient whose measured rate fixed the craft rate. */
+  by: string;
+  byRate: number;
+  byKind: "made" | "used";
+}
+
+interface Candidate {
+  recipe: Recipe;
+  pool: CraftingMachine[];
+  productivity: number;
+}
+
+function amountOut(r: Recipe, product: string): number {
+  let n = 0;
+  for (const x of r.results) if (x.name === product) n += x.amount;
+  return n;
+}
+
+function amountIn(r: Recipe, product: string): number {
+  let n = 0;
+  for (const x of r.ingredients) if (x.name === product) n += x.amount;
+  return n;
 }
 
 /**
- * Which recipe and which class to charge a product's output to.
+ * The pool's productivity, weighted the same way its work is.
  *
- * First the index's own default rule, which is the same one `ratio` reports.
- * When the class that rule implies is not in the census, the base is plainly
- * making the product some other way, so the choice falls to the candidates a
- * census class can run, ordered by the same terms the default rule uses that are
- * reachable from outside the index: main product first, then how deep in the
- * tech tree, then ingredient count, then name.
+ * Module productivity is invisible in a save, so this is only what the machines
+ * declare in their own prototypes, which for the foundry, the electromagnetic
+ * plant and the biochamber is half again. It matters here because a craft rate
+ * inferred from output has to divide that back out, or a foundry's own bonus
+ * reads as extra crafts.
  */
-function attribute(
+function poolProductivity(
+  r: Recipe,
+  pool: CraftingMachine[],
+  census: Map<string, number>,
+): number {
+  let weight = 0;
+  let total = 0;
+  for (const m of pool) {
+    const w = (census.get(m.name) ?? 0) * m.crafting_speed;
+    weight += w;
+    total += w * multipliers(EMPTY_LOADOUT, r, m).productivity;
+  }
+  return weight > 0 ? total / weight : 1;
+}
+
+/**
+ * Which recipes the base is running, and how fast.
+ *
+ * The old reading charged a product's whole output to one recipe chosen by the
+ * index's default rule, which is a rule about what a player COULD build, not
+ * about what this base did. On Soushi's save that charged every gram of
+ * petroleum gas to basic oil processing, which he barely runs, and overstated
+ * his refineries by a quarter. It also charged heavy oil and sulfuric acid to
+ * nobody, because Space Age declares both raw on planets he has never visited.
+ *
+ * So the mix is solved from the base's own numbers instead, by three facts that
+ * are measurements rather than preferences:
+ *
+ *   - **A craft yields every result and eats every ingredient.** A recipe with a
+ *     result nothing produced, or an ingredient nothing consumed, did not run.
+ *     That is what rules out barrelling, which otherwise "makes" 25000/min of
+ *     water, and it needs no list of recipe names to do it.
+ *   - **A product made by exactly one surviving recipe pins that recipe.** Heavy
+ *     oil is made only by advanced oil processing here, so the advanced rate is
+ *     fixed by the heavy oil rate, and with it the light oil and petroleum that
+ *     the same crafts had to produce.
+ *   - **An ingredient eaten by exactly one surviving recipe pins it too.** Once
+ *     advanced processing is pinned, the crude it did not eat can only have gone
+ *     to basic processing, which fixes that rate in turn.
+ *
+ * Each pin subtracts what it explains, so the next one is decided on what is
+ * left, and the pass repeats until nothing more can be fixed. Whatever is still
+ * open takes its product's residual through the default rule, so nothing is
+ * silently dropped, and every charge carries the rule and the measurement that
+ * produced it.
+ *
+ * The falsifier is independent and the probe uses it: both refinery recipes eat
+ * 100 crude per five seconds, so busy refineries are crude used over 1200 no
+ * matter what the mix is. The solve has to land there and does.
+ */
+function solveMix(
   data: Data,
   index: RecipeIndex,
   census: Map<string, number>,
   researched: Set<string>,
-  product: string,
-): Attribution | { recipe: Recipe | null } {
-  const def = index.defaultFor(product);
-  if (!def) return { recipe: null };
+  flows: Map<string, { kind: "item" | "fluid"; made: number; used: number }>,
+): { runs: RecipeRun[]; makeable: Set<string> } {
+  const made = (n: string): number => flows.get(n)?.made ?? 0;
+  const used = (n: string): number => flows.get(n)?.used ?? 0;
+  const isFluid = (n: string): boolean => flows.get(n)?.kind === "fluid";
 
-  const direct = poolFor(data, census, def);
-  if (direct.length > 0 && runnable(index, researched, def)) {
-    return { recipe: def, pool: direct, rule: "default" };
+  const survivors: Candidate[] = [];
+  for (const r of index.all.values()) {
+    if (!index.isProduction(r)) continue;
+    if (!runnable(index, researched, r)) continue;
+    if (r.results.length === 0) continue;
+    const pool = poolFor(data, census, r);
+    if (pool.length === 0) continue;
+    if (r.results.some((x) => made(x.name) <= 0)) continue;
+    if (r.ingredients.some((x) => used(x.name) <= 0)) continue;
+    survivors.push({ recipe: r, pool, productivity: poolProductivity(r, pool, census) });
   }
 
-  const covered = index
-    .productionCandidates(product)
-    .filter((r) => runnable(index, researched, r))
-    .map((r) => ({ r, m: poolFor(data, census, r) }))
-    .filter((x) => x.m.length > 0)
-    .sort(
-      (a, b) =>
-        (a.r.mainProduct === product ? 0 : 1) - (b.r.mainProduct === product ? 0 : 1) ||
-        index.techDepth(a.r) - index.techDepth(b.r) ||
-        a.r.ingredients.length - b.r.ingredients.length ||
-        a.r.name.localeCompare(b.r.name),
-    );
+  const makeable = new Set<string>();
+  for (const c of survivors) for (const x of c.recipe.results) makeable.add(x.name);
 
-  const first = covered[0];
-  if (!first) return { recipe: def };
-  return { recipe: first.r, pool: first.m, rule: "census" };
+  const runs: RecipeRun[] = [];
+  const producedByRuns = (p: string): number =>
+    runs.reduce((n, run) => n + run.craftsPerMinute * amountOut(run.recipe, p) * run.productivity, 0);
+  const consumedByRuns = (p: string): number =>
+    runs.reduce((n, run) => n + run.craftsPerMinute * amountIn(run.recipe, p), 0);
+
+  let open = [...survivors];
+
+  /**
+   * How many times a recipe can have run, from its own measurements.
+   *
+   * Every measured quantity it touches is a ceiling: a craft yields each result
+   * and eats each ingredient, so the recipe cannot have run more times than the
+   * tightest of them allows, counting only what recipes already fixed have not
+   * already explained. The tightest one is the answer, and it is named in the
+   * charge so the figure can be checked against the save.
+   *
+   * **Only fluid ingredients count, and that is the load-bearing distinction.**
+   * An item's consumption is not a statement about recipes: it counts fuel
+   * burned, entities built, hand-crafting, and it says nothing about what came
+   * out of a chest. Coal reads as consumed at 988/min on a base whose plastic
+   * line eats a fraction of that, the rest going into boilers, furnaces and
+   * locomotives. Worse, over an hour the items need not balance at all: this
+   * save consumed 1721/min of iron plate while the recipes running on it needed
+   * about 2056, because it is drawing the difference out of chests, and bounding
+   * by that pool charged the steel line at 203 crafts a minute where its own
+   * output says 286. A fluid has none of those escapes. It is not burned here,
+   * not built, not hand-crafted and not kept in a chest, so what was consumed is
+   * what recipes consumed, and where it is buffered in a tank or voided the
+   * figure only goes up, which loosens the bound rather than tightening it
+   * wrongly. Both faults were found by reading the table after the probe passed.
+   */
+  const boundOf = (
+    c: Candidate,
+  ): { crafts: number; by: string; byRate: number; byKind: "made" | "used" } | null => {
+    let best: { crafts: number; by: string; byRate: number; byKind: "made" | "used" } | null = null;
+    for (const res of c.recipe.results) {
+      const per = res.amount * c.productivity;
+      if (per <= 0) continue;
+      const residual = Math.max(0, made(res.name) - producedByRuns(res.name));
+      const crafts = residual / per;
+      if (!best || crafts < best.crafts) {
+        best = { crafts, by: res.name, byRate: residual, byKind: "made" };
+      }
+    }
+    for (const ing of c.recipe.ingredients) {
+      if (ing.amount <= 0 || !isFluid(ing.name)) continue;
+      const residual = Math.max(0, used(ing.name) - consumedByRuns(ing.name));
+      const crafts = residual / ing.amount;
+      if (!best || crafts < best.crafts) {
+        best = { crafts, by: ing.name, byRate: residual, byKind: "used" };
+      }
+    }
+    return best;
+  };
+
+  /**
+   * Whether the base's numbers single this recipe out, and how.
+   *
+   * Being the only surviving maker of a product, or the only surviving eater of
+   * an ingredient, is what makes a rate attributable at all. It decides which
+   * recipe to fix next; `boundOf` decides at what rate.
+   */
+  const pinRuleFor = (c: Candidate): PinRule | null => {
+    for (const res of c.recipe.results) {
+      if (open.filter((x) => amountOut(x.recipe, res.name) > 0).length !== 1) continue;
+      if (made(res.name) - producedByRuns(res.name) > 0) return "only-producer";
+    }
+    for (const ing of c.recipe.ingredients) {
+      if (!isFluid(ing.name)) continue;
+      if (open.filter((x) => amountIn(x.recipe, ing.name) > 0).length !== 1) continue;
+      if (used(ing.name) - consumedByRuns(ing.name) > 0) return "only-consumer";
+    }
+    return null;
+  };
+
+  for (;;) {
+    let progress = false;
+    for (const c of open) {
+      const pin = pinRuleFor(c);
+      if (!pin) continue;
+      const bound = boundOf(c);
+      open = open.filter((x) => x !== c);
+      progress = true;
+      if (bound && bound.crafts > 0) {
+        runs.push({
+          recipe: c.recipe,
+          pool: c.pool,
+          productivity: c.productivity,
+          craftsPerMinute: bound.crafts,
+          pin,
+          by: bound.by,
+          byRate: bound.byRate,
+          byKind: bound.byKind,
+        });
+      }
+      break;
+    }
+    if (!progress) break;
+  }
+
+  // What the propagation could not fix: several open recipes still share every
+  // product and every ingredient, so the base's numbers do not tell them apart.
+  // Their products' leftovers go through the index's default rule, which is a
+  // preference rather than a measurement, and the charge says so.
+  const chosenFor = new Set<string>();
+  for (const product of makeable) {
+    if (made(product) - producedByRuns(product) <= 0) continue;
+    const candidates = open.filter((x) => amountOut(x.recipe, product) > 0);
+    if (candidates.length === 0) continue;
+    chosenFor.add(pickDefault(index, candidates, product).recipe.name);
+  }
+  for (const c of open) {
+    if (!chosenFor.has(c.recipe.name)) continue;
+    const bound = boundOf(c);
+    if (!bound || bound.crafts <= 0) continue;
+    runs.push({
+      recipe: c.recipe,
+      pool: c.pool,
+      productivity: c.productivity,
+      craftsPerMinute: bound.crafts,
+      pin: "residual",
+      by: bound.by,
+      byRate: bound.byRate,
+      byKind: bound.byKind,
+    });
+  }
+
+  return { runs, makeable };
 }
 
-function isAttributed(x: Attribution | { recipe: Recipe | null }): x is Attribution {
-  return "pool" in x;
-}
-
-/** One recipe, the classes that could run it, and every product the base reports. */
-interface Group {
-  recipe: Recipe;
-  pool: CraftingMachine[];
-  rule: "default" | "census";
-  /** product -> made per minute, for the products this recipe yields. */
-  products: Map<string, number>;
+/**
+ * The index's default rule, applied to the candidates still open.
+ *
+ * Same terms the index uses, minus its chain-depth one, which is private to it:
+ * a recipe whose main product is the target beats one making it as a byproduct,
+ * then shallower in the tech tree, then fewer ingredients, then the name.
+ */
+function pickDefault(index: RecipeIndex, candidates: Candidate[], product: string): Candidate {
+  const preferred = index.defaultFor(product);
+  const exact = preferred ? candidates.find((c) => c.recipe.name === preferred.name) : undefined;
+  if (exact) return exact;
+  return [...candidates].sort(
+    (a, b) =>
+      (a.recipe.mainProduct === product ? 0 : 1) - (b.recipe.mainProduct === product ? 0 : 1) ||
+      index.techDepth(a.recipe) - index.techDepth(b.recipe) ||
+      a.recipe.ingredients.length - b.recipe.ingredients.length ||
+      a.recipe.name.localeCompare(b.recipe.name),
+  )[0]!;
 }
 
 export function bottlenecks(
@@ -320,82 +533,72 @@ export function bottlenecks(
 
   // ---- Reading 1: machine-class utilisation -------------------------------
 
-  const groups = new Map<string, Group>();
-  const unattributed: Unattributed[] = [];
-
-  for (const [product, m] of made) {
-    const a = attribute(data, index, census, researched, product);
-    if (!isAttributed(a)) {
-      unattributed.push({
-        product,
-        producedPerMinute: m.perMinute,
-        recipe: a.recipe?.name ?? null,
-        couldRun: a.recipe ? machinesFor(data, a.recipe).map((x) => x.name) : [],
-        alsoMadeBy: a.recipe
-          ? []
-          : index
-              .producersOf(product)
-              .filter(
-                (r) => poolFor(data, census, r).length > 0 && runnable(index, researched, r),
-              )
-              .map((r) => r.name),
-        machinePlaced: a.recipe ? poolFor(data, census, a.recipe).length > 0 : false,
-        recipeResearched: a.recipe ? runnable(index, researched, a.recipe) : false,
-        reason: a.recipe ? "not-runnable" : "raw",
-      });
-      continue;
-    }
-    const g = groups.get(a.recipe.name) ?? {
-      recipe: a.recipe,
-      pool: a.pool,
-      rule: a.rule,
-      products: new Map<string, number>(),
-    };
-    g.products.set(product, m.perMinute);
-    groups.set(a.recipe.name, g);
-  }
+  const { runs, makeable } = solveMix(data, index, census, researched, flows);
 
   const chargedByClass = new Map<string, ChargedRecipe[]>();
-  for (const g of groups.values()) {
-    const split = shares(g.pool, census);
-    const names = g.pool.map((m) => m.name);
+  for (const run of runs) {
+    if (run.craftsPerMinute <= 0) continue;
+    const split = shares(run.pool, census);
+    const names = run.pool.map((m) => m.name);
+    // Whether the index's default rule would have picked this recipe for any
+    // product it makes. A row tagged otherwise is one the mix solve chose and
+    // the old reading would have missed, which is exactly the interesting case.
+    const isDefault = run.recipe.results.some(
+      (x) => index.defaultFor(x.name)?.name === run.recipe.name,
+    );
 
-    for (const machine of g.pool) {
+    for (const machine of run.pool) {
       const share = split.get(machine.name) ?? 0;
       if (share <= 0) continue;
 
-      // One machine of this class, running this recipe with no modules. The
-      // machine's own declared effects are applied because they are prototype
-      // fields: a foundry carries +50% productivity in the building itself.
-      const run = runOne(data, g.recipe, machine);
+      // One machine of this class running this recipe, with the machine's own
+      // declared effects and no modules, because a save reports no loadouts.
+      const one = runOne(data, run.recipe, machine);
+      const craftsPerMachine = one.craftsPerSecond * 60;
+      if (craftsPerMachine <= 0) continue;
 
-      // A craft yields every result at once, so the products of one recipe are
-      // not separate work. The binding one is the largest implied machine count,
-      // not the sum: summing would charge one refinery craft three times, once
-      // per fluid it comes out of.
-      let best: ChargedRecipe | null = null;
-      for (const [product, perMinute] of g.products) {
-        const perMachine = (run.outputPerSecond.get(product) ?? 0) * 60;
-        if (perMachine <= 0) continue;
-        const busy = (perMinute / perMachine) * share;
-        if (!best || busy > best.busyEquivalent) {
-          best = {
-            recipe: g.recipe.name,
-            busyEquivalent: busy,
-            product,
-            producedPerMinute: perMinute,
-            perMachinePerMinute: perMachine,
-            rule: g.rule,
-            pool: names,
-            share,
-          };
-        }
-      }
-      if (!best) continue;
-      const list = chargedByClass.get(machine.name) ?? [];
-      list.push(best);
-      chargedByClass.set(machine.name, list);
+      chargedByClass.set(machine.name, [
+        ...(chargedByClass.get(machine.name) ?? []),
+        {
+          recipe: run.recipe.name,
+          busyEquivalent: (run.craftsPerMinute / craftsPerMachine) * share,
+          craftsPerMinute: run.craftsPerMinute,
+          pin: run.pin,
+          product: run.by,
+          producedPerMinute: run.byRate,
+          perMachinePerMinute:
+            run.byKind === "made"
+              ? (one.outputPerSecond.get(run.by) ?? 0) * 60
+              : amountIn(run.recipe, run.by) * craftsPerMachine,
+          rule: isDefault ? "default" : "census",
+          pool: names,
+          share,
+        },
+      ]);
     }
+  }
+
+  // What the base made that no machine class accounts for. After the mix solve
+  // this is the mining and pumping end plus anything the base cannot make with
+  // the machines and the research it has, which is a gap worth naming rather
+  // than a number to invent.
+  const unattributed: Unattributed[] = [];
+  for (const [product, m] of made) {
+    if (makeable.has(product)) continue;
+    const producers = index.genuineProducersOf(product);
+    const best = index.defaultFor(product) ?? producers[0] ?? null;
+    unattributed.push({
+      product,
+      producedPerMinute: m.perMinute,
+      recipe: producers.length > 0 ? (best?.name ?? producers[0]!.name) : null,
+      couldRun: best ? machinesFor(data, best).map((x) => x.name) : [],
+      alsoMadeBy: producers
+        .filter((r) => poolFor(data, census, r).length > 0 && runnable(index, researched, r))
+        .map((r) => r.name),
+      machinePlaced: best ? poolFor(data, census, best).length > 0 : false,
+      recipeResearched: best ? runnable(index, researched, best) : false,
+      reason: producers.length === 0 || index.isRaw(product) ? "raw" : "not-runnable",
+    });
   }
 
   const utilisation: ClassUtilisation[] = [];
@@ -539,7 +742,7 @@ export function bottlenecks(
         `${first.busyEquivalent.toFixed(1)} machines' worth of crafting against ` +
         `${first.count} placed.${tight}`,
     };
-  } else if (busiest && worst && worst.sparePerMinute < 0 && index.isRaw(worst.name)) {
+  } else if (busiest && worst && worst.sparePerMinute < 0 && !makeable.has(worst.name)) {
     // Floor and add one, so the ceiling stated is always above the measurement
     // rather than equal to it.
     const under = Math.floor(busiest.fraction * 100) + 1;
@@ -570,8 +773,11 @@ export function bottlenecks(
   const limits = [
     "The census counts prototypes, not loadouts. A save read reports no modules, so a class running speed modules reads over 100% busy and one running productivity modules reads busier than its machines really are. Neither is corrected, because nothing in the save says which machine holds what.",
     "A machine's own declared effects ARE applied: the foundry, the electromagnetic plant and the biochamber carry productivity in the prototype itself, and that is a snapshot field rather than a guess.",
-    "Work is charged through each product's default recipe, or the best one a class in the census can run when the default needs a machine this base has none of. Where the real line runs a different recipe, the charge is off by whatever the two differ by, so every row names the recipe it charged.",
+    "Which recipes are running is solved from the base's own rates, not chosen by preference: a recipe with a result nothing produced or an ingredient nothing consumed did not run, a product made by only one surviving recipe fixes that recipe, and a fluid eaten by only one fixes it too. Every charge names the measurement that bound it. Where the numbers cannot tell two recipes apart, the leftover goes through the index's default rule and the row says so.",
+    "A craft rate is bounded by the recipe's own output and by its fluid inputs, never by an item input. An item's consumption counts fuel burned, entities built and hand-crafting, and over an hour it need not balance at all, because a base short of ore is drawing the difference out of chests.",
+    "Rawness is decided here rather than in the recipe index, because it is a property of a base: the index still reports heavy oil and sulfuric acid raw, since Space Age yields both on planets he has not reached, and `ratio` is right to answer that way for a player free to go anywhere. A product counts as raw HERE only when nothing he has placed, with the research he has, makes it.",
     "Where several classes could have run a recipe, the work is split between them by crafting capacity, which is count times crafting speed. A save read says nothing about which machine ran which recipe, so classes sharing a recipe report the same busy fraction. That is the honest answer, not a coincidence: 17 steel furnaces and 513 electric furnaces on one smelting category cannot be told apart from a save.",
+    "A recipe whose byproduct nothing produced is dropped whole, so a product made alongside something the base voids is charged to nobody and shows up as a gap rather than as a wrong number.",
     "A machine placed but unpowered, unfed or idle still counts in the denominator. That is the point: it is what makes a starved class read low.",
     "Mining drills, labs, boilers and turrets are not crafting machines and are charged nothing here. `bun run advise` reports lab utilisation; the mining end shows up in the tightness table as an ore rate.",
     "Both readings are the engine's one-hour rolling averages as of the tick in the header, not what the base is doing right now.",

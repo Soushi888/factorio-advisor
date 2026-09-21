@@ -172,12 +172,38 @@ export class RecipeIndex {
     return this.producers.get(product) ?? [];
   }
 
+  /** True when this recipe is a way to make something, not recycling or a stub. */
+  isProduction(r: Recipe): boolean {
+    return !NON_PRODUCTION_CATEGORIES.has(r.category);
+  }
+
+  /**
+   * Recipes that genuinely yield this product, whether or not the snapshot also
+   * declares the product raw.
+   *
+   * `productionCandidates` answers a question about the game: what could make
+   * this, for a player free to go anywhere. This answers a narrower one about
+   * the product itself: what yields it at all. The two differ on exactly the
+   * products Space Age declares raw somewhere the player may never go, heavy oil
+   * because Fulgora has an oil ocean and sulfuric acid because Vulcanus has a
+   * geyser, and a base making both in buildings on Nauvis needs the second
+   * question. Which of them is raw HERE is the caller's to decide, because the
+   * census and the researched set are the only things that can answer it and
+   * this index holds neither.
+   */
+  genuineProducersOf(product: string): Recipe[] {
+    return this.producersOf(product).filter((r) => this.isProduction(r));
+  }
+
+  /** Recipes that genuinely consume this product, recycling excluded. */
+  genuineConsumersOf(product: string): Recipe[] {
+    return this.consumersOf(product).filter((r) => this.isProduction(r));
+  }
+
   /** The recipes that are a genuine way to make this product. */
   productionCandidates(product: string): Recipe[] {
     if (this.rawProducts.has(product)) return [];
-    return this.producersOf(product).filter(
-      (r) => !NON_PRODUCTION_CATEGORIES.has(r.category),
-    );
+    return this.genuineProducersOf(product);
   }
 
   isRaw(product: string): boolean {
