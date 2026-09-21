@@ -1,4 +1,5 @@
 import { entityModules, type BpEntity, type Blueprint } from "./blueprint.ts";
+import { place } from "./draw.ts";
 import { runOne, type MachineRun, type ModuleLoadout } from "./machines.ts";
 import type { BeaconProto, CraftingMachine, Data, ModuleProto, Proto } from "./proto.ts";
 import { normalise, type RecipeIndex } from "./recipes.ts";
@@ -21,20 +22,24 @@ export interface Box {
   y2: number;
 }
 
-/** Footprint in tiles, from the prototype's selection box. */
-function footprint(proto: Proto | null, at: { x: number; y: number }): Box {
-  let hw = 0.5;
-  let hh = 0.5;
-  const sel = proto?.["selection_box"];
-  if (Array.isArray(sel) && sel.length === 2) {
-    const [a, b] = sel as [unknown, unknown];
-    if (Array.isArray(a) && Array.isArray(b)) {
-      hw = Math.max(Math.abs(Number(a[0])), Math.abs(Number(b[0])));
-      hh = Math.max(Math.abs(Number(a[1])), Math.abs(Number(b[1])));
-    }
-  }
-  return { x1: at.x - hw, y1: at.y - hh, x2: at.x + hw, y2: at.y + hh };
-}
+/**
+ * Where a placed entity sits and how big it is: `place` from the drawing layer,
+ * which is the one reader of `selection_box` for a print (bus#10).
+ *
+ * This file used to resolve the box itself and got it wrong twice on the same
+ * line. It looked the prototype up by name with no class preference, so a name
+ * carried by an item, a recipe and an entity handed back the item, an item
+ * declares no selection box, and a crusher that occupies 2 by 3 measured 1 by 1.
+ * And it never read the entity's direction, so the same crusher facing East was
+ * tested for beacon reach against an unrotated box: a beacon 3 tiles past its
+ * real edge reached it in game and not here. Both mattered to the same two
+ * numbers, the printed size and which beacons cover a machine.
+ *
+ * Deferring to `place` rather than fixing the arithmetic here is the point. The
+ * page draws every entity at that box, so if the audit computed its own the two
+ * could disagree about one machine's size while both looked right alone. Now a
+ * disagreement is impossible rather than merely unlikely.
+ */
 
 function overlaps(a: Box, b: Box): boolean {
   return a.x1 < b.x2 && a.x2 > b.x1 && a.y1 < b.y2 && a.y2 > b.y1;
@@ -133,7 +138,7 @@ export function audit(
         if (!proto) continue;
         for (let i = 0; i < use.count; i++) mods.push(proto);
       }
-      const box = footprint(beacon, e.position);
+      const box = place(data, e).box;
       const d = typeof beacon.supply_area_distance === "number"
         ? beacon.supply_area_distance
         : 0;
@@ -171,7 +176,7 @@ export function audit(
       for (let i = 0; i < use.count; i++) mods.push(proto);
     }
 
-    const box = footprint(machine, e.position);
+    const box = place(data, e).box;
     const covering = beacons.filter((b) => overlaps(b.reach, box));
     const loadout: ModuleLoadout = {
       modules: mods,
@@ -231,7 +236,7 @@ export function audit(
 
   let bounds: Box | null = null;
   for (const e of entities) {
-    const b = footprint(data.find(e.name), e.position);
+    const b = place(data, e).box;
     bounds = bounds
       ? {
           x1: Math.min(bounds.x1, b.x1),
