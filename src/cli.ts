@@ -1,8 +1,10 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { formatWatts } from "./energy.ts";
 import { readManifest, sync, type Manifest } from "./dump.ts";
 import { load, type Data } from "./proto.ts";
 import { RecipeIndex } from "./recipes.ts";
+import { PROJECT_ROOT } from "./paths.ts";
 import { machinesFor, multipliers, parseModules, runOne, type ModuleLoadout } from "./machines.ts";
 import { parseRate, solve } from "./solve.ts";
 import { beltOptions, inserterCeilings } from "./belts.ts";
@@ -11,7 +13,9 @@ import { decode, flatten, describeKind } from "./blueprint.ts";
 import { audit, byRecipe, type AuditResult } from "./audit.ts";
 import { judge } from "./target.ts";
 import { beltFor, buildRow } from "./layout.ts";
-import { flowOf, newestSave, readState, readStateFile, type GameState } from "./state.ts";
+import { flowOf, newestSave, readState, readStateFile, slugify, type GameState } from "./state.ts";
+import { busAreas, judge as judgeBus, readSurvey, surveyPath, type BusReport } from "./bus.ts";
+import { mapOf, renderMap, type Area } from "./map.ts";
 import { advise, type Advisory, type Requirement } from "./advise.ts";
 import { gateFor, pathFromHere, researchable } from "./next.ts";
 import { effectiveGeneration, powerReport, solarAverageFactor } from "./power.ts";
@@ -1671,6 +1675,7 @@ function usage(): void {
   bun run power                           generation against draw, from your census
   bun run gen <item> --rate=<n>           lay one recipe step out as a placeable row
   bun run advise [--spm=<n>]              where the base stands and what the next step costs
+  bun run bus [--save=<name>] [--map]     the belt survey: buses, lanes, saturation, corridors
 
 Flags for ratio:
   --rate=45 | 90/m | 5400/h               target output rate
@@ -1849,6 +1854,237 @@ function cmdAdvise(args: Args): void {
   );
 }
 
+/**
+ * `bun run bus`: the belt survey, and what it says about the base (C26, C27, C30).
+ *
+ * The survey is collected by the same save copy the state read uses, so the
+ * default path launches the engine once and answers both. `--reuse` re-reads
+ * the last survey on disk, which is what a second question about the same save
+ * should do. `--map` additionally writes the corridors onto the base map.
+ */
+async function cmdBus(args: Args): Promise<void> {
+  const flagged = args.flags.get("save");
+  const named = flagged && flagged !== "true" ? flagged : args.positional.join(" ");
+  const newest = named.trim() ? null : newestSave();
+  const save = (named.trim() || newest?.name || "").trim();
+  if (!save) {
+    throw new Error("No save found to read. Name one with --save=<name>.");
+  }
+
+  // `--reuse` answers a second question about the same save without launching
+  // the engine again. The state file is read by name rather than through
+  // `requireState`, because the name may have arrived as a positional.
+  const reuse = args.flags.get("reuse") === "true";
+  let state: GameState;
+  if (reuse) {
+    const onFile = readStateFile(save);
+    if (!onFile) {
+      throw new Error(
+        `No state on file for "${save}". Read it first:\n  bun run bus --save="${save}"`,
+      );
+    }
+    state = onFile;
+  } else {
+    state = await readState({ save, belts: true });
+  }
+
+  const surveys = readSurvey(save);
+  if (!surveys || surveys.length === 0) {
+    throw new Error(
+      `No belt survey for "${save}" at ${surveyPath(save)}.\n` +
+        `Run without --reuse to collect one: bun run bus --save="${save}"`,
+    );
+  }
+
+  // A survey and a state file from two different ticks are two different bases,
+  // and every saturation figure here divides one by the other. Reported rather
+  // than worked around: the save moved while the survey sat on disk, which is
+  // exactly what happens when Soushi keeps playing between questions.
+  const surveyTick = surveys[0]?.tick ?? 0;
+  if (surveyTick !== state.save.tick) {
+    throw new Error(
+      `The belt survey on file is tick ${String(surveyTick)} and the state is tick ` +
+        `${String(state.save.tick)}: two different bases.\n` +
+        `Every saturation figure divides a rate from one by a lane count from the other,\n` +
+        `so this refuses rather than printing a number nothing supports.\n` +
+        `  bun run bus --save="${save}"   collects both from one read.`,
+    );
+  }
+
+  const data = load();
+  console.log(header(data.manifest));
+  console.log(stateHeader(state));
+
+  for (const survey of surveys) {
+    if (survey.belts.length === 0) continue;
+    const report = judgeBus(survey, state, data);
+    printBus(report, survey.surface);
+    if (args.flags.get("map") === "true") writeBusMap(report, state, survey.surface);
+  }
+}
+
+function printBus(report: BusReport, surface: string): void {
+  console.log(heading(`The belts on ${surface}`));
+  console.log(
+    indent(1) +
+      `${report.beltsSurveyed} belt entities, ${report.runs} straight runs, ` +
+      `${report.looseBelts} in runs too short to be a lane ` +
+      `(${share(report.looseBelts / Math.max(1, report.beltsSurveyed))} not in a lane).`,
+  );
+
+  if (report.buses.length === 0) {
+    console.log(indent(1) + "No bus: no cluster of parallel lanes long enough to be one.");
+  }
+  for (const [i, bus] of report.buses.entries()) {
+    const axis = bus.axis === "vertical" ? "north-south" : "east-west";
+    console.log(
+      sub(
+        `Bus ${i + 1}: ${bus.lanes.length} lanes, ${axis}, ` +
+          `${Math.abs(bus.to - bus.from).toFixed(0)} tiles, ` +
+          `across ${bus.spanFrom.toFixed(0)} to ${bus.spanTo.toFixed(0)}`,
+      ),
+    );
+    console.log(
+      table(
+        [
+          { header: "at", align: "right" },
+          { header: "carries" },
+          { header: "tiles", align: "right" },
+          { header: "slowest tier" },
+          { header: "full", align: "right" },
+          { header: "note" },
+        ],
+        bus.lanes
+          .slice()
+          .sort((a, b) => a.run.fixed - b.run.fixed)
+          .map((lane) => [
+            lane.run.fixed.toFixed(0),
+            lane.item ?? "(empty)",
+            lane.run.length.toFixed(0),
+            lane.slowestTier,
+            share(lane.density),
+            lane.pinchTiles > 0 ? `${lane.pinchTiles} slow tiles` : lane.contaminated > 0 ? `${lane.contaminated} mixed` : "",
+          ]),
+      ),
+    );
+  }
+
+  if (report.items.length > 0) {
+    console.log(heading("What the lanes carry against what you make"));
+    console.log(
+      table(
+        [
+          { header: "item" },
+          { header: "lanes", align: "right" },
+          { header: "carry/min", align: "right" },
+          { header: "made/min", align: "right" },
+          { header: "used/min", align: "right" },
+          { header: "full", align: "right" },
+          { header: "using", align: "right" },
+        ],
+        report.items.map((v) => [
+          v.item,
+          String(v.lanes),
+          num(v.capacityPerMinute, 0),
+          num(v.producedPerMinute, 0),
+          num(v.consumedPerMinute, 0),
+          share(v.density),
+          v.capacityPerMinute > 0 ? share(v.producedPerMinute / v.capacityPerMinute) : "",
+        ]),
+      ),
+    );
+    console.log(
+      bullet([
+        "a lane is ONE SIDE of a belt: two lanes of the same item is one full belt.",
+        "carry/min is those lanes at the tier actually placed, not the tier you could place.",
+        "full is the lane's own occupancy from the engine's transport line contents;",
+        "a full lane is held back downstream, an empty one upstream.",
+      ]),
+    );
+  }
+
+  if (report.findings.length > 0) {
+    console.log(heading("Findings"));
+    for (const [i, f] of report.findings.entries()) {
+      console.log(`\n${indent(1)}${i + 1}. ${f.text}\n${indent(2)}${f.because}`);
+    }
+  }
+}
+
+/**
+ * The corridors drawn on the base map (C30).
+ *
+ * Nothing is computed here: `busAreas` converts the clusters the survey already
+ * found into the `Area` shape `renderMap` already takes, and the page is the SVG
+ * with its legend. The file goes under `.local/`, which is this project's own
+ * scratch directory and is gitignored, never into a game directory.
+ */
+function writeBusMap(report: BusReport, state: GameState, surface: string): void {
+  const map = mapOf(state, surface);
+  if (!map) {
+    console.log(
+      `\n${indent(1)}No map in this state file, so no corridors were drawn.\n` +
+        `${indent(1)}Re-read the save to collect one: bun run state --save="${state.save.name}"`,
+    );
+    return;
+  }
+
+  const areas = busAreas(report);
+  const svg = renderMap(map, {
+    base: true,
+    points: [{ names: ["train-stop"], colour: "#c9a227", radius: 3 }],
+    areas,
+    size: 900,
+  });
+
+  const dir = join(PROJECT_ROOT, ".local");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `bus-map-${slugify(state.save.name)}-${String(state.save.tick)}.html`);
+  writeFileSync(file, busPage(svg, areas, state, surface));
+  console.log(`\n${indent(1)}corridors drawn: ${file}`);
+}
+
+function busPage(svg: string, areas: Area[], state: GameState, surface: string): string {
+  const rows = areas
+    .map((a) => `<li><b>${escapeHtml(a.label)}</b><br><span class="c">at ${a.x.toFixed(0)}, ${a.y.toFixed(0)}, ${a.w.toFixed(0)} by ${a.h.toFixed(0)} tiles</span></li>`)
+    .join("");
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Bus corridors: ${escapeHtml(state.save.name)}</title>
+<style>
+  :root { color-scheme: dark; --bg:#14161a; --fg:#d8dde3; --dim:#8b949e; --line:#262b33; }
+  body { margin:0; padding:2rem; background:var(--bg); color:var(--fg);
+         font:15px/1.6 ui-sans-serif, system-ui, sans-serif; }
+  main { max-width: 74rem; margin: 0 auto; }
+  h1 { font-size:1.5rem; margin:0 0 .25rem; }
+  p.meta { color:var(--dim); margin:0 0 2rem; }
+  .map { background:#0f1114; border:1px solid var(--line); border-radius:8px; color:#5a6270; }
+  ul { list-style:none; padding:0; margin:2rem 0 0;
+       display:grid; gap:.75rem; grid-template-columns:repeat(auto-fit,minmax(22rem,1fr)); }
+  li { border:1px solid var(--line); border-radius:6px; padding:.75rem 1rem; }
+  .c { color:var(--dim); font-size:.85em; }
+</style></head>
+<body><main>
+<h1>Bus corridors on ${escapeHtml(surface)}</h1>
+<p class="meta">Save "${escapeHtml(state.save.name)}" at tick ${String(state.save.tick)},
+${state.save.hoursPlayed.toFixed(1)} hours played, read ${escapeHtml(state.save.readAt.slice(0, 16).replace("T", " "))}.
+Every rectangle is a cluster of parallel belt runs the survey found; nothing here is drawn from a guess,
+and no position on this page is advice about where to build.</p>
+${svg}
+<ul>${rows}</ul>
+</main></body></html>
+`;
+}
+
+/** A share of a whole, which unlike a delta never carries a sign. */
+function share(v: number): string {
+  return `${num(v * 100, 0)}%`;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const command = argv[0];
@@ -1890,6 +2126,9 @@ async function main(): Promise<void> {
       break;
     case "advise":
       cmdAdvise(args);
+      break;
+    case "bus":
+      await cmdBus(args);
       break;
     default:
       usage();

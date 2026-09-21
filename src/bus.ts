@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { DATA_DIR } from "./paths.ts";
 import { beltItemsPerSecond, beltItemsPerTile } from "./belts.ts";
 import { EAST, NORTH, SOUTH, WEST } from "./layout.ts";
+import type { Area } from "./map.ts";
 import type { Data, Proto } from "./proto.ts";
 import { flowOf, slugify, type GameState } from "./state.ts";
 
@@ -589,131 +590,76 @@ function findingsOf(buses: Bus[], items: ItemVerdict[], survey: Survey, runs: Ru
 }
 
 /**
- * The command, kept in this module rather than in `cli.ts`.
+ * The buses as tile-space rectangles, for the base map (C30).
  *
- * `cli.ts` is the toolkit's one entry point and it stays that way; this main is
- * here because the file was dirty under a concurrent session when the module
- * landed, and wiring it is a one-case change somebody else owns. Run it as
- * `bun src/bus.ts --save="game 4"` until then.
+ * A bus is already a rectangle: lanes run along one axis between two fixed
+ * coordinates, and the cluster spans the columns between its first and last
+ * lane. So this converts and labels, and adds no geometry of its own. The
+ * renderer's `Area` is the same shape `powerBlocks` and `patches` produce.
+ *
+ * The label carries what the corridor is rather than that it exists: how many
+ * lanes, the three items holding the most of them, and how much of the carrying
+ * capacity the base's own production actually uses. `tone` follows that last
+ * figure, because a corridor built twenty times wider than the factory feeding
+ * it is the finding, not the corridor.
  */
-function renderReport(report: BusReport, state: GameState): string {
-  const lines: string[] = [];
-  const s = state.snapshot;
-  lines.push(
-    `snapshot: Factorio ${s.gameVersion} build ${s.build} [${s.mods.map((m) => m.name).join(", ")}]`,
-  );
-  lines.push(
-    `state: save "${state.save.name}" at tick ${state.save.tick} ` +
-      `(${state.save.hoursPlayed.toFixed(1)} h played), surface ${report.surface}`,
-  );
-
-  lines.push(`\nThe belts\n=========`);
-  lines.push(
-    `  ${report.beltsSurveyed} belt entities, ${report.runs} straight runs, ` +
-      `${report.looseBelts} of them in runs shorter than ${MIN_LANE_TILES} tiles ` +
-      `(${((report.looseBelts / Math.max(1, report.beltsSurveyed)) * 100).toFixed(0)}% not in a lane).`,
-  );
-
-  if (report.buses.length === 0) {
-    lines.push(`  No bus found: no cluster of ${MIN_BUS_LANES} parallel lanes.`);
+export function busAreas(report: BusReport): Area[] {
+  const used = new Map<string, number>();
+  for (const v of report.items) {
+    if (v.capacityPerMinute > 0) used.set(v.item, v.producedPerMinute / v.capacityPerMinute);
   }
+
+  const areas: Area[] = [];
   for (const [i, bus] of report.buses.entries()) {
-    const axis = bus.axis === "vertical" ? "north-south" : "east-west";
-    lines.push(
-      `\nBus ${i + 1}: ${bus.lanes.length} lanes, ${axis}, ` +
-        `${Math.abs(bus.to - bus.from).toFixed(0)} tiles long\n` +
-        `${"-".repeat(60)}`,
-    );
-    lines.push(`  lanes across ${bus.spanFrom.toFixed(0)} to ${bus.spanTo.toFixed(0)}, running ${bus.from.toFixed(0)} to ${bus.to.toFixed(0)}`);
-    const rows = bus.lanes
-      .slice()
-      .sort((a, b) => a.run.fixed - b.run.fixed)
-      .map((lane) => {
-        const at = lane.run.fixed.toFixed(0).padStart(7);
-        const item = (lane.item ?? "(empty)").padEnd(24);
-        const len = lane.run.length.toFixed(0).padStart(6);
-        const tier = lane.slowestTier.replace("transport-belt", "belt").padEnd(20);
-        const full = `${(lane.density * 100).toFixed(0)}%`.padStart(6);
-        const pinch = lane.pinchTiles > 0 ? `  ${lane.pinchTiles} slow tiles` : "";
-        return `  ${at}  ${item}${len}  ${tier}${full}${pinch}`;
-      });
-    lines.push(`  ${"at".padStart(5)}  ${"carries".padEnd(24)}${"tiles".padStart(6)}  ${"slowest tier".padEnd(20)}${"full".padStart(6)}`);
-    lines.push(...rows);
-  }
-
-  if (report.items.length > 0) {
-    lines.push(`\nWhat the lanes carry against what you make\n${"=".repeat(41)}`);
-    lines.push(
-      `  ${"item".padEnd(24)}${"lanes".padStart(6)}${"carry/min".padStart(11)}` +
-        `${"made/min".padStart(10)}${"used/min".padStart(10)}${"full".padStart(7)}`,
-    );
-    for (const v of report.items) {
-      lines.push(
-        `  ${v.item.padEnd(24)}${String(v.lanes).padStart(6)}` +
-          `${v.capacityPerMinute.toFixed(0).padStart(11)}` +
-          `${v.producedPerMinute.toFixed(0).padStart(10)}` +
-          `${v.consumedPerMinute.toFixed(0).padStart(10)}` +
-          `${`${(v.density * 100).toFixed(0)}%`.padStart(7)}`,
-      );
+    const counts = new Map<string, number>();
+    for (const lane of bus.lanes) {
+      for (const stat of lane.run.lanes) {
+        let item: string | null = null;
+        let best = 0;
+        for (const [name, n] of stat.items) if (n > best) [item, best] = [name, n];
+        if (item) counts.set(item, (counts.get(item) ?? 0) + 1);
+      }
     }
-    lines.push(
-      `\n  a lane is ONE SIDE of a belt: two lanes of the same item is one full belt.\n` +
-        `  carry/min is those lanes at the tier actually placed, not the tier you could place.\n` +
-        `  full is how much of the lane's own capacity is occupied, from the engine's\n` +
-        `  own line contents: a full lane is held back downstream, an empty one upstream.`,
-    );
-  }
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
 
-  if (report.findings.length > 0) {
-    lines.push(`\nFindings\n========`);
-    for (const [i, f] of report.findings.entries()) {
-      lines.push(`\n  ${i + 1}. ${f.text}\n     ${f.because}`);
+    // Utilisation of this corridor is its lanes' own utilisation, weighted by
+    // how many lanes each item holds here. An unnamed lane contributes nothing
+    // rather than a zero, so an empty lane does not drag the figure down twice.
+    let weighted = 0;
+    let weight = 0;
+    for (const [item, n] of counts) {
+      const u = used.get(item);
+      if (u === undefined) continue;
+      weighted += u * n;
+      weight += n;
     }
+    const utilisation = weight > 0 ? weighted / weight : 0;
+
+    const along = { from: bus.from, to: bus.to };
+    const across = { from: bus.spanFrom, to: bus.spanTo };
+    const x = bus.axis === "vertical" ? across.from : along.from;
+    const y = bus.axis === "vertical" ? along.from : across.from;
+    const w = bus.axis === "vertical" ? across.to - across.from + 1 : along.to - along.from + 1;
+    const h = bus.axis === "vertical" ? along.to - along.from + 1 : across.to - across.from + 1;
+
+    areas.push({
+      x,
+      y,
+      w,
+      h,
+      label:
+        `Bus ${i + 1}: ${bus.lanes.length} lanes, ` +
+        `${bus.axis === "vertical" ? "north-south" : "east-west"}, ` +
+        `${Math.max(w, h).toFixed(0)} tiles. ` +
+        (top.length > 0
+          ? `Mostly ${top.map(([item, n]) => `${item} x${n}`).join(", ")}. `
+          : "") +
+        `Carrying ${(utilisation * 100).toFixed(0)}% of what these lanes could.`,
+      // A corridor running under a fifth of its capacity is the thing to look
+      // at; one over half is doing its job. The thresholds are a presentation
+      // choice and are stated, not a measurement.
+      tone: utilisation < 0.2 ? "warn" : utilisation > 0.5 ? "good" : "info",
+    });
   }
-  return lines.join("\n");
-}
-
-async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
-  const flags = new Map<string, string>();
-  for (const a of argv) {
-    if (!a.startsWith("--")) continue;
-    const eq = a.indexOf("=");
-    if (eq === -1) flags.set(a.slice(2), "true");
-    else flags.set(a.slice(2, eq), a.slice(eq + 1));
-  }
-
-  const { load } = await import("./proto.ts");
-  const { newestSave, readState, readStateFile } = await import("./state.ts");
-  const save = flags.get("save") ?? newestSave()?.name;
-  if (!save) throw new Error("No save named and none found. Pass --save=<name>.");
-
-  let state: GameState | null = null;
-  if (flags.get("reuse") === "true") {
-    state = readStateFile(save);
-    if (!state) throw new Error(`No state file for "${save}". Run without --reuse first.`);
-  } else {
-    state = await readState({ save, belts: true });
-  }
-
-  const surveys = readSurvey(save);
-  if (!surveys || surveys.length === 0) {
-    throw new Error(
-      `No belt survey for "${save}" at ${surveyPath(save)}.\n` +
-        `Run without --reuse to collect one.`,
-    );
-  }
-
-  const data = load();
-  for (const survey of surveys) {
-    if (survey.belts.length === 0) continue;
-    console.log(`\n${renderReport(judge(survey, state, data), state)}\n`);
-  }
-}
-
-if (import.meta.main) {
-  main().catch((err: unknown) => {
-    console.error(`\n${err instanceof Error ? err.message : String(err)}`);
-    process.exitCode = 1;
-  });
+  return areas;
 }
