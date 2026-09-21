@@ -245,6 +245,18 @@ Every prototype declares its own icon path in the mod notation the data stage us
 
 **Consequence:** the dashboard is worth less on a machine with no Factorio installed, and that is the right trade. The page still renders, with names where the icons would be.
 
+## ADR-18: a convention is measured, never remembered
+
+Three defects in one evening had the same shape, and all three were in code that read the game's own art.
+
+A belt sheet's first four rows are east, west, north, south, and the code counted north, east, south, west, so every belt on every print was a quarter turn out. A start cap was told from an end cap by how much marker colour each carried, which is a property of the animation frame rather than of the sprite. And a sheet's row length was almost taken from a default that differs between an animation and a rotated sprite, where being wrong draws a real frame from the wrong place, which looks plausible and is a lie.
+
+The rule that came out of it: **where a layout could be remembered, measure it instead.** The row length is read from the PNG's own header. The row order is recovered by finding where a marker pixel sits in each row. A cap is told from its pair by the texture of what it is, a nose carrying tread against a flat plate. A convention turned into a measurement cannot be misremembered, and a measurement can be shown to a reader.
+
+Its teeth: `directionIndex` refuses a frame count that is not a power of two, because a rotation set halves, and a belt sheet's twenty rows are not angles. Every cut carries the count it came from, so the question "which prototypes are picked by an assumed order" is answerable rather than a matter of memory. On this snapshot the answer is 22, every one a real rotation set.
+
+And the verification half, which cost more than the defect: **a probe whose subject is an asset has to measure the asset, not a page that contains it.** The check that missed the belt rows was a low-resolution screenshot of a whole page on which the drawn arrows agreed with the art. The arrow was the one thing in that picture the tool had drawn itself, so it was the only thing guaranteed to be right. The instrument was in the frame.
+
 ## ADR-13: the skill lives in this repo
 
 `.claude/skills/Factorio/` documents how to use this toolkit and how to read a base. It was first written into the user-level skills directory and moved here within the hour, because its `Commands.md` describes this CLI surface and that surface changed twice while the skill was being written. A copy outside the repo drifts the first time a flag changes. The user-level path is a symlink to it, so it still routes from any directory.

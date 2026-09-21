@@ -40,6 +40,12 @@ A `file://` page with no `<meta charset="utf-8">` is guessed as latin-1 by Chrom
 
 It picks the best prototype in the snapshot. If the census has no assembling machine 3, size with `--machine=assembling-machine-2` and say why the count is higher. Space Age also declares resources from planets he has not reached: sulfuric acid reads as raw because a `sulfuric-acid-geyser` exists, so on Nauvis the sulfur route must be priced by hand.
 
+## A sprite sheet's layout is measured, never recalled
+
+A belt sheet's first four rows are east, west, north, south, not the compass order, and its other sixteen are curves and end caps rather than angles. Read the row length out of the PNG header, recover the order by where the marker pixel sits, and tell a start cap from an end cap by texture: the end is the nose with the tread curving over the lip, the start is a flat plate. `directionIndex` in `src/sprites.ts` refuses a frame count that is not a power of two for exactly this reason.
+
+And the check on any of it must look at the sprite, not at a page containing it. The verification that missed the belt rows for a whole evening read the tool's own drawn arrows, which were the only thing in the picture guaranteed to be right.
+
 ## Recall is not evidence, including recall of a recipe
 
 The battery recipe was remembered as 1 sulfuric acid and is 20, which moved a requirement by a factor of four. Read the recipe before quoting an amount.
