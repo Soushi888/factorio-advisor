@@ -51,10 +51,10 @@ body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 ui-sans-serif,
 header{display:flex;flex-wrap:wrap;gap:.75rem 1.5rem;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:.6rem;margin-bottom:1.1rem}
 h1{font-size:1.05rem;margin:0;font-weight:650;letter-spacing:-.01em}
 .meta{color:var(--dim);font-size:.8rem;font-variant-numeric:tabular-nums}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(22rem,1fr));gap:1rem;align-items:start}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(32rem,1fr));gap:1rem;align-items:start}
 /* Defensive, not a fix for anything observed. A grid item defaults to
    min-width:auto, so a long enough unbreakable token would widen its track past
-   22rem and overflow the page, which the dashboard rule forbids. N6 reported
+   its minimum and overflow the page, which the dashboard rule forbids. N6 reported
    exactly that symptom and it did not reproduce: scrollWidth equals clientWidth
    at every width tested, with and without these rules, on a probe certified to
    fire. The card the report called clipped fits exactly inside the content edge;
@@ -94,7 +94,7 @@ li{font-size:.82rem;margin:.1rem 0;overflow-wrap:anywhere}
    browser, so it needs a box to fit into and a colour for the chunk squares to
    inherit through the CSS currentColor keyword. */
 .mapbox{margin-top:.7rem;background:color-mix(in srgb,var(--fg) 4%,transparent);border-radius:.35rem;padding:.35rem;color:var(--fg)}
-svg.map{display:block;max-height:15rem;width:100%}
+svg.map{display:block;max-height:34rem;width:100%}
 .legend{font-size:.7rem;color:var(--dim);margin-top:.3rem;display:flex;flex-wrap:wrap;gap:.1rem .7rem}
 footer{margin-top:1.25rem;color:var(--dim);font-size:.72rem;border-top:1px solid var(--line);padding-top:.6rem}
 @media (max-width:70rem){.wrap{padding:1rem}}
