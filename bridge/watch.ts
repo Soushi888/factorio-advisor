@@ -10,6 +10,9 @@ import { RecipeIndex } from "../src/recipes.ts";
 import { researchable } from "../src/next.ts";
 import { sections } from "../src/sections.ts";
 import { renderPage } from "./page.ts";
+import { mapModel } from "../src/layers.ts";
+import { mapOf, type Area } from "../src/map.ts";
+import { busAreas, judge as judgeBus, readSurvey } from "../src/bus.ts";
 
 /**
  * The loop: Soushi saves, a report appears.
@@ -157,6 +160,7 @@ export async function reportOn(
       stateFile,
       sections: derived?.views ?? [],
       history: historyFor(save).filter((f) => f !== `${base}.md`),
+      model: modelFor(state, derived?.advisory ?? null),
     }),
   );
 
@@ -169,6 +173,48 @@ export async function reportOn(
     quiet: report.quiet,
     firstForSave: previous === null,
   };
+}
+
+/**
+ * The one map's layers (C33).
+ *
+ * The bus corridors are included only when a belt survey exists for this save
+ * AT THE SAME TICK. A survey from an earlier tick describes a different base,
+ * and the corridors would be drawn over a map they no longer match, which is the
+ * same trap the `bus` command refuses at the command line.
+ */
+function modelFor(state: GameState, advisory: Advisory | null): ReturnType<typeof mapModel> | null {
+  const surfaceMap = mapOf(state);
+  if (!surfaceMap) return null;
+
+  let corridors: Area[] = [];
+  const surveys = readSurvey(state.save.name);
+  const survey = surveys?.find((s) => s.surface === surfaceMap.name) ?? surveys?.[0];
+  if (survey && survey.tick === state.save.tick) {
+    corridors = busAreas(judgeBus(survey, state, load()));
+  }
+
+  const adviceAreas: Area[] = [];
+  for (const item of advisory?.advice ?? []) {
+    if (!item.focus) continue;
+    adviceAreas.push({
+      x: item.focus.x,
+      y: item.focus.y,
+      w: item.focus.w,
+      h: item.focus.h,
+      label: item.text,
+      tone: "warn",
+    });
+  }
+
+  return mapModel({
+    state,
+    map: surfaceMap,
+    busAreas: corridors,
+    adviceAreas,
+    powerAreas: advisory?.blocks ?? [],
+    oreAreas: advisory?.fields?.slice(0, 12) ?? [],
+  });
 }
 
 export async function watch(opts: { threshold?: number; once?: boolean } = {}): Promise<void> {
