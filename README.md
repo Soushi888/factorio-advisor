@@ -48,7 +48,7 @@ bun run tech kovarex --path               # cost, prerequisites, the whole resea
 bun run belt iron-plate --rate=45         # which belt tier carries it, and at what saturation
 bun run bp --file=blueprint.txt           # decode and audit a blueprint string
 bun run bp --file=bp.txt --rate=45        # judge that print against a target rate
-bun run bp --file=bp.txt --draw           # draw that print to scale, as a page under .local/
+bun run bp --file=bp.txt --draw           # draw that print with the game's own art, as a page under .local/
 bun run state --save "game 4"             # live state, read from a copy of your save
 bun run next                              # what you can research right now
 bun run next --for=carbon-fiber           # the path from here to what unlocks an item
@@ -189,9 +189,17 @@ With `--rate=<n[/s|/m|/h]>` the audit stops describing the print and starts judg
 
 A print scales as a unit, so every step scales with it, including steps that make none of the target item. The output says that too, because the alternative is a column that reads like a per-recipe requirement and is not one. To size a single recipe rather than a whole print, use `bun run ratio`.
 
-`--draw` (or `--render`, which is the same flag) writes a page under `.local/` showing the print at its true size: every entity at the footprint its prototype declares, at the position the string states, coloured by what the prototype IS rather than by what it is called. `--svg` writes the bare SVG instead, and `--out=<path>` puts either wherever you want it. `bun run gen ... --draw` draws the row it just laid out, straight off the object rather than through a decode of its own string.
+`--draw` (or `--render`, which is the same flag) writes a page under `.local/` showing the print as the game draws it: every entity is its own sprite, cut out of your installation at the cell its prototype declares, placed at the position the string states and at the sprite's own size and shift. `--svg` writes the bare SVG instead, and `--out=<path>` puts either wherever you want it. `bun run gen ... --draw` draws the row it just laid out, straight off the object rather than through a decode of its own string.
+
+The art is read from the game and never copied into this repository. Sprites are cut into `.local/sprites/`, which is ignored by git, and embedded in the page so you can move the file around; the repository is public and Wube's art stays out of it. Nothing is written inside the installation, which is the same read-only property every other command holds.
+
+Which picture an entity gets is derived, not listed. Every prototype declares where its sheet is, how big a cell is and how many frames and directions it holds, so the cell is arithmetic; the row length is measured from the sheet's own width rather than taken from a default that differs between an animation and a rotated sprite. Of the 140 prototypes a blueprint can hold, 132 resolve a sprite, and the eight that do not are ore and scrap, which are resources no print contains.
+
+Two things it does not do, and says so on the page. It does not infer connections, so a belt at a corner is drawn straight and a pipe is drawn as a straight run rather than a junction. And an inserter is drawn as its base without its hand, because the string says which way it faces and not which of its two ends that names. A prototype with no resolvable sprite keeps a coloured category box, which is the fallback rather than a failure, and the page names it.
 
 Direction is applied where it changes the footprint: 4 is East and 12 is West, both of which swap width against height, measured from underground belt pairs in the shipped test prints rather than recalled. A belt carries an arrow for the way it runs; an inserter carries its rotation and no arrow, because the string does not say which of an inserter's two ends its direction names. The odd sixteenths are diagonal, no declared box describes a rail at 45 degrees, and those are drawn unrotated and counted on the page rather than guessed at.
+
+The category boxes from the first version are still there, as a layer the page can switch on over the art, for reading a layout by category rather than by silhouette.
 
 Every figure on the page is the audit's. The drawing marks, with a dashed outline, the machines that the audit's own shortfalls land on, and it computes no rate of its own.
 
