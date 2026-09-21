@@ -62,6 +62,15 @@ export interface SpriteCut {
   shadow: boolean;
   /** A tint the prototype declares and this tool does not apply. */
   tint: boolean;
+  /**
+   * How many rotations the sheet this came from declares.
+   *
+   * Above one, the row was chosen by an index, and an index assumes an order.
+   * The belt sheet taught what that assumption costs, so this is carried out of
+   * the resolver rather than left inside it: a sweep can ask which prototypes
+   * are picked that way and which come from a sheet that names its sides.
+   */
+  dirs: number;
 }
 
 /** Resolve `__base__/graphics/...` against the install, or null when it is not there. */
@@ -118,7 +127,21 @@ function shiftOf(o: Rec): [number, number] {
  */
 function directionIndex(direction: number, count: number): number {
   if (count <= 1) return 0;
+  // A rotation set halves: 2, 4, 8, 16, and 32 to 128 for rolling stock, which
+  // is why the test is a power of two rather than a divisor of sixteen. A count
+  // that is not one is not a compass at all, and reading it as one is how every
+  // belt in this tool came to be drawn a quarter turn out: a belt sheet has
+  // twenty rows, four straights, eight curves and eight caps, and twenty is
+  // divisible by four while being nothing like an angle. Such a sheet draws its
+  // first cell here and is handled by whoever knows its order, rather than an
+  // index being computed against an order nobody established.
+  if (!isRotationSet(count)) return 0;
   return Math.round((direction * count) / 16) % count;
+}
+
+/** True when a sheet's rotation count is a compass rather than a list of shapes. */
+export function isRotationSet(count: number): boolean {
+  return count <= 1 || (Number.isInteger(count) && count >= 2 && (count & (count - 1)) === 0);
 }
 
 /**
@@ -175,6 +198,7 @@ function cutOf(leaf: Rec, direction: number, pick: number | null = null): Sprite
     shiftY: sy,
     shadow: leaf["draw_as_shadow"] === true || leaf["draw_as_glow"] === true,
     tint: "tint" in leaf || leaf["apply_runtime_tint"] === true,
+    dirs,
   };
 }
 
@@ -379,9 +403,17 @@ export function spritesFor(data: Data, entity: SpriteSubject): SpriteCut[] {
  * its red 23 pixels above centre and its thin quadrant bottom left, so items
  * enter from the east side and leave north.
  *
- * The caps split by area: a start carries a full chevron of 96 to 139 red
- * pixels, an end carries a stub of 8 to 58, and the edge each sits on says
- * which direction it belongs to.
+ * The caps are two per edge and they are NOT separated by how much red they
+ * carry, which is the mistake that shipped once: the marker moves with the
+ * animation, so at frame zero one cap of a pair can be caught mid-marker and
+ * look like the other. They are separated by what they are. The end of a belt
+ * is its nose, the belt surface curving over the lip, so it carries the tread
+ * texture; the start is a flat back plate. Measured as the luminance spread
+ * inside the opaque region with the red excluded, the nose wins its pair every
+ * time: 31.3 against 23.7 at the top edge, 32.9 against 27.8 at the right,
+ * 27.4 against 23.8 at the bottom, 32.7 against 29.7 at the left. The nose sits
+ * on the edge its belt runs out of, so the top edge pairs the end of a north
+ * belt with the start of a south one.
  */
 export const BELT_ROW: Record<string, number> = {
   east: 0,
@@ -396,14 +428,14 @@ export const BELT_ROW: Record<string, number> = {
   east_to_south: 9,
   south_to_west: 10,
   west_to_south: 11,
-  starting_south: 12,
-  ending_north: 13,
-  starting_west: 14,
-  ending_east: 15,
-  starting_north: 16,
-  ending_south: 17,
-  starting_east: 18,
-  ending_west: 19,
+  ending_north: 12,
+  starting_south: 13,
+  ending_east: 14,
+  starting_west: 15,
+  ending_south: 16,
+  starting_north: 17,
+  ending_west: 18,
+  starting_east: 19,
 };
 
 /** One row of a prototype's belt animation set, or null when it has none. */
@@ -469,6 +501,7 @@ export function iconCut(data: Data, name: string): SpriteCut | null {
       shiftY: 0,
       shadow: false,
       tint: false,
+      dirs: 1,
     };
   }
   return null;
