@@ -13,6 +13,7 @@ import { renderPage } from "./page.ts";
 import { mapModel } from "../src/layers.ts";
 import { planView, type Plan, type PlanView } from "../src/plan.ts";
 import { Icons } from "../src/icons.ts";
+import { bottlenecks, type BottleneckReport } from "../src/bottlenecks.ts";
 import { mapOf, type Area } from "../src/map.ts";
 import { busAreas, judge as judgeBus, readSurvey } from "../src/bus.ts";
 
@@ -164,6 +165,7 @@ export async function reportOn(
       history: historyFor(save).filter((f) => f !== `${base}.md`),
       plan: planFor(save, state),
       icons: new Icons(protoData()),
+      bottlenecks: bottlenecksFor(state),
       model: modelFor(state, derived?.advisory ?? null),
     }),
   );
@@ -211,6 +213,7 @@ export function rerenderPage(save: string, opts: { threshold?: number } = {}): s
       history: historyFor(save).filter((f) => f !== `${slug(save)}-${String(state.save.tick)}.md`),
       plan: planFor(save, state),
       icons: new Icons(protoData()),
+      bottlenecks: bottlenecksFor(state),
       model: modelFor(state, derived?.advisory ?? null),
     }),
   );
@@ -241,6 +244,22 @@ function planFor(save: string, state: GameState): PlanView | null {
     const plan = JSON.parse(readFileSync(path, "utf8")) as Plan;
     if (!Array.isArray(plan.steps) || plan.steps.length === 0) return null;
     return planView(plan, state);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What is holding the factory back, when the snapshot is loadable.
+ *
+ * Wrapped like `advisoryFor`: the dashboard must render from a state file even
+ * on a machine whose prototype dump is missing, and a page with one card fewer
+ * is a better answer than no page.
+ */
+function bottlenecksFor(state: GameState): BottleneckReport | null {
+  try {
+    const data = load();
+    return bottlenecks(data, new RecipeIndex(data), state, "player");
   } catch {
     return null;
   }
