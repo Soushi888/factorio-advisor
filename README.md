@@ -48,6 +48,7 @@ bun run tech kovarex --path               # cost, prerequisites, the whole resea
 bun run belt iron-plate --rate=45         # which belt tier carries it, and at what saturation
 bun run bp --file=blueprint.txt           # decode and audit a blueprint string
 bun run bp --file=bp.txt --rate=45        # judge that print against a target rate
+bun run bp --file=bp.txt --draw           # draw that print to scale, as a page under .local/
 bun run state --save "game 4"             # live state, read from a copy of your save
 bun run next                              # what you can research right now
 bun run next --for=carbon-fiber           # the path from here to what unlocks an item
@@ -187,6 +188,12 @@ One step only. A whole chain or a main bus is out of scope and the output says s
 With `--rate=<n[/s|/m|/h]>` the audit stops describing the print and starts judging it: what fraction of the target it reaches, how many of the print the target would take, what that scale means per machine type, whether the belt tier it places carries the target, and how many inserters per machine the target needs at the rotation ceiling. `--item=<name>` picks which product to judge; without it the print's largest net export is used and the output says so.
 
 A print scales as a unit, so every step scales with it, including steps that make none of the target item. The output says that too, because the alternative is a column that reads like a per-recipe requirement and is not one. To size a single recipe rather than a whole print, use `bun run ratio`.
+
+`--draw` (or `--render`, which is the same flag) writes a page under `.local/` showing the print at its true size: every entity at the footprint its prototype declares, at the position the string states, coloured by what the prototype IS rather than by what it is called. `--svg` writes the bare SVG instead, and `--out=<path>` puts either wherever you want it. `bun run gen ... --draw` draws the row it just laid out, straight off the object rather than through a decode of its own string.
+
+Direction is applied where it changes the footprint: 4 is East and 12 is West, both of which swap width against height, measured from underground belt pairs in the shipped test prints rather than recalled. A belt carries an arrow for the way it runs; an inserter carries its rotation and no arrow, because the string does not say which of an inserter's two ends its direction names. The odd sixteenths are diagonal, no declared box describes a rail at 45 degrees, and those are drawn unrotated and counted on the page rather than guessed at.
+
+Every figure on the page is the audit's. The drawing marks, with a dashed outline, the machines that the audit's own shortfalls land on, and it computes no rate of its own.
 
 Without `--rate` the output is exactly what it was before the flag existed.
 
