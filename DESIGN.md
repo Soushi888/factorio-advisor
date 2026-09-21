@@ -201,6 +201,8 @@ Chunks are the bucket because the engine already thinks in them, so a cell bound
 
 **Consequence:** `map.ts` clusters chunks into power blocks and ore fields and renders SVG in the save's own tile coordinates, with no projection between a point on the page and a position in the game. Advice that needs a place names one, and the falsifier is that a named coordinate must have an entity or a resource at it.
 
+**Superseded in part by ADR-15.** The two resolutions and the chunk bucket stay; the point limit and the absence of terrain do not.
+
 ## ADR-12: the dashboard is sections, and one map is replacing six
 
 A single column of forty figures is a log. The page is cut into the parts a player thinks in, science, energy, defence, production, logistics and mining, each carrying its own figures, its own advice and its own view of the map, so a recommendation and the place it applies to are in the same card.
@@ -208,6 +210,40 @@ A single column of forty figures is a log. The page is cut into the parts a play
 Six thumbnails were the right first answer and they are what made the next question askable. They are being superseded by one interactive, zoomable, layered map with the sections carrying the text there was no room for (C33). The thumbnails stay built and working until that lands; being superseded by something better is not the same as being wrong.
 
 **Consequence:** `sections.ts` derives the cut and `bridge/page.ts` lays it out, so a new section is a data change rather than a template change. Every figure carries `data-source` and `data-field` into the DOM, which is the same discipline the CLI follows by printing the snapshot in its header.
+
+## ADR-15: the map is drawn tile by tile, and water is the one terrain that is measured
+
+Soushi opened the dashboard, said the map had to be at least as clear as the one he already has in the game, and then said it plainly: tile by tile.
+
+**The point limit was the wrong shape of thrift.** `MAP_POINT_LIMIT = 600` per prototype kept every rare thing and nothing a player recognises, because the bus, the wall, the rail network and the smelter blocks are all made of prototypes with thousands of instances. It is replaced by `MAP_POINT_BUDGET`, a total across every prototype, spent on the rarest first. This save spends 66467 of 400000, so nothing is dropped, and the machinery that names what would be dropped stays: a map quietly drawing three quarters of a base is worse than one that says so.
+
+**Water is measured, not sketched.** `count_tiles_filtered` over each charted chunk against the tile prototypes that declare a fluid, then run-length encoded per row. That is a measurement like any other here, and it is what makes the map recognisable as his base rather than an abstract blob. Everything else about the ground stays unmeasured and therefore undrawn: no cliffs, no trees, no decoratives. ADR-11's rule is intact; what changed is that one piece of terrain is now measured.
+
+**Charted, not generated.** The terrain and enemy layers cover the chunks the force has charted, because the map is meant to be comparable to the one he opens in game and that one shows what he has charted. Their extent is kept out of `bounds` and carried separately: the charted region is far larger than the base, and letting it set the view would open the map on mostly nothing.
+
+**Two sizes, in two different units, and this is the part worth reading twice.** Position is in tiles and exact. Ink is in screen pixels: every shape carries a non-scaling stroke whose width the page thins as the view closes in, so at the whole-base view the stroke is what you see and nothing vanishes, and close in the rectangle underneath is the machine's real footprint. A 3 by 3 assembler on a 2655 tile base is half a pixel, and a map of those is a grey smudge whatever else is right about it.
+
+**Consequence:** `layers.ts` merges single-tile entities into the runs they already form and bands chunk shading into a handful of paths, which is what took the page from about 15000 DOM nodes to 155 after Soushi reported it stuttering. Exactness is untouched: a run covers exactly the tiles the entities stand on.
+
+## ADR-16: a plan is written, and the dashboard holds it
+
+Everything else in this project is derived. A plan is not: ordering steps by cost and reversibility, and arguing with what the player has already decided, is judgment, and no amount of production statistics produces it.
+
+Rather than keep written judgment in a document beside the measured page, the dashboard holds it, under one contract: **a step's prose is authored and a step's numbers are not.** Every figure a step shows is declared as a path into the state file with a baseline and a target, and read at render time. So a step knows it is half done without anyone ticking a box, the bars are current even when the words are old, and a number typed into the prose is a defect rather than a shortcut. A step's `where` is the same shape the advisor's own focus takes, so clicking a step drives the one map and the map needs to know nothing about plans.
+
+A plan is per save and lives at `data/plans/<save>.json`, beside the state files and outside the repository, because it is about one person's factory at one tick.
+
+**Consequence:** `plan.ts` is small and does one thing, and the page says how many minutes of play ago the plan was written, because the words go stale on their own even while the bars do not.
+
+## ADR-17: the game's assets are pointed at, never copied
+
+Soushi asked for the dashboard to use the game's own icons so it reads like the game rather than like a spreadsheet about it.
+
+Every prototype declares its own icon path in the mod notation the data stage uses, and `__base__` resolves against the install `paths.ts` already locates, so the page points at the files in his own installation by `file://` URL. That is the same thing the game does when it loads them.
+
+**They are never copied into this repository.** That is Wube's art, this repo is public, and copying it in would be redistributing it. A prototype with no icon field, or an icon whose file is not on disk, renders as its name alone, which is the same rule this project applies to numbers: an icon invented for an item is the same class of error as a number invented for one.
+
+**Consequence:** the dashboard is worth less on a machine with no Factorio installed, and that is the right trade. The page still renders, with names where the icons would be.
 
 ## ADR-13: the skill lives in this repo
 

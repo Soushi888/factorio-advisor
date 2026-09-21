@@ -569,11 +569,11 @@ export function mapModel(input: ModelInput): MapModel {
         enemy.map((e) => ({
           cx: e.cx,
           cy: e.cy,
-          opacity: 0.62,
+          opacity: 0.45,
           // Sized by how much is in the chunk and centred on it, never filling
           // it: the count is real and the position is the chunk, which is as
           // precise as this measurement gets.
-          size: cell * Math.min(1, 0.3 + 0.7 * Math.sqrt((e.nests + e.worms) / Math.max(1, max))),
+          size: cell * Math.min(0.55, 0.18 + 0.37 * Math.sqrt((e.nests + e.worms) / Math.max(1, max))),
         })),
         cell,
       ),
