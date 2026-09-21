@@ -2,7 +2,7 @@ import type { Advisory, SectionId } from "./advise.ts";
 import { powerReport } from "./power.ts";
 import type { Data } from "./proto.ts";
 import { flowOf, type GameState, type SurfaceMap } from "./state.ts";
-import { mapOf, patches, powerBlocks, renderMap, type Area, type Patch } from "./map.ts";
+import { mapOf, patches, powerBlocks, type Patch } from "./map.ts";
 
 /**
  * The base, cut into the parts a player actually thinks in.
@@ -40,10 +40,18 @@ export interface SectionView {
   figures: Figure[];
   table: Table | null;
   advice: Advisory["advice"];
-  /** Rendered SVG, or null when the state file carries no map. */
-  map: string | null;
-  /** What the map is showing, in words. */
-  legend: string[];
+  /**
+   * What this part of the base can carry, with the number behind it.
+   *
+   * The Orient move, and the reason a section is worth reading once its
+   * thumbnail is gone. A count says the base has labs; a corridor says the labs
+   * could eat 243/min and are eating 18, which is the sentence that decides
+   * whether tonight's job is more labs or more packs. A section with nothing
+   * measured says so rather than rendering a confident zero.
+   */
+  carry: string | null;
+  /** The map layer this section turns on when its header is clicked. */
+  layer: string | null;
 }
 
 const TITLES: Record<SectionId, string> = {
@@ -160,10 +168,10 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
         ]),
     },
     advice: adviceFor("science"),
-    map: map
-      ? renderMap(map, { points: [{ names: ["lab", "biolab"], colour: "#7a5fa8", radius: 3 }] })
+    carry: labs
+      ? `${n(labs.capacityPerMinute, 0)} packs a minute through ${String(labs.labs)} labs, and ${n(labs.actualPerMinute)} is going through them.`
       : null,
-    legend: ["labs", extent(map)].filter((x) => x !== ""),
+    layer: "labs",
   });
 
   // ---- energy ------------------------------------------------------------
@@ -208,22 +216,10 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
       ].filter((r) => r[1] !== "0"),
     },
     advice: adviceFor("energy"),
-    map: map
-      ? renderMap(map, {
-          points: [
-            { names: ["solar-panel"], colour: "#c9a227", radius: 1.5 },
-            { names: ["steam-engine", "steam-turbine"], colour: "#e0745a", radius: 3 },
-            { names: ["boiler", "heat-exchanger"], colour: "#5fbf80", radius: 3 },
-          ],
-          areas: unfed.slice(0, 6).map(
-            (b): Area => ({
-              ...b,
-              label: `${String(b.engines)} engines, ${String(b.boilers)} boilers, ${String(Math.floor(b.engines - b.fed))} unfed`,
-            }),
-          ),
-        })
+    carry: grid
+      ? `${mw(grid.capacityWatts)} of delivery, ${mw(grid.deliveredWatts)} of it flowing, and ${mw(grid.nameplateWatts - grid.capacityWatts)} standing idle behind engines with no boiler.`
       : null,
-    legend: ["yellow solar", "red steam engines", "green boilers", "boxed: engines with no boiler", extent(map)].filter((x) => x !== ""),
+    layer: "power",
   });
 
   // ---- defence -----------------------------------------------------------
@@ -271,16 +267,8 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
       ].filter((r) => r[1] !== "0"),
     },
     advice: adviceFor("defense"),
-    map: map
-      ? renderMap(map, {
-          points: [
-            { names: ["gun-turret"], colour: "#b3541e", radius: 2 },
-            { names: ["laser-turret"], colour: "#5fa8e0", radius: 2 },
-            { names: ["flamethrower-turret"], colour: "#e0745a", radius: 2.5 },
-          ],
-        })
-      : null,
-    legend: ["orange gun", "blue laser", "red flamethrower", extent(map)].filter((x) => x !== ""),
+    carry: `${String(count("ammo-turret", "electric-turret", "fluid-turret"))} turrets and ${String(count("wall"))} wall segments against an evolution of ${surface?.evolution != null ? n(surface.evolution * 100) : "?"}%, fed by ${n(piercing.producedPerMinute + ammo.producedPerMinute)} rounds a minute.`,
+    layer: "defence",
   });
 
   // ---- production --------------------------------------------------------
@@ -312,16 +300,10 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
         }
       : null,
     advice: adviceFor("production"),
-    map: map
-      ? renderMap(map, {
-          points: [
-            { names: ["electric-furnace", "steel-furnace", "stone-furnace"], colour: "#c07a4a", radius: 1.5 },
-            { names: ["oil-refinery"], colour: "#7a5fa8", radius: 3 },
-            { names: ["chemical-plant"], colour: "#5fbf80", radius: 2 },
-          ],
-        })
+    carry: target
+      ? `${String(count("assembling-machine", "furnace"))} machines standing, and ${String(target.machinesAdded)} more wanted to reach ${n(target.spm, 0)}/min of every pack.`
       : null,
-    legend: ["brown furnaces", "purple refineries", "green chemical plants", extent(map)].filter((x) => x !== ""),
+    layer: "production",
   });
 
   // ---- logistics ---------------------------------------------------------
@@ -347,21 +329,17 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
       ].filter((r) => r[1] !== "0"),
     },
     advice: adviceFor("logistics"),
-    map: map
-      ? renderMap(map, {
-          points: [
-            { names: ["roboport"], colour: "#5fa8e0", radius: 2 },
-            { names: ["train-stop"], colour: "#c9a227", radius: 3 },
-            { names: ["locomotive"], colour: "#e0745a", radius: 2.5 },
-          ],
-        })
-      : null,
-    legend: ["blue roboports", "yellow train stops", "red locomotives", extent(map)].filter((x) => x !== ""),
+    carry: `${String(count("transport-belt", "underground-belt", "splitter"))} belt pieces and ${String(count("roboport"))} roboports moving it, with ${String(count("locomotive"))} locomotives across ${String(count("train-stop"))} stops.`,
+    layer: "logistics",
   });
 
   // ---- mining ------------------------------------------------------------
   const untouched = fields.filter((p) => p.extractors === 0);
-  const runways = ["iron-ore", "copper-ore", "coal", "stone"]
+  // Every resource the save charted, never a typed list: uranium and crude oil
+  // fell off a hardcoded four and Soushi noticed the uranium missing from the
+  // table before the code did.
+  const resources = [...new Set(fields.map((p) => p.resource))].sort();
+  const runways = resources
     .map((r) => ({ resource: r, ...(runway(fields, r, item(r).consumedPerMinute) ?? { minutes: 0, amount: 0 }) }))
     .filter((r) => r.minutes > 0)
     .sort((a, b) => a.minutes - b.minutes);
@@ -401,8 +379,19 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
         ? {
             headers: ["field", "remaining", "chunks", "drills"],
             numeric: [1, 2, 3],
-            rows: fields
-              .slice(0, 10)
+            // The biggest field of each resource first, so a resource he has
+            // charted can never be absent from the table just because another
+            // resource owns the top ten rows, then the next largest until the
+            // table is full.
+            rows: [
+              ...resources
+                .map((r) => fields.find((p) => p.resource === r))
+                .filter((p): p is Patch => p !== undefined),
+              ...fields.filter(
+                (p) => !resources.some((r) => fields.find((q) => q.resource === r) === p),
+              ),
+            ]
+              .slice(0, 14)
               .map((p) => [
                 `${p.resource} at ${String(Math.round(p.x))}, ${String(Math.round(p.y))}`,
                 p.amount >= 1e6 ? `${(p.amount / 1e6).toFixed(1)}M` : `${(p.amount / 1e3).toFixed(0)}k`,
@@ -412,14 +401,10 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
           }
         : null,
     advice: adviceFor("mining"),
-    map: map
-      ? renderMap(map, {
-          ore: true,
-          points: [{ names: ["electric-mining-drill", "burner-mining-drill", "pumpjack"], colour: "#eceae5", radius: 1.5 }],
-          areas: untouched.slice(0, 5).map((p): Area => ({ ...p, tone: "good" })),
-        })
+    carry: shortestRunway
+      ? `${hours(shortestRunway.minutes)} of ${shortestRunway.resource} left under the drills, and ${String(untouched.length)} charted fields with nothing standing on them.`
       : null,
-    legend: ["ore by colour", "white drills", "boxed: fields with nothing on them", extent(map)].filter((x) => x !== ""),
+    layer: "mining",
   });
 
   return out.filter((s) => s.figures.length > 0 || s.advice.length > 0);

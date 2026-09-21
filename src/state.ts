@@ -215,15 +215,61 @@ export interface OreCell {
   res: Record<string, number>;
 }
 
+/**
+ * A charted chunk of ground, and how much of it is water.
+ *
+ * The one piece of terrain this project measures, and it is measured rather
+ * than drawn: `count_tiles_filtered` over the chunk against the tile prototypes
+ * that declare a fluid. Only charted chunks are collected, because the map is
+ * meant to be comparable to the one Soushi opens in game, and that one shows
+ * what he has charted.
+ */
+export interface TerrainCell {
+  cx: number;
+  cy: number;
+  /** Water tiles in the chunk, out of `cellTiles` squared. Absent means none. */
+  water?: number;
+}
+
+/** Enemy structures in a chunk, counted like everything else. */
+export interface EnemyCell {
+  cx: number;
+  cy: number;
+  /** Spawners: the nest itself. */
+  nests: number;
+  /** Worms. */
+  worms: number;
+}
+
 export interface SurfaceMap {
   name: string;
   cellTiles: number;
-  /** Tile bounds of everything below, so a renderer needs no second pass. */
+  /** Tile bounds of the force's own things, so a renderer needs no second pass. */
   bounds: { minX: number; minY: number; maxX: number; maxY: number } | null;
   cells: MapCell[];
   ore: OreCell[];
-  /** Exact tile positions, only for prototypes under the point limit. */
+  /** Exact tile positions, per prototype, for everything inside the point budget. */
   points: Record<string, Array<[number, number]>>;
+  /** Prototypes whose positions did not fit the budget, with what they cost. */
+  pointsDropped?: Array<{ name: string; count: number }>;
+  /**
+   * Water, tile by tile, as horizontal runs `[x, y, length]` in tile
+   * coordinates. Runs rather than tiles because a lake is mostly long rows of
+   * the same thing, and runs rather than chunks because a coastline drawn at
+   * chunk resolution is a staircase that matches no shoreline in the game.
+   */
+  water?: Array<[number, number, number]>;
+  /** Ore, tile by tile, as the same runs, per resource name. */
+  oreRuns?: Record<string, Array<[number, number, number]>>;
+  /**
+   * Charted ground. Deliberately outside `bounds`: the charted region is far
+   * larger than the base, and letting it set the bounds would open the map on a
+   * view of mostly nothing. `chartedBounds` carries its own extent.
+   */
+  terrain?: TerrainCell[];
+  chartedBounds?: { minX: number; minY: number; maxX: number; maxY: number } | null;
+  /** Enemy nests and worms, per chunk, over the charted region. */
+  enemy?: EnemyCell[];
 }
 
 export interface GameState {
@@ -260,13 +306,23 @@ export interface GameState {
 const MAP_CELL_TILES = 32;
 
 /**
- * A prototype with at most this many placed instances gets exact positions;
- * anything commoner is left as a per-chunk count. A choice, not a game fact:
- * 3914 inserters as points would be noise on a map and megabytes in a file,
- * while 115 boilers are exactly what an advisor needs to point at. The list of
- * which prototypes qualify is derived from the census, never typed.
+ * How many exact positions the map may carry in total, across every prototype.
+ *
+ * It used to be a per-prototype limit of 600, which kept the file small and cost
+ * the map everything a player recognises: the bus, the wall, the rail network
+ * and the smelter blocks are all made of prototypes with thousands of instances,
+ * so the map could draw the rare things and none of the base. Soushi asked for it
+ * tile by tile on 2026-09-21 and the arithmetic says yes: this save holds about
+ * 66000 placed entities once ground clutter and tile ghosts are out, which is
+ * roughly a megabyte of coordinates, against a state file already over one.
+ *
+ * The budget exists so a pathological save degrades rather than hangs. When it
+ * is exceeded the commonest prototypes lose their positions first, because they
+ * are the ones a chunk count already describes well, and the names that lost
+ * them are recorded in `pointsDropped` so the map can say so instead of quietly
+ * drawing three quarters of a base. A choice, not a game fact.
  */
-const MAP_POINT_LIMIT = 600;
+const MAP_POINT_BUDGET = 400_000;
 
 /**
  * The belt survey (C26), appended to the collector when a bus question asks for it.
@@ -602,7 +658,7 @@ script.on_nth_tick(1, function()
   -- file with every one of them in it would be slower to write than the read it
   -- belongs to. Chunks are the bucket because the engine already uses them.
   local CELL = ${String(MAP_CELL_TILES)}
-  local POINT_LIMIT = ${String(MAP_POINT_LIMIT)}
+  local POINT_BUDGET = ${String(MAP_POINT_BUDGET)}
   local player_force = game.forces["player"]
   local map = {}
   for _, surface in pairs(game.surfaces) do
@@ -642,23 +698,128 @@ script.on_nth_tick(1, function()
         bound(pos.x, pos.y)
         local p = points[e.name]
         if not p then p = {}; points[e.name] = p end
-        if #p <= POINT_LIMIT then p[#p + 1] = { pos.x, pos.y } end
+        p[#p + 1] = { pos.x, pos.y }
       end
     end
 
-    -- Over the limit means the positions were never worth keeping. The count
-    -- per chunk above already carries that prototype.
+    -- The budget, spent on the rarest prototypes first.
+    --
+    -- Nothing is dropped on a save that fits, which is the normal case. When one
+    -- does not, the commonest prototype loses its positions first and says so:
+    -- a chunk count describes 30000 belt pieces about as well as 30000 dots do,
+    -- and 84 labs are not describable any other way.
+    local total_points, by_name = 0, {}
     for name, p in pairs(points) do
-      if #p > POINT_LIMIT then points[name] = nil end
+      total_points = total_points + #p
+      by_name[#by_name + 1] = { name = name, n = #p }
+    end
+    table.sort(by_name, function(a, b) return a.n > b.n end)
+    local dropped = {}
+    local i = 1
+    while total_points > POINT_BUDGET and i <= #by_name do
+      local victim = by_name[i]
+      points[victim.name] = nil
+      dropped[#dropped + 1] = { name = victim.name, count = victim.n }
+      total_points = total_points - victim.n
+      i = i + 1
     end
 
+    -- Ore twice over: summed per chunk, because an amount is what an outpost
+    -- decision is made on, and as tile runs, because the shape of a patch is
+    -- what tells you whether a miner array fits on it.
+    local ore_rows = {}
     for _, e in pairs(surface.find_entities_filtered{ type = "resource" }) do
       local pos = e.position
       local c = cell_of(ore, pos.x, pos.y)
       c.res = c.res or {}
       c.res[e.name] = (c.res[e.name] or 0) + (e.amount or 0)
       bound(pos.x, pos.y)
+      local r = ore_rows[e.name]
+      if not r then r = {}; ore_rows[e.name] = r end
+      local ty = math.floor(pos.y)
+      local row = r[ty]
+      if not row then row = {}; r[ty] = row end
+      row[math.floor(pos.x)] = true
     end
+
+    -- Rows of set tiles into runs. One pass per row, sorted, merging neighbours.
+    local function runs_of(rows)
+      local out = {}
+      for y, row in pairs(rows) do
+        local xs = {}
+        for x in pairs(row) do xs[#xs + 1] = x end
+        table.sort(xs)
+        local start, prev = nil, nil
+        for k = 1, #xs do
+          local x = xs[k]
+          if start == nil then
+            start, prev = x, x
+          elseif x == prev + 1 then
+            prev = x
+          else
+            out[#out + 1] = { start, y, prev - start + 1 }
+            start, prev = x, x
+          end
+        end
+        if start ~= nil then out[#out + 1] = { start, y, prev - start + 1 } end
+      end
+      return out
+    end
+
+    local ore_runs = {}
+    for name, rows in pairs(ore_rows) do ore_runs[name] = runs_of(rows) end
+
+    -- Charted ground, and the water in it.
+    --
+    -- Two facts the map cannot do without and the entity sweep cannot give.
+    -- Water is what makes a map recognisable as this base rather than an
+    -- abstract blob, and it is counted per chunk, never assumed from a shape.
+    -- The chunk list is the charted one because that is what the in-game map
+    -- shows: uncharted ground is not knowledge, in the game or here.
+    local water_names = {}
+    local okw = pcall(function()
+      for name, proto in pairs(prototypes.tile) do
+        if proto.fluid then water_names[#water_names + 1] = name end
+      end
+    end)
+    local terrain, enemy, water_rows = {}, {}, {}
+    local cminx, cminy, cmaxx, cmaxy
+    local enemy_force = game.forces["enemy"]
+    local ok_chart = pcall(function()
+      for chunk in surface.get_chunks() do
+        if player_force.is_chunk_charted(surface, chunk) then
+          if not cminx or chunk.x < cminx then cminx = chunk.x end
+          if not cmaxx or chunk.x > cmaxx then cmaxx = chunk.x end
+          if not cminy or chunk.y < cminy then cminy = chunk.y end
+          if not cmaxy or chunk.y > cmaxy then cmaxy = chunk.y end
+          local entry = { cx = chunk.x, cy = chunk.y }
+          if okw and #water_names > 0 then
+            local w = surface.count_tiles_filtered{ area = chunk.area, name = water_names }
+            if w > 0 then
+              entry.water = w
+              -- Tile by tile. The positions come back as the tile's own integer
+              -- corner, which is what a run wants: a run is tiles, not centres.
+              for _, t in pairs(surface.find_tiles_filtered{ area = chunk.area, name = water_names }) do
+                local tp = t.position
+                local row = water_rows[tp.y]
+                if not row then row = {}; water_rows[tp.y] = row end
+                row[tp.x] = true
+              end
+            end
+          end
+          terrain[#terrain + 1] = entry
+          if enemy_force then
+            local nests = surface.count_entities_filtered{
+              area = chunk.area, force = enemy_force, type = "unit-spawner" }
+            local worms = surface.count_entities_filtered{
+              area = chunk.area, force = enemy_force, type = "turret" }
+            if nests > 0 or worms > 0 then
+              enemy[#enemy + 1] = { cx = chunk.x, cy = chunk.y, nests = nests, worms = worms }
+            end
+          end
+        end
+      end
+    end)
 
     local cell_list = {}
     for _, c in pairs(cells) do
@@ -678,6 +839,15 @@ script.on_nth_tick(1, function()
       cells = cell_list,
       ore = ore_list,
       points = points,
+      pointsDropped = #dropped > 0 and dropped or nil,
+      oreRuns = ore_runs,
+      water = ok_chart and runs_of(water_rows) or nil,
+      terrain = ok_chart and terrain or nil,
+      chartedBounds = (ok_chart and cminx) and {
+        minX = cminx * CELL, minY = cminy * CELL,
+        maxX = (cmaxx + 1) * CELL, maxY = (cmaxy + 1) * CELL,
+      } or nil,
+      enemy = ok_chart and enemy or nil,
     }
   end
 
