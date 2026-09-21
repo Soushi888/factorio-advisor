@@ -141,7 +141,32 @@ The reason this is cheap rather than a new subsystem: `blueprint.ts` already dec
 - [ ] **C33 — One map, zoomable and layered, and the sections carry text instead of thumbnails.** The page holds a single map at full width with toggleable layers: ore, machines by role, power, defence, logistics, the bus corridors, and the areas the advice names. It zooms and pans. Clicking a line in "What to do" moves the map to the place that line is about. The six section cards lose their thumbnails and gain the detail there was no room for: per-section tables, the figures currently cut for space, and the statement of what that part of the base can carry.
   - *Falsifier:* a layer drawing anything the state file does not carry; a zoom that changes WHAT is drawn rather than how much of it is visible, since a level-of-detail rule that invents or drops entities by scale would make the map disagree with itself; an advice line that pans to coordinates it does not name; any CDN dependency, because this page is opened from `file://` and must work with no network; a section left thinner than it was before its thumbnail was taken away.
   - *Supersedes the per-section maps built under C28, which stay built and working until this lands.* C28 is not falsified by this: six thumbnails were the right first answer and Soushi read them, then asked for the thing they were a step toward. **C32's rail and logistic overlays fold into this as two layers rather than two separate renders, so C32 closes into C33 if this is built first.**
-  - *PM note:* the zoom is about forty lines of viewBox arithmetic on wheel and drag, with no library, and the layer toggles are a class on a `g` element. The expensive part is not the interaction, it is deciding what each section says once it is no longer carrying a picture, and that is a writing problem rather than a rendering one.
+
+### The UX contract for C33
+
+Soushi asked on 2026-09-21 at 02:47 for the best UI and UX possible, so this is written as decisions rather than as an aspiration. An instruction to make something good that does not say what good means produces a prettier version of the same page.
+
+**The shape.** Two panes. The map holds the left and is **sticky**, filling the viewport height while the text scrolls beside it on the right. That is the posture he described for it: a second screen where the map is the instrument and the text is the reading, so the map must not scroll away from the sentence that refers to it. Below about 70rem the panes stack and the map keeps a fixed height.
+
+**The map.**
+
+- Wheel zooms **at the cursor**, not at the centre of the box, because zooming at the centre makes a player chase the thing they were pointing at. Drag pans. Double click zooms one step in. A **fit** control returns to the whole base and is always reachable.
+- A **scale bar in tiles**, redrawn per zoom level. A map of a factory with no scale cannot answer "can I walk that" or "is that a belt away", which are the two questions a placement decision turns on.
+- **Chunk gridlines appear past the zoom where they are legible**, because Factorio players think in chunks and the collector already buckets in them. They are drawn, never inferred: the grid is the same 32 tiles the cells use.
+- **Layer toggles carry their own count**: "roboports 537", "gun turrets 445". The count is information, not decoration, and it means the legend answers a question before anything is clicked.
+- **The advice layer is on by default.** The advice is why the page exists; everything else is context for it.
+- Hovering a cluster names what is there and its chunk coordinate.
+
+**The link between the text and the map, which is the whole point.** Clicking an advice line or a section header moves the map to the place that line is about and turns on the layer that explains it. "Put the next copper outpost at 0, 1152" becomes a click that shows him the field, the drills already on the old patch, and the distance between them. A dashboard where the words and the picture are two separate things is two artefacts sharing a page.
+
+**Keyboard**, because a tool used every session earns it: digits toggle layers in legend order, `f` fits, `esc` clears the selection and the pan.
+
+**Performance is measured, not assumed.** Twelve thousand entities as individual SVG nodes may stutter on pan. Build it as SVG first, measure frame time while dragging, and only if it stutters move the point layers to a canvas sharing the same transform, keeping chunks and ore as SVG. A canvas rewrite done on suspicion costs the hover and the click targets for nothing.
+
+**Both themes, no colour-only encoding** (every layer carries a shape or a label as well), `prefers-reduced-motion` respected on the pan animation, and every interactive control reachable by keyboard.
+
+  - *UX falsifiers:* a zoom that moves the point under the cursor; a map that scrolls out of view while its text is still being read; a layer legend without its count; an advice line that is not clickable; a scale bar absent or wrong at any zoom; a canvas rewrite landed without a frame-time measurement showing SVG was too slow; motion that ignores `prefers-reduced-motion`.
+  - *PM note:* the zoom is about forty lines of viewBox arithmetic and the layer toggles are a class on a `g` element. The expensive part is not the interaction, it is deciding what each section says once it is no longer carrying a picture, and that is a writing problem rather than a rendering one.
 
 ## Anti-claims
 
