@@ -3,6 +3,8 @@ import type { GameState } from "../src/state.ts";
 import type { SectionView } from "../src/sections.ts";
 import type { Advice } from "../src/advise.ts";
 import type { MapModel, MapLayer, LayerGroup } from "../src/layers.ts";
+import type { PlanView, StepView } from "../src/plan.ts";
+import type { Icons } from "../src/icons.ts";
 
 /**
  * The dashboard.
@@ -30,6 +32,30 @@ function esc(s: string): string {
   return s.replace(/[&<>"]/g, (c) =>
     c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;",
   );
+}
+
+/**
+ * The icon set for the page being rendered.
+ *
+ * Module state, set once at the top of `renderPage`, because the thing that
+ * wants an icon is a table cell six calls down and threading the set through
+ * every signature between here and there would buy nothing. Null is the normal
+ * case on a machine with no game installed.
+ */
+let ICONS: Icons | null = null;
+
+/**
+ * A name with the game's own icon in front of it.
+ *
+ * The icon is decoration, so it carries an empty alt and the name stays the
+ * text: a reader with images off, or a copy and paste, gets exactly what it got
+ * before. A name the install has no icon for renders as it always did.
+ */
+function withIcon(name: string, label?: string): string {
+  const url = ICONS?.url(name) ?? null;
+  const text = esc(label ?? name);
+  if (!url) return text;
+  return `<span class="named"><img class="ico" src="${esc(url)}" alt="" loading="lazy">${text}</span>`;
 }
 
 function fig(value: string, source: string, field: string, label: string, tone = ""): string {
@@ -83,6 +109,49 @@ tr:last-child td{border-bottom:0}
 ul{margin:0;padding-left:1.1rem}
 li{font-size:.82rem;margin:.1rem 0;overflow-wrap:anywhere}
 .quiet{color:var(--dim);font-style:italic;font-size:.85rem}
+/* The plan sits at the top of the reading pane and looks like a plan: numbered,
+   ordered, each step carrying what it costs and how far along it is. It is the
+   one authored thing on a measured page, so every number inside it is read from
+   the state file at render time rather than typed into the prose. */
+/* The game's own icons, at the size a row can carry. Pixel art scaled down
+   smooths badly, so they are handed to the browser at a size close to a factor
+   of the 64 pixel source and left alone. */
+.ico{width:1.15rem;height:1.15rem;vertical-align:-.28em;margin-right:.3rem;flex:0 0 auto}
+.named{display:inline-flex;align-items:center;min-width:0}
+.named .ico{margin-right:.35rem}
+td .named{max-width:100%}
+.fig .l .ico{width:.95rem;height:.95rem;vertical-align:-.2em;margin-right:.2rem}
+.plan{grid-column:1/-1}
+.plan .why{color:var(--dim);font-size:.78rem;margin:.15rem 0 0}
+.steps{list-style:none;margin:.6rem 0 0;padding:0;display:grid;gap:.55rem}
+.step{border:1px solid var(--line);border-radius:.4rem;padding:.55rem .7rem;position:relative;
+  background:color-mix(in srgb,var(--fg) 2%,transparent)}
+.step[data-fx]{cursor:pointer}
+.step[data-fx]:hover,.step[data-fx]:focus-visible{border-color:var(--accent)}
+.step.done{opacity:.62}
+.step .n{position:absolute;left:-.55rem;top:.5rem;width:1.15rem;height:1.15rem;border-radius:50%;
+  background:var(--accent);color:var(--card);font-size:.66rem;font-weight:700;
+  display:flex;align-items:center;justify-content:center}
+.step.done .n{background:var(--up)}
+.step.started .n{background:var(--card);color:var(--accent);border:1.5px solid var(--accent)}
+.step h3{margin:0 0 .1rem .75rem;font-size:.88rem;font-weight:620}
+.step .chips{display:flex;flex-wrap:wrap;gap:.3rem .5rem;margin:.25rem 0 .1rem .75rem;font-size:.7rem;color:var(--dim)}
+.step .chips b{font-weight:600;color:var(--fg)}
+.step .body{margin:.4rem 0 0 .75rem;font-size:.82rem;display:none}
+.step.open .body{display:block}
+.step .body p{margin:0 0 .4rem}
+.step .bars{margin:.35rem 0 0 .75rem;display:grid;gap:.25rem}
+.bar{display:grid;grid-template-columns:9.5rem 1fr auto;gap:.5rem;align-items:center;font-size:.7rem;color:var(--dim)}
+.bar .track{height:.35rem;border-radius:.2rem;background:color-mix(in srgb,var(--fg) 12%,transparent);overflow:hidden}
+.bar .fill{height:100%;background:var(--accent)}
+.bar.done .fill{background:var(--up)}
+.bar .val{font-variant-numeric:tabular-nums;color:var(--fg)}
+.step .more{font:inherit;font-size:.68rem;background:none;border:0;color:var(--accent);cursor:pointer;
+  padding:.1rem .3rem;margin-left:.45rem;border-radius:.2rem}
+.plan .stale{font-size:.72rem;color:var(--down);margin:.3rem 0 0}
+.planlink{font-size:.8rem;color:var(--accent);text-decoration:none;border:1px solid var(--accent);
+  border-radius:.3rem;padding:.1rem .5rem;margin-left:auto}
+.planlink:hover{background:color-mix(in srgb,var(--accent) 14%,transparent)}
 .hist{font-size:.78rem;color:var(--dim)}
 .hist a{color:var(--accent);text-decoration:none}
 .hist a:hover{text-decoration:underline}
@@ -119,9 +188,15 @@ footer{margin-top:1.25rem;color:var(--dim);font-size:.72rem;border-top:1px solid
 #map{display:block;width:100%;height:100%;cursor:grab;--mk:2.6;--tile:1;--lbl:14}
 #map.dragging{cursor:grabbing}
 #map .fp{fill:currentColor;stroke:currentColor;vector-effect:non-scaling-stroke;
-  stroke-width:calc(var(--mk)*1px);stroke-linejoin:round;paint-order:stroke}
+  stroke-width:calc(var(--mk)*1px);stroke-linejoin:round}
 #map .tile{stroke:currentColor;vector-effect:non-scaling-stroke;
-  stroke-width:calc(var(--tile)*1px);stroke-linejoin:round;paint-order:stroke;shape-rendering:crispEdges}
+  stroke-width:calc(var(--tile)*1px);stroke-linejoin:round}
+/* While the view is moving, drop antialiasing quality and the labels. The map
+   holds about 50000 rectangles and the browser rasterises all of them on every
+   frame of a pan; this is the difference between a drag that tracks the cursor
+   and one that catches up afterwards. Both come back the moment it settles. */
+#map.moving{shape-rendering:optimizeSpeed}
+#map.moving .lbl,#map.moving .area{display:none}
 /* Water is ground, so it sits back: at full strength it is a blue field with a
    base somewhere underneath it rather than a coastline the base sits on. */
 #map .tile.water{opacity:.5}
@@ -251,19 +326,53 @@ const SCRIPT = `
     svg.style.setProperty("--lbl", (13 / d.s).toFixed(2));
   }
 
+  // One repaint per animation frame, whatever the input device says.
+  //
+  // A wheel or a drag fires far faster than the screen refreshes, and each
+  // event used to rebuild the grid, the scale bar and the viewBox in line.
+  // Coalescing them into the next frame is the single biggest thing that made
+  // the map keep up with a cursor.
+  var frame = null;
+  var settle = null;
   function apply() {
-    svg.setAttribute("viewBox", vb.x + " " + vb.y + " " + vb.w + " " + vb.h);
-    drawGrid();
-    drawScale();
-    ink();
+    if (frame !== null) return;
+    frame = requestAnimationFrame(function () {
+      frame = null;
+      svg.setAttribute("viewBox", vb.x + " " + vb.y + " " + vb.w + " " + vb.h);
+      drawGrid();
+      drawScale();
+      ink();
+    });
+  }
+
+  // Marks the view as moving, and unmarks it once nothing has moved for a beat.
+  function moving() {
+    svg.classList.add("moving");
+    if (settle !== null) clearTimeout(settle);
+    settle = setTimeout(function () {
+      settle = null;
+      svg.classList.remove("moving");
+    }, 160);
   }
 
   // Chunk lines, generated for the visible range only, and only once a chunk is
   // wide enough on screen to be read. They are the same 32 tiles the collector
   // buckets in, never a decorative grid at a made-up spacing.
+  var gridKey = "";
   function drawGrid() {
     var d = drawn();
-    if (d.s * chunk < 26) { grid.innerHTML = ""; return; }
+    if (d.s * chunk < 26) {
+      if (gridKey !== "") { grid.innerHTML = ""; gridKey = ""; }
+      return;
+    }
+    // The lines only change when the visible range of chunks changes, which is
+    // far less often than the view moves.
+    var key = [
+      Math.floor(vb.x / chunk), Math.floor(vb.y / chunk),
+      Math.ceil((vb.x + vb.w) / chunk), Math.ceil((vb.y + vb.h) / chunk),
+    ].join(",");
+    if (key === gridKey) return;
+    gridKey = key;
     var x0 = Math.floor(vb.x / chunk) * chunk, x1 = vb.x + vb.w;
     var y0 = Math.floor(vb.y / chunk) * chunk, y1 = vb.y + vb.h;
     var out = [];
@@ -304,6 +413,7 @@ const SCRIPT = `
 
   box.addEventListener("wheel", function (e) {
     e.preventDefault();
+    moving();
     zoomAt(e.clientX, e.clientY, e.deltaY > 0 ? 1.18 : 1 / 1.18);
   }, { passive: false });
 
@@ -315,6 +425,7 @@ const SCRIPT = `
   });
   svg.addEventListener("pointermove", function (e) {
     if (!drag) return;
+    moving();
     var d = drawn();
     vb.x -= (e.clientX - drag.x) / d.s;
     vb.y -= (e.clientY - drag.y) / d.s;
@@ -387,6 +498,18 @@ const SCRIPT = `
     });
   }
   [].slice.call(document.querySelectorAll("[data-fx]")).forEach(hookFocus);
+
+  // A step opens its own reasoning in place. The button stops the click from
+  // also flying the map, because wanting to read why is not wanting to move.
+  [].slice.call(document.querySelectorAll("[data-open]")).forEach(function (b) {
+    b.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var step = b.closest(".step");
+      if (!step) return;
+      var open = step.classList.toggle("open");
+      b.textContent = open ? "hide" : "why & how";
+    });
+  });
 
   // A section has no single place, so its control turns on the layer that
   // explains it and fits the whole base. Panning a section somewhere would be
@@ -462,6 +585,18 @@ export interface PageInput {
   sections: SectionView[];
   /** Earlier reports, newest first, as file names. */
   history: string[];
+  /**
+   * A written plan for this save, when one has been produced beside the
+   * dashboard. Passed rather than assumed: a link to a page that does not
+   * exist is worse than no link.
+   */
+  plan?: PlanView | null;
+  /**
+   * The game's own icons, read out of the installed game rather than copied
+   * into this repo. Absent when the install cannot be found, and then every
+   * name simply stands on its own.
+   */
+  icons?: Icons | null;
   /** The one map's layers, or null when the state file carries no map. */
   model?: MapModel | null;
 }
@@ -576,6 +711,92 @@ function mapPane(model: MapModel): string {
   );
 }
 
+/**
+ * The plan, rendered as part of the dashboard rather than beside it.
+ *
+ * A step is a card that knows where it happens, so `data-fx` sends the one map
+ * to the same coordinates and layer a line of advice would, and it knows how
+ * far along it is, because its checks are paths into the state file that were
+ * read at render time. A step whose checks are all met greys itself out: the
+ * plan keeps score without anyone ticking a box.
+ */
+function barOf(p: StepView["progress"][number]): string {
+  if (p.value === null) {
+    return (
+      `<div class="bar"><span>${esc(p.label)}</span><span class="track"></span>` +
+      `<span class="val">not in this save</span></div>`
+    );
+  }
+  const pct = p.fraction === null ? 0 : Math.round(p.fraction * 100);
+  const shown = `${p.value.toFixed(p.value % 1 === 0 ? 0 : 1)} of ${String(p.target)}`;
+  return (
+    `<div class="bar${p.done ? " done" : ""}"><span>${esc(p.label)}</span>` +
+    `<span class="track"><span class="fill" style="width:${String(pct)}%"></span></span>` +
+    `<span class="val">${esc(shown)}</span></div>`
+  );
+}
+
+function stepOf(step: StepView, i: number): string {
+  const fx = step.where
+    ? ` data-fx="${step.where.x.toFixed(0)} ${step.where.y.toFixed(0)} ${step.where.w.toFixed(0)} ` +
+      `${step.where.h.toFixed(0)} ${esc(step.where.layer ?? "")}" tabindex="0" role="button"` +
+      ` title="Show this on the map"`
+    : "";
+  return (
+    `<li class="step${step.done ? " done" : ""}${step.started ? " started" : ""}"${fx}>` +
+    `<span class="n">${String(i + 1)}</span>` +
+    `<h3>${esc(step.title)}<button type="button" class="more" data-open>why &amp; how</button></h3>` +
+    `<div class="chips"><span>costs <b>${esc(step.cost)}</b></span>` +
+    `<span>buys <b>${esc(step.buys)}</b></span>` +
+    `<span>undo: ${esc(step.reversible)}</span>` +
+    (step.where?.label ? `<span>at <b>${esc(step.where.label)}</b></span>` : "") +
+    `</div>` +
+    (step.progress.length > 0 ? `<div class="bars">${step.progress.map(barOf).join("")}</div>` : "") +
+    `<div class="body"><p class="why">${esc(step.why)}</p>` +
+    step.detail.map((d) => `<p>${esc(d)}</p>`).join("") +
+    `</div></li>`
+  );
+}
+
+function planSection(plan: PlanView): string {
+  const stale =
+    plan.ticksBehind > 0
+      ? `<p class="stale">Written ${String(Math.round(plan.ticksBehind / 3600))} minutes of play ago. ` +
+        `The bars are from this read; the words are from then.</p>`
+      : "";
+  return (
+    `<section class="plan" id="plan"><h2>The plan</h2>` +
+    `<p class="lead">${esc(plan.lead)}</p>` +
+    `<p class="carry">${plan.corrections.map(esc).join("</p><p class=\"carry\">")}</p>` +
+    `<ol class="steps">${plan.steps.map(stepOf).join("")}</ol>` +
+    stale +
+    (plan.source ? `<p class="hist"><a href="${esc(plan.source)}">the long form, with every number and its command</a></p>` : "") +
+    `</section>`
+  );
+}
+
+/**
+ * A table cell that might be naming something the game has a picture of.
+ *
+ * Two shapes cover every first column on this page: the name on its own
+ * (`iron-plate`, `roboport`), and a name with a place after it (`coal at -256,
+ * 1536`). Anything else keeps its text, because a cell reading "Load Iron to
+ * Unload Iron" is a stop name Soushi wrote and not a prototype.
+ */
+function cellWithIcon(cell: string): string {
+  if (ICONS?.url(cell)) return withIcon(cell);
+  // Sections print a prototype name as words, because "solar panel" reads
+  // better in a table than "solar-panel". The hyphen goes back for the lookup
+  // and the words stay on the page.
+  const hyphenated = cell.replace(/ /g, "-");
+  if (ICONS?.url(hyphenated)) return withIcon(hyphenated, cell);
+  // A name with something after it: a place ("coal at -256, 1536") or a count
+  // ("iron-ore 4000").
+  const lead = /^([a-z0-9-]+)(?: at | )/.exec(cell);
+  if (lead && ICONS?.url(lead[1]!)) return withIcon(lead[1]!, cell);
+  return esc(cell);
+}
+
 function tableOf(t: SectionView["tables"][number], src: string): string {
   if (t.rows.length === 0) return "";
   const numeric = new Set(t.numeric);
@@ -586,7 +807,13 @@ function tableOf(t: SectionView["tables"][number], src: string): string {
     t.rows
       .map(
         (row) =>
-          `<tr>${row.map((cell, i) => `<td${numeric.has(i) ? ' class="n"' : ""}>${esc(cell)}</td>`).join("")}</tr>`,
+          `<tr>${row
+            .map((cell, i) =>
+              numeric.has(i)
+                ? `<td class="n">${esc(cell)}</td>`
+                : `<td>${cellWithIcon(cell)}</td>`,
+            )
+            .join("")}</tr>`,
       )
       .join("") +
     `</table>`
@@ -594,6 +821,7 @@ function tableOf(t: SectionView["tables"][number], src: string): string {
 }
 
 export function renderPage(input: PageInput): string {
+  ICONS = input.icons ?? null;
   const { report: r, state, stateFile, history, sections: views } = input;
   const model = input.model ?? null;
   const src = stateFile;
@@ -608,15 +836,21 @@ export function renderPage(input: PageInput): string {
     const cls = d > 0 ? "up" : d < 0 ? "down" : "";
     return (
       `<tr data-source="${esc(src)}" data-field="forces.player.production.item.${esc(name)}.producedPerMinute">` +
-      `<td>${esc(name)}</td><td class="n ${cls}">${esc(signed(d, places))}</td>` +
+      `<td>${withIcon(name)}</td><td class="n ${cls}">${esc(signed(d, places))}</td>` +
       `<td class="n">${after.toFixed(places)}</td></tr>`
     );
   };
 
   const cards: string[] = [];
 
-  // The whole advice list first, tagged by section, because the reason to open
-  // the page is to be told what to do, not to browse the base.
+  // The plan first when there is one. The advice below it is derived and says
+  // what is short right now; the plan is written and says what to do about it,
+  // in what order, and how far along each step already is. They are different
+  // things and the page shows both rather than choosing.
+  if (input.plan) cards.push(planSection(input.plan));
+
+  // The whole advice list, tagged by section, because the reason to open the
+  // page is to be told what to do, not to browse the base.
   if (a && a.advice.length > 0) {
     cards.push(`<section class="wide"><h2>What to do</h2>${adviceList(a.advice, true)}</section>`);
   }
@@ -665,7 +899,7 @@ export function renderPage(input: PageInput): string {
       (r.queue.length > 1
         ? `<table data-source="${esc(src)}" data-field="forces.player.technologies.queue">` +
           `<tr><th>research queue</th></tr>` +
-          r.queue.slice(1).map((t) => `<tr><td>${esc(t)}</td></tr>`).join("") +
+          r.queue.slice(1).map((t) => `<tr><td>${withIcon(t)}</td></tr>`).join("") +
           `</table>`
         : "") +
       (r.researched.length > 0
@@ -699,7 +933,7 @@ export function renderPage(input: PageInput): string {
             const d = m.after - m.before;
             return (
               `<tr data-source="${esc(src)}" data-field="forces.player.machines.${esc(m.name)}">` +
-              `<td>${esc(m.name)}</td><td class="n ${d > 0 ? "up" : "down"}">${esc(signed(d, 0))}</td>` +
+              `<td>${withIcon(m.name)}</td><td class="n ${d > 0 ? "up" : "down"}">${esc(signed(d, 0))}</td>` +
               `<td class="n">${m.after}</td></tr>`
             );
           })
@@ -748,6 +982,7 @@ export function renderPage(input: PageInput): string {
   <h1>${esc(r.save)}</h1>
   <span class="meta">tick ${r.tick}${r.previousTick !== null ? ` (was ${r.previousTick})` : ""} &middot; ${r.hoursPlayed.toFixed(1)} h played &middot; read ${esc(state.save.readAt.slice(0, 16).replace("T", " "))}</span>
   <span class="meta">Factorio ${esc(state.snapshot.gameVersion)} build ${esc(state.snapshot.build)}</span>
+  ${input.plan ? `<a class="planlink" href="#plan">the plan, step by step &darr;</a>` : ""}
 </header>
 ${
   model

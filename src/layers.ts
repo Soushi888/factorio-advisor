@@ -158,14 +158,91 @@ function round(n: number): string {
 function footprints(groups: Array<{ points: Array<[number, number]>; w: number; h: number }>): string {
   const d: string[] = [];
   for (const g of groups) {
+    if (g.w === 1 && g.h === 1) {
+      // Single-tile entities are merged into runs first. A belt line is 1x1
+      // repeated fifty times, and fifty rectangles cost fifty times what one
+      // does to rasterise: this save draws 29624 belt pieces, and merging them
+      // into the lines they already form is the difference between a map that
+      // pans and one that stutters. Exactness is untouched, because a run
+      // covers exactly the tiles the entities stand on.
+      for (const [x, y, w, h] of merged(g.points)) {
+        d.push(`M${round(x)} ${round(y)}h${round(w)}v${round(h)}h${round(-w)}z`);
+      }
+      continue;
+    }
     const hw = g.w / 2;
     const hh = g.h / 2;
     for (const [x, y] of g.points) {
-      d.push(`M${round(x - hw)} ${round(y - hh)}h${round(g.w)}v${round(g.h)}h${round(-g.w)}z`);
+      d.push(`M${round(x - hw)} ${round(y - hh)}h${round(g.w)}v${round(g.h)}h${round(-g.h === 0 ? g.w : g.w)}z`);
     }
   }
   if (d.length === 0) return "";
   return `<path class="fp" d="${d.join("")}"/>`;
+}
+
+/**
+ * Single-tile positions merged into the longest rectangles that cover them.
+ *
+ * Horizontally first, since a belt line is usually a row; whatever is left as a
+ * single tile is then merged down its column, which catches the vertical runs.
+ * The output covers exactly the same tiles as the input, so nothing is drawn
+ * that is not there and nothing there goes undrawn.
+ */
+function merged(points: Array<[number, number]>): Array<[number, number, number, number]> {
+  const rows = new Map<number, number[]>();
+  for (const [cx, cy] of points) {
+    const x = Math.floor(cx);
+    const y = Math.floor(cy);
+    const row = rows.get(y);
+    if (row) row.push(x);
+    else rows.set(y, [x]);
+  }
+
+  const out: Array<[number, number, number, number]> = [];
+  const singles: Array<[number, number]> = [];
+  for (const [y, xs] of rows) {
+    xs.sort((a, b) => a - b);
+    let start = xs[0]!;
+    let prev = start;
+    for (let i = 1; i <= xs.length; i += 1) {
+      const x = xs[i];
+      if (x !== undefined && x === prev + 1) {
+        prev = x;
+        continue;
+      }
+      const width = prev - start + 1;
+      if (width === 1) singles.push([start, y]);
+      else out.push([start, y, width, 1]);
+      if (x === undefined) break;
+      start = x;
+      prev = x;
+    }
+  }
+
+  // What is left is one tile wide, so try the other direction.
+  const cols = new Map<number, number[]>();
+  for (const [x, y] of singles) {
+    const col = cols.get(x);
+    if (col) col.push(y);
+    else cols.set(x, [y]);
+  }
+  for (const [x, ys] of cols) {
+    ys.sort((a, b) => a - b);
+    let start = ys[0]!;
+    let prev = start;
+    for (let i = 1; i <= ys.length; i += 1) {
+      const y = ys[i];
+      if (y !== undefined && y === prev + 1) {
+        prev = y;
+        continue;
+      }
+      out.push([x, start, 1, prev - start + 1]);
+      if (y === undefined) break;
+      start = y;
+      prev = y;
+    }
+  }
+  return out;
 }
 
 /**
@@ -212,14 +289,37 @@ function areaShapes(areas: Area[], withLabels = false): string {
     .join("");
 }
 
-/** One chunk rectangle, at an opacity the caller has already decided. */
-function chunkRect(cx: number, cy: number, cell: number, opacity: number, title?: string): string {
-  return (
-    `<rect x="${String(cx * cell)}" y="${String(cy * cell)}" ` +
-    `width="${String(cell)}" height="${String(cell)}" opacity="${opacity.toFixed(2)}">` +
-    (title ? `<title>${esc(title)}</title>` : "") +
-    `</rect>`
-  );
+/**
+ * Chunk squares, banded by opacity into a handful of paths.
+ *
+ * One `<rect>` per chunk is 3823 DOM nodes for the charted ground alone, and
+ * the browser lays out and rasterises every one of them on every pan. Rounding
+ * the opacity to a few bands and emitting one path per band leaves the map
+ * looking the same and the document a few nodes long. The cost is the per-chunk
+ * tooltip, which said what the legend already says.
+ */
+const OPACITY_BANDS = 6;
+
+function chunkPaths(
+  cells: Array<{ cx: number; cy: number; opacity: number; size?: number }>,
+  cell: number,
+): string {
+  const bands = new Map<number, string[]>();
+  for (const c of cells) {
+    const band = Math.max(1, Math.round(c.opacity * OPACITY_BANDS));
+    const size = c.size ?? cell;
+    const inset = (cell - size) / 2;
+    const x = c.cx * cell + inset;
+    const y = c.cy * cell + inset;
+    const d = `M${round(x)} ${round(y)}h${round(size)}v${round(size)}h${round(-size)}z`;
+    const list = bands.get(band);
+    if (list) list.push(d);
+    else bands.set(band, [d]);
+  }
+  return [...bands.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([band, ds]) => `<path opacity="${(band / OPACITY_BANDS).toFixed(2)}" d="${ds.join("")}"/>`)
+    .join("");
 }
 
 /** What the snapshot says about a placed prototype: which family, and how big. */
@@ -399,7 +499,7 @@ export function mapModel(input: ModelInput): MapModel {
       census: terrain.length,
       missing: [],
       note: `${String(terrain.length)} chunks charted: the extent the map in game would show you`,
-      body: terrain.map((t) => chunkRect(t.cx, t.cy, cell, 0.1)).join(""),
+      body: chunkPaths(terrain.map((t) => ({ cx: t.cx, cy: t.cy, opacity: 0.1 })), cell),
     });
   }
 
@@ -465,21 +565,18 @@ export function mapModel(input: ModelInput): MapModel {
       census: nests + worms,
       missing: [],
       note: `${String(nests)} nests and ${String(worms)} worms in the charted area, counted per chunk`,
-      body: enemy
-        .map((e) => {
-          // Sized by how much is in the chunk, centred on it, never filling it:
-          // the count is real and the position is the chunk, which is as
+      body: chunkPaths(
+        enemy.map((e) => ({
+          cx: e.cx,
+          cy: e.cy,
+          opacity: 0.62,
+          // Sized by how much is in the chunk and centred on it, never filling
+          // it: the count is real and the position is the chunk, which is as
           // precise as this measurement gets.
-          const r = (cell / 2) * Math.min(1, 0.3 + 0.7 * Math.sqrt((e.nests + e.worms) / Math.max(1, max)));
-          const cx = e.cx * cell + cell / 2;
-          const cy = e.cy * cell + cell / 2;
-          return (
-            `<rect x="${round(cx - r)}" y="${round(cy - r)}" width="${round(r * 2)}" ` +
-            `height="${round(r * 2)}" opacity="0.62"><title>${String(e.nests)} nests, ` +
-            `${String(e.worms)} worms</title></rect>`
-          );
-        })
-        .join(""),
+          size: cell * Math.min(1, 0.3 + 0.7 * Math.sqrt((e.nests + e.worms) / Math.max(1, max))),
+        })),
+        cell,
+      ),
     });
   }
 
@@ -497,17 +594,14 @@ export function mapModel(input: ModelInput): MapModel {
       census: polluted.length,
       missing: [],
       note: `the surface's own cloud, read at each chunk centre, up to ${String(Math.round(max))}`,
-      body: polluted
-        .map((c) =>
-          chunkRect(
-            c.cx,
-            c.cy,
-            cell,
-            Math.min(0.55, 0.08 + 0.47 * Math.sqrt((c.pollution ?? 0) / max)),
-            `pollution ${String(Math.round(c.pollution ?? 0))}`,
-          ),
-        )
-        .join(""),
+      body: chunkPaths(
+        polluted.map((c) => ({
+          cx: c.cx,
+          cy: c.cy,
+          opacity: Math.min(0.55, 0.08 + 0.47 * Math.sqrt((c.pollution ?? 0) / max)),
+        })),
+        cell,
+      ),
     });
   }
 

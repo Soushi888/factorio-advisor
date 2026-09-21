@@ -11,6 +11,8 @@ import { researchable } from "../src/next.ts";
 import { sections } from "../src/sections.ts";
 import { renderPage } from "./page.ts";
 import { mapModel } from "../src/layers.ts";
+import { planView, type Plan, type PlanView } from "../src/plan.ts";
+import { Icons } from "../src/icons.ts";
 import { mapOf, type Area } from "../src/map.ts";
 import { busAreas, judge as judgeBus, readSurvey } from "../src/bus.ts";
 
@@ -160,6 +162,8 @@ export async function reportOn(
       stateFile,
       sections: derived?.views ?? [],
       history: historyFor(save).filter((f) => f !== `${base}.md`),
+      plan: planFor(save, state),
+      icons: new Icons(protoData()),
       model: modelFor(state, derived?.advisory ?? null),
     }),
   );
@@ -205,6 +209,8 @@ export function rerenderPage(save: string, opts: { threshold?: number } = {}): s
       stateFile: `data/state/${slug(save)}.json`,
       sections: derived?.views ?? [],
       history: historyFor(save).filter((f) => f !== `${slug(save)}-${String(state.save.tick)}.md`),
+      plan: planFor(save, state),
+      icons: new Icons(protoData()),
       model: modelFor(state, derived?.advisory ?? null),
     }),
   );
@@ -219,6 +225,27 @@ export function rerenderPage(save: string, opts: { threshold?: number } = {}): s
  * and the corridors would be drawn over a map they no longer match, which is the
  * same trap the `bus` command refuses at the command line.
  */
+/**
+ * The written plan for a save, with tonight's numbers read into it.
+ *
+ * Authored rather than derived, which is why it lives in `data/plans/` beside
+ * the state files rather than in the repo: it is about one person's factory at
+ * one tick. Absent is the normal case and the dashboard simply has no plan
+ * section; a malformed one is reported by being absent too, because a plan that
+ * half parses would put half a step on the page.
+ */
+function planFor(save: string, state: GameState): PlanView | null {
+  const path = join(PROJECT_ROOT, "data", "plans", `${slug(save)}.json`);
+  if (!existsSync(path)) return null;
+  try {
+    const plan = JSON.parse(readFileSync(path, "utf8")) as Plan;
+    if (!Array.isArray(plan.steps) || plan.steps.length === 0) return null;
+    return planView(plan, state);
+  } catch {
+    return null;
+  }
+}
+
 function protoData(): ReturnType<typeof load> | null {
   try {
     return load();
