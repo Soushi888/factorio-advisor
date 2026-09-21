@@ -111,6 +111,15 @@ export interface Advice {
   because: string;
   /** Which section of the dashboard it belongs under. */
   section: SectionId;
+  /**
+   * Where on the map this line is about, and the layer that explains it.
+   *
+   * Present ONLY on advice whose own text names the coordinates, which is the
+   * rule the C33 falsifier sets: a line that pans the map to a place it never
+   * mentioned is a line the reader cannot check. Most advice is about a rate
+   * rather than a place and carries nothing here.
+   */
+  focus?: { x: number; y: number; w: number; h: number; layer: string };
 }
 
 export interface Advisory {
@@ -509,6 +518,7 @@ function buildAdvice(a: AdviceInput): Advice[] {
       because:
         `${String(worstBlock.engines)} engines there against ${String(worstBlock.boilers)} boilers, ` +
         `which feed ${String(Math.floor(worstBlock.fed))} of them. It is the biggest single shortfall on the map.`,
+      focus: { x: worstBlock.x, y: worstBlock.y, w: worstBlock.w, h: worstBlock.h, layer: "power" },
     });
   }
 
@@ -525,6 +535,7 @@ function buildAdvice(a: AdviceInput): Advice[] {
           ? `, against ${ore(working.amount)} left under the ${String(working.extractors)} drills at ` +
             `${String(Math.round(working.x))}, ${String(Math.round(working.y))}.`
           : `, and it is the largest ${resource} field charted.`),
+      focus: { x: free.x, y: free.y, w: free.w, h: free.h, layer: "ore" },
     });
   }
 
