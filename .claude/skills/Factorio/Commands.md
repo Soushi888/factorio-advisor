@@ -24,6 +24,7 @@ The save is copied into `.factorio-runtime/saves/` and read there; his own save 
 | `bun run next` | What is researchable right now, cheapest first, with lab-seconds at his actual lab speed. |
 | `bun run next --for=carbon-fiber` | The unresearched path from here to what unlocks an item or a technology. |
 | `bun run power` | Generation against draw, priced from the census: nameplate, solar averaged, steam limited, and the shortfall. |
+| `bun run bottleneck` | Two readings, never blended: machine classes by how much of their time the output accounts for, and items and fluids by what is left over against their own demand. Each row names the recipe it charged and the split it used. |
 
 ## Answering a question
 
@@ -42,6 +43,7 @@ The save is copied into `.factorio-runtime/saves/` and read there; his own save 
 
 - `ratio`: `--machine=assembling-machine-2` to hold it to what he has, `--modules=`, `--beacons=`, `--recipe=<product>=<recipe>`, `--raw=iron-plate,copper-plate`.
 - `advise`: `--spm=`, `--force=`, `--top=`.
+- `bottleneck`: `--save=`, `--force=`, `--top=` (how many tightness rows).
 - `state`: `--save=`, `--force=`, `--top=`.
 
 ## What they refuse, on purpose
@@ -50,4 +52,7 @@ The save is copied into `.factorio-runtime/saves/` and read there; his own save 
 - **Quality-scaled module effects.** Not applied; a print using quality modules prints a warning that the figures understate it.
 - **A cycle in a production chain.** Reported, never unrolled.
 - **A technology name the snapshot does not carry.** Listed as unknown, never dropped.
+- **Which machine of a shared class did the work.** A save reports no recipe per machine, so `bottleneck` splits a recipe's work between the census classes that could have run it, by count times crafting speed. Classes sharing a recipe therefore read the same busy fraction; that is the measurement's honest resolution, not a bug.
+- **Module loadouts.** A save read reports none, so `bottleneck` charges every machine at its bare prototype speed. A class running speed or productivity modules reads busier than it is, and the output says so instead of applying a factor.
+- **A recipe the force has not researched.** Never charged, however well it fits the product: `acid-neutralisation` would otherwise take credit for every boiler's steam.
 - **A recycling recipe as a way to manufacture something.** 310 of the 659 recipes list their ingredients as outputs; leaving them in makes the solver propose making iron ore by recycling iron ore. `scrap-recycling` is deliberately kept, because on Fulgora it is a genuine source.

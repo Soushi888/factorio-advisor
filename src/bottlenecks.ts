@@ -105,7 +105,24 @@ export interface Unattributed {
   recipe: string | null;
   /** Classes that could run that recipe, none of which the census has. */
   couldRun: string[];
-  reason: "raw" | "no-machine-built";
+  /**
+   * Recipes that also make it, that this base has the machines for, and that it
+   * has researched.
+   *
+   * Only ever non-empty on a `raw` row, and when it is, the row is worth reading
+   * twice: Space Age declares resources and tile fluids from planets Soushi has
+   * not reached, so heavy oil reads as raw because an oil ocean exists on
+   * Fulgora and sulfuric acid because a geyser exists on Vulcanus, while on
+   * Nauvis he makes both in buildings that are charged nothing here. Barrelling
+   * recipes turn up in this list too and mean nothing, which is why the recipes
+   * are named rather than summarised into a verdict.
+   */
+  alsoMadeBy: string[];
+  /** The census has a class that could run the recipe named. */
+  machinePlaced: boolean;
+  /** The force has researched the recipe named. */
+  recipeResearched: boolean;
+  reason: "raw" | "not-runnable";
 }
 
 export interface Finding {
@@ -179,6 +196,19 @@ function shares(pool: CraftingMachine[], census: Map<string, number>): Map<strin
   return out;
 }
 
+/**
+ * Whether the force could have run this recipe at all.
+ *
+ * An unresearched recipe made nothing, however well it fits the product. Without
+ * this, 121514/min of steam from 115 boilers was charged to the chemical plants
+ * through `acid-neutralisation`, a Vulcanus recipe behind `calcite-processing`,
+ * which this save has not researched. Found by hand-checking the chemical plant
+ * row against the raw JSON, 2026-09-21.
+ */
+function runnable(index: RecipeIndex, researched: Set<string>, r: Recipe): boolean {
+  return r.enabled || index.unlockedBy(r.name).some((t) => researched.has(t));
+}
+
 interface Attribution {
   recipe: Recipe;
   pool: CraftingMachine[];
@@ -199,16 +229,20 @@ function attribute(
   data: Data,
   index: RecipeIndex,
   census: Map<string, number>,
+  researched: Set<string>,
   product: string,
 ): Attribution | { recipe: Recipe | null } {
   const def = index.defaultFor(product);
   if (!def) return { recipe: null };
 
   const direct = poolFor(data, census, def);
-  if (direct.length > 0) return { recipe: def, pool: direct, rule: "default" };
+  if (direct.length > 0 && runnable(index, researched, def)) {
+    return { recipe: def, pool: direct, rule: "default" };
+  }
 
   const covered = index
     .productionCandidates(product)
+    .filter((r) => runnable(index, researched, r))
     .map((r) => ({ r, m: poolFor(data, census, r) }))
     .filter((x) => x.m.length > 0)
     .sort(
@@ -260,6 +294,7 @@ export function bottlenecks(
   if (legacy) return empty;
 
   const census = new Map<string, number>(Object.entries(f.machines));
+  const researched = new Set(f.technologies.researched);
 
   // Every product the base made, items and fluids together. Fluids are half the
   // oil and chemical end of a base and live in their own map; reading only
@@ -281,14 +316,24 @@ export function bottlenecks(
   const unattributed: Unattributed[] = [];
 
   for (const [product, m] of made) {
-    const a = attribute(data, index, census, product);
+    const a = attribute(data, index, census, researched, product);
     if (!isAttributed(a)) {
       unattributed.push({
         product,
         producedPerMinute: m.perMinute,
         recipe: a.recipe?.name ?? null,
         couldRun: a.recipe ? machinesFor(data, a.recipe).map((x) => x.name) : [],
-        reason: a.recipe ? "no-machine-built" : "raw",
+        alsoMadeBy: a.recipe
+          ? []
+          : index
+              .producersOf(product)
+              .filter(
+                (r) => poolFor(data, census, r).length > 0 && runnable(index, researched, r),
+              )
+              .map((r) => r.name),
+        machinePlaced: a.recipe ? poolFor(data, census, a.recipe).length > 0 : false,
+        recipeResearched: a.recipe ? runnable(index, researched, a.recipe) : false,
+        reason: a.recipe ? "not-runnable" : "raw",
       });
       continue;
     }

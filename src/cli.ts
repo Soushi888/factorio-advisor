@@ -1971,22 +1971,36 @@ function cmdBottleneck(args: Args): void {
   }
 
   if (r.unattributed.length > 0) {
-    const noMachine = r.unattributed.filter((u) => u.reason === "no-machine-built");
     console.log(sub("Made, but charged to no class"));
     console.log(
       bullet(
-        r.unattributed
-          .slice(0, 8)
-          .map((u) =>
-            u.reason === "raw"
-              ? `${u.product}: mined or pumped, not crafted, ${num(u.producedPerMinute, 1)}/min`
-              : `${u.product}: ${u.recipe ?? "no recipe"} needs ${u.couldRun.join(", ") || "a machine"}, none placed`,
-          ),
+        r.unattributed.map((u) => {
+          const at = `${num(u.producedPerMinute, 1)}/min`;
+          if (u.reason !== "raw") {
+            const recipe = u.recipe ?? "(none)";
+            if (!u.recipeResearched) {
+              return (
+                `${u.product}, ${at}: the recipe that would make it here is ${recipe}, ` +
+                `which you have not researched, so nothing is charged. Whatever makes ` +
+                `it is not a crafting machine this reading covers`
+              );
+            }
+            return (
+              `${u.product}, ${at}: its recipe ${recipe} wants ` +
+              `${u.couldRun.join(" or ") || "a machine"}, and none is placed`
+            );
+          }
+          if (u.alsoMadeBy.length === 0) {
+            return `${u.product}, ${at}: the snapshot declares it raw, so no machine makes it`;
+          }
+          return (
+            `${u.product}, ${at}: the snapshot declares it raw (something in Space Age ` +
+            `yields it), so no machine time is charged. Recipes you have both the ` +
+            `machines and the research for also make it: ${u.alsoMadeBy.join(", ")}`
+          );
+        }),
       ),
     );
-    if (noMachine.length === 0) {
-      console.log("  All of these are raw: the world hands them over without a recipe.");
-    }
   }
 
   console.log(heading("Stated limits of this reading"));
