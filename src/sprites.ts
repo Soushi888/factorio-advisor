@@ -353,6 +353,25 @@ export function spritesFor(data: Data, entity: SpriteSubject): SpriteCut[] {
 }
 
 /**
+ * One of the game's own interface sprites, by the name the engine knows it as.
+ *
+ * `utility-sprites` is a single prototype holding every sprite the game draws
+ * that does not belong to an entity: the arrow it puts over a belt to show which
+ * way it runs, the lines it draws between an underground pair, the alert
+ * markers. Drawing our own arrow instead was a small lie about whose picture it
+ * was, and the real one is one lookup away.
+ */
+export function utilityCut(data: Data, name: string): SpriteCut | null {
+  for (const proto of Object.values(data.klass("utility-sprites"))) {
+    const leaf = rec((proto as Rec)[name]);
+    if (!leaf) continue;
+    const cut = cutOf(leaf, 0);
+    if (cut) return cut;
+  }
+  return null;
+}
+
+/**
  * The item icon for a name, as a cut like any other.
  *
  * An icon file is a strip of mipmaps, the full size first and then each half
