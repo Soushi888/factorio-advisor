@@ -56,7 +56,7 @@ function withIcon(name: string, label?: string): string {
   const url = ICONS?.url(name) ?? null;
   const text = esc(label ?? name);
   if (!url) return text;
-  return `<span class="named"><img class="ico" src="${esc(url)}" alt="" loading="lazy">${text}</span>`;
+  return `<span class="named"><img class="ico" src="${esc(url)}" alt="" decoding="sync">${text}</span>`;
 }
 
 function fig(value: string, source: string, field: string, label: string, tone = ""): string {
