@@ -126,7 +126,15 @@ export interface Unattributed {
 }
 
 export interface Finding {
-  kind: "utilisation" | "tightness";
+  /**
+   * `diagnosis` is the one-sentence reading of the whole base and comes first
+   * when it appears at all. It is derived from the two readings against each
+   * other, never written for a base: it says the machines are the wall only
+   * when a class is actually at it, says the input is the wall only when no
+   * class is and the tightest line is something no recipe here makes, and
+   * appears not at all when neither holds.
+   */
+  kind: "utilisation" | "tightness" | "diagnosis";
   /** What it means for the factory. */
   text: string;
   /** The measurement that produced it. */
@@ -428,17 +436,28 @@ export function bottlenecks(
       headroomRatio: spare / r.used,
     });
   }
-  ranked.sort((a, b) => a.headroomRatio - b.headroomRatio || b.usedPerMinute - a.usedPerMinute);
+  // Order by the size of the hole, describe by the shape of it. A line short by
+  // 2.6 items a minute is not holding the factory back however tight its ratio
+  // is, so the deficits come first, biggest first. The ratio answers a different
+  // question, whether a line is healthy, and stays as a column and in the
+  // wording rather than setting the order (Soushi's PM, 2026-09-21).
+  ranked.sort((a, b) => {
+    const aShort = a.sparePerMinute < 0;
+    const bShort = b.sparePerMinute < 0;
+    if (aShort !== bShort) return aShort ? -1 : 1;
+    if (aShort) return a.sparePerMinute - b.sparePerMinute;
+    return a.headroomRatio - b.headroomRatio || b.usedPerMinute - a.usedPerMinute;
+  });
 
   // ---- The sentences ------------------------------------------------------
 
-  const findings: Finding[] = [];
+  const utilisationFindings: Finding[] = [];
   for (const u of utilisation) {
     const pct = `${(u.fraction * 100).toFixed(0)}%`;
     const top = u.charged[0];
     const on = top ? `, mostly on ${top.recipe}` : ", on nothing this reading could attribute";
     if (u.fraction >= BUSY_FRACTION) {
-      findings.push({
+      utilisationFindings.push({
         kind: "utilisation",
         subject: u.machine,
         text:
@@ -449,7 +468,7 @@ export function bottlenecks(
           `against ${u.count} placed${on}.`,
       });
     } else if (u.fraction <= STARVED_FRACTION) {
-      findings.push({
+      utilisationFindings.push({
         kind: "utilisation",
         subject: u.machine,
         text:
@@ -462,30 +481,91 @@ export function bottlenecks(
     }
   }
 
+  // Same order as the table, because the dashboard reads these in order and a
+  // page that leads with a different line than the command is a page and a
+  // command disagreeing about what matters.
+  const tightnessFindings: Finding[] = [];
   for (const t of ranked.slice(0, TIGHTNESS_FINDINGS)) {
-    const made1 = t.madePerMinute.toFixed(1);
-    const used1 = t.usedPerMinute.toFixed(1);
+    const evidence =
+      `${t.madePerMinute.toFixed(1)}/min made against ${t.usedPerMinute.toFixed(1)}/min ` +
+      `used, over the last hour.`;
     if (t.sparePerMinute < 0) {
-      findings.push({
+      tightnessFindings.push({
         kind: "tightness",
         subject: t.name,
         text:
           `${t.name} is running ${Math.abs(t.sparePerMinute).toFixed(1)}/min behind its own ` +
-          `demand, so the base is drawing down what it stored rather than keeping up.`,
-        because: `${made1}/min made against ${used1}/min used, over the last hour.`,
+          `demand, a shortfall of ${Math.abs(t.headroomRatio * 100).toFixed(1)}% against what ` +
+          `the base eats, so it is drawing down what it stored rather than keeping up.`,
+        because: evidence,
       });
     } else {
-      findings.push({
+      tightnessFindings.push({
         kind: "tightness",
         subject: t.name,
         text:
-          `${t.name} has ${t.sparePerMinute.toFixed(1)}/min spare, which is ` +
-          `${(t.headroomRatio * 100).toFixed(0)}% of what the base already eats: ` +
-          `nothing new can be built on it without more of the line.`,
-        because: `${made1}/min made against ${used1}/min used, over the last hour.`,
+          `${t.name} keeps up but leaves ${t.sparePerMinute.toFixed(1)}/min spare, ` +
+          `${(t.headroomRatio * 100).toFixed(1)}% of what the base already eats, so nothing ` +
+          `new can be built on it without more of the line.`,
+        because: evidence,
       });
     }
   }
+
+  // The whole base in one sentence, when the two readings agree on one.
+  //
+  // It is assembled from them rather than written: which branch fires depends on
+  // whether any class reached BUSY_FRACTION and on whether the biggest hole is
+  // in something no recipe here makes, so a base short of machines gets the
+  // opposite sentence and a base that is neither gets none.
+  const atWall = utilisation.filter((u) => u.fraction >= BUSY_FRACTION);
+  const busiest = utilisation[0];
+  const worst = ranked[0];
+  let diagnosis: Finding | null = null;
+  if (busiest && atWall.length > 0) {
+    const first = atWall[0]!;
+    const tight = worst
+      ? ` The tightest line is ${worst.name} at ${worst.sparePerMinute.toFixed(1)}/min spare.`
+      : "";
+    diagnosis = {
+      kind: "diagnosis",
+      subject: first.machine,
+      text:
+        `${atWall.map((u) => `${u.count} ${u.machine}`).join(", ")} ` +
+        `${atWall.length === 1 ? "is" : "are"} at or above ` +
+        `${(BUSY_FRACTION * 100).toFixed(0)}% busy, so the factory is short of machines ` +
+        `there rather than short of input: more of them is what raises output.`,
+      because:
+        `${first.busyEquivalent.toFixed(1)} machines' worth of crafting against ` +
+        `${first.count} placed.${tight}`,
+    };
+  } else if (busiest && worst && worst.sparePerMinute < 0 && index.isRaw(worst.name)) {
+    // Floor and add one, so the ceiling stated is always above the measurement
+    // rather than equal to it.
+    const under = Math.floor(busiest.fraction * 100) + 1;
+    diagnosis = {
+      kind: "diagnosis",
+      subject: worst.name,
+      text:
+        `Every machine class is under ${under}% busy and ${worst.name} is ` +
+        `${Math.abs(worst.sparePerMinute).toFixed(1)}/min behind demand, so the factory is ` +
+        `short of ${worst.name} rather than short of machines.`,
+      because:
+        `Busiest class ${busiest.machine} at ${(busiest.fraction * 100).toFixed(1)}% of ` +
+        `${busiest.count} placed; ${worst.name} made ${worst.madePerMinute.toFixed(1)}/min ` +
+        `against ${worst.usedPerMinute.toFixed(1)}/min used, and no recipe here makes it.`,
+    };
+  }
+
+  // A starved base and a saturated one want opposite sentences first: when a
+  // class is at the wall the machines are the story, and when none is, the lines
+  // are.
+  const findings: Finding[] = diagnosis ? [diagnosis] : [];
+  findings.push(
+    ...(atWall.length > 0
+      ? [...utilisationFindings, ...tightnessFindings]
+      : [...tightnessFindings, ...utilisationFindings]),
+  );
 
   const limits = [
     "The census counts prototypes, not loadouts. A save read reports no modules, so a class running speed modules reads over 100% busy and one running productivity modules reads busier than its machines really are. Neither is corrected, because nothing in the save says which machine holds what.",

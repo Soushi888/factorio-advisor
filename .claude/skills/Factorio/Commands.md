@@ -24,7 +24,7 @@ The save is copied into `.factorio-runtime/saves/` and read there; his own save 
 | `bun run next` | What is researchable right now, cheapest first, with lab-seconds at his actual lab speed. |
 | `bun run next --for=carbon-fiber` | The unresearched path from here to what unlocks an item or a technology. |
 | `bun run power` | Generation against draw, priced from the census: nameplate, solar averaged, steam limited, and the shortfall. |
-| `bun run bottleneck` | Two readings, never blended: machine classes by how much of their time the output accounts for, and items and fluids by what is left over against their own demand. Each row names the recipe it charged and the split it used. |
+| `bun run bottleneck` | Two readings, never blended: machine classes by how much of their time the output accounts for, and items and fluids by what is left over against their own demand. Each row names the recipe it charged and the split it used. Lines that are behind come first, biggest hole first; the ratio stays as a column because it answers whether a line is healthy, which is a different question from what is holding the base back. When the two readings agree on one story, the first sentence is that story: a class at the wall means short of machines, no class near it plus a raw input as the biggest hole means short of that input, and anything else gets no such sentence. |
 
 ## Answering a question
 
