@@ -2044,6 +2044,8 @@ function cmdBottleneck(args: Args): void {
     `\n  spare is made minus used over the last hour; spare/used is that against\n` +
       `  the line's own demand, so 0% means it eats exactly what it makes and a\n` +
       `  negative figure means the base is drawing down stock.\n` +
+      `  Lines that are behind come first, biggest hole first, because that is what\n` +
+      `  holds the factory back; the rest follow by how little they have spare.\n` +
       `  ${r.tightnessConsidered} items and fluids have demand at all; those under ` +
       `${num(r.minDemandPerMinute, 0)}/min are not ranked.`,
   );
