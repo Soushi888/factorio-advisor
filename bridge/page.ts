@@ -782,11 +782,16 @@ function stepOf(step: StepView, i: number): string {
  */
 function holdingSection(b: BottleneckReport): string {
   if (b.legacy || (b.utilisation.length === 0 && b.tightness.length === 0)) return "";
-  const busiest = b.utilisation[0] ?? null;
   const pct = (n: number): string => `${(n * 100).toFixed(n < 0.1 ? 1 : 0)}%`;
 
+  // The diagnosis, when the two readings agree on a story, is the sentence the
+  // card is for, so it leads rather than sitting first in a list. It is absent
+  // on a base where they do not agree, and then the card opens on the findings
+  // themselves rather than on a sentence nobody measured.
+  const first = b.findings[0] ?? null;
+  const diagnosis = first?.kind === "diagnosis" ? first : null;
   const findings = b.findings
-    .slice(0, 4)
+    .slice(diagnosis ? 1 : 0, diagnosis ? 5 : 4)
     .map(
       (f) =>
         `<p class="find">${esc(f.text)}<span class="because">${esc(f.because)}</span></p>`,
@@ -826,13 +831,12 @@ function holdingSection(b: BottleneckReport): string {
         `</table></div>`
       : "";
 
-  const lead = busiest
-    ? `The busiest machine class is ${busiest.machine} at ${pct(busiest.fraction)} of its time.`
-    : "";
-
   return (
     `<section class="holding"><h2>What is holding you back</h2>` +
-    (lead ? `<p class="lead">${esc(lead)}</p>` : "") +
+    (diagnosis
+      ? `<p class="lead">${esc(diagnosis.text)}</p>` +
+        `<p class="carry">${esc(diagnosis.because)}</p>`
+      : "") +
     findings +
     `<div class="pair">${classes}${lines}</div>` +
     (b.limits.length > 0 ? `<p class="limits">${esc(b.limits.join(" \u00b7 "))}</p>` : "") +
