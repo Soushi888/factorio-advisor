@@ -67,6 +67,84 @@ export function footprintOf(proto: Proto): Footprint | null {
   return { width, height };
 }
 
+/** A rectangle in tile coordinates: the one shape every reader of a footprint returns. */
+export interface Box {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+/**
+ * A direction that swaps width against height.
+ *
+ * The four cardinals are declared and measured just above, so this reads them
+ * rather than writing a second compass that can drift from the first.
+ */
+export function rotates(direction: number): boolean {
+  return direction === EAST || direction === WEST;
+}
+
+/** Anything off the four cardinals: no declared box describes it. */
+export function isDiagonal(direction: number): boolean {
+  return direction !== NORTH && direction !== EAST && direction !== SOUTH && direction !== WEST;
+}
+
+/** Where a placed thing sits and how big it is, with its direction applied. */
+export interface Placed {
+  entity: BpEntity;
+  box: Box;
+  /** The prototype's own type, or the empty string when the snapshot lacks it. */
+  type: string;
+  /** No selection box in the snapshot: one tile, and counted as a gap by the caller. */
+  guessed: boolean;
+  /** Left unrotated because the direction is diagonal. */
+  diagonal: boolean;
+  direction: number;
+}
+
+/** The entity prototype for a name: the one carrying a selection box, not the item. */
+function entityProto(data: Data, name: string): Proto | null {
+  const protos = data.all(name);
+  return protos.find((p) => "selection_box" in p) ?? protos[0] ?? null;
+}
+
+/**
+ * The one reader of a rotated selection box in this project.
+ *
+ * It lives here, beside `footprintOf` and beside the four measured cardinals,
+ * because three layers above need the same answer: `audit.ts` for what a beacon
+ * reaches and for a print's own bounds, `draw.ts` for where a sprite goes, and
+ * `layers.ts` for the map. Any two of them computing it separately is how an
+ * audit and a drawing come to disagree about the size of a machine, which is a
+ * defect this repo has already paid for once. Nothing above may read
+ * `footprintOf` and apply a rotation of its own.
+ *
+ * A diagonal direction keeps the unrotated box, because no declared box
+ * describes a rail at 45 degrees, and the flag says so rather than the box
+ * lying quietly.
+ */
+export function place(data: Data, entity: BpEntity): Placed {
+  const proto = entityProto(data, entity.name);
+  const foot = proto ? footprintOf(proto) : null;
+  const direction = Number(entity.direction ?? 0);
+  const swap = rotates(direction);
+  const w = foot?.width ?? 1;
+  const h = foot?.height ?? 1;
+  const bw = swap ? h : w;
+  const bh = swap ? w : h;
+  const x = Number(entity.position.x);
+  const y = Number(entity.position.y);
+  return {
+    entity,
+    type: proto ? String(proto.type ?? "") : "",
+    guessed: foot === null,
+    diagonal: isDiagonal(direction),
+    direction,
+    box: { x1: x - bw / 2, y1: y - bh / 2, x2: x + bw / 2, y2: y + bh / 2 },
+  };
+}
+
 /**
  * Snap a centre coordinate to the grid a footprint of this size must sit on.
  *

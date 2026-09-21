@@ -1,5 +1,5 @@
 import { entityModules, type BpEntity, type Blueprint } from "./blueprint.ts";
-import { place } from "./draw.ts";
+import { place } from "./layout.ts";
 import { runOne, type MachineRun, type ModuleLoadout } from "./machines.ts";
 import type { BeaconProto, CraftingMachine, Data, ModuleProto, Proto } from "./proto.ts";
 import { normalise, type RecipeIndex } from "./recipes.ts";

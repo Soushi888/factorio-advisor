@@ -1,7 +1,22 @@
 import type { Blueprint, BpEntity } from "./blueprint.ts";
-import type { AuditResult, Box } from "./audit.ts";
+import type { AuditResult } from "./audit.ts";
 import type { Data, Proto } from "./proto.ts";
-import { EAST, NORTH, SOUTH, WEST, footprintOf } from "./layout.ts";
+import { place as placeOf, type Box, type Placed as Geometry } from "./layout.ts";
+
+/**
+ * What the drawing needs on top of the geometry: which family a thing belongs
+ * to, for the colour behind it and for the legend. The geometry itself is
+ * `layout.ts`'s, so the audit and the page cannot disagree about a size.
+ */
+export interface Placed extends Geometry {
+  family: string;
+}
+
+/** The geometry, plus the display family this drawing sorts by. */
+export function place(data: Data, entity: BpEntity): Placed {
+  const geometry = placeOf(data, entity);
+  return { ...geometry, family: familyOf(geometry.type) };
+}
 import { PIXELS_PER_TILE, beltCut, dataUri, iconCut, spritesFor, type SpriteCut } from "./sprites.ts";
 import { beltShapes } from "./belt-shape.ts";
 
@@ -127,65 +142,6 @@ export function familyOf(type: string): string {
     return "machine";
   }
   return "other";
-}
-
-/**
- * A direction that swaps width against height.
- *
- * The four cardinals are already declared and already measured in `layout.ts`,
- * so this reads them rather than writing a second compass that can drift from
- * the first.
- */
-function rotates(direction: number): boolean {
-  return direction === EAST || direction === WEST;
-}
-
-/** Anything off the four cardinals: no declared box describes it. */
-function isDiagonal(direction: number): boolean {
-  return direction !== NORTH && direction !== EAST && direction !== SOUTH && direction !== WEST;
-}
-
-export interface Placed {
-  entity: BpEntity;
-  family: string;
-  box: Box;
-  /** The prototype's own type, or the empty string when the snapshot lacks it. */
-  type: string;
-  /** No selection box in the snapshot: drawn as one tile and counted as a gap. */
-  guessed: boolean;
-  /** Drawn unrotated because the direction is diagonal. */
-  diagonal: boolean;
-  direction: number;
-}
-
-/** The entity prototype for a name: the one carrying a selection box, not the item. */
-function entityProto(data: Data, name: string): Proto | null {
-  const protos = data.all(name);
-  return protos.find((p) => "selection_box" in p) ?? protos[0] ?? null;
-}
-
-/** Where an entity sits and how big it is, with the direction applied. */
-export function place(data: Data, entity: BpEntity): Placed {
-  const proto = entityProto(data, entity.name);
-  const foot = proto ? footprintOf(proto) : null;
-  const direction = Number(entity.direction ?? 0);
-  const swap = rotates(direction);
-  const w = (foot?.width ?? 1) * 1;
-  const h = (foot?.height ?? 1) * 1;
-  const bw = swap ? h : w;
-  const bh = swap ? w : h;
-  const x = Number(entity.position.x);
-  const y = Number(entity.position.y);
-  const type = proto ? String(proto.type ?? "") : "";
-  return {
-    entity,
-    family: familyOf(type),
-    type,
-    guessed: foot === null,
-    diagonal: isDiagonal(direction),
-    direction,
-    box: { x1: x - bw / 2, y1: y - bh / 2, x2: x + bw / 2, y2: y + bh / 2 },
-  };
 }
 
 export interface DrawnPrint {
