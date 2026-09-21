@@ -2001,6 +2001,17 @@ function cmdBottleneck(args: Args): void {
             (u.charged[0].pool.length > 1
               ? `, ${num(u.charged[0].share * 100, 0)}% of that recipe's pool`
               : "") +
+            // The pin is the provenance: what fixed this recipe's rate, and
+            // whether it was fixed at all. `residual` means two recipes shared
+            // every product and every fluid and the leftover went through the
+            // default rule, which is the row worth doubting.
+            (u.charged[0].pin === "residual"
+              ? ", by the default rule"
+              : u.charged[0].pin === "only-producer"
+                ? ", the only thing here that makes it"
+                : u.charged[0].pin === "only-consumer"
+                  ? ", the only thing here that eats it"
+                  : "") +
             (u.charged[0].rule === "census" ? " [census pick]" : "")
           : "nothing attributable",
       ]),
