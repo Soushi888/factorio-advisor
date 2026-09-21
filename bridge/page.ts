@@ -99,10 +99,16 @@ h2{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--di
 .fig .l{font-size:.7rem;color:var(--dim)}
 .fig.warn .v{color:var(--down)}
 .fig.good .v{color:var(--up)}
-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;table-layout:fixed;margin-top:.6rem}
-td,th{text-align:left;padding:.2rem .4rem .2rem 0;border-bottom:1px solid var(--line);font-size:.82rem;overflow-wrap:anywhere}
-th{color:var(--dim);font-weight:500;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em}
-td.n{text-align:right;font-variant-numeric:tabular-nums}
+/* Numbers hug the right edge and their headings sit over them, which is the
+   whole of table alignment: a heading left-aligned above a right-aligned column
+   is a label pointing at nothing. The name column absorbs the slack so the
+   figures stay together rather than drifting apart as a card widens, and auto
+   layout lets each numeric column be exactly as wide as its widest number. */
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;table-layout:auto;margin-top:.6rem}
+td,th{text-align:left;padding:.2rem 0 .2rem 0;border-bottom:1px solid var(--line);font-size:.82rem;overflow-wrap:anywhere;vertical-align:baseline}
+th{color:var(--dim);font-weight:500;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+td:first-child,th:first-child{width:100%;padding-right:.9rem}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;padding-left:1.1rem}
 tr:last-child td{border-bottom:0}
 .up{color:var(--up)}.down{color:var(--down)}
 .cols{columns:17.5rem;column-gap:1.25rem}
@@ -117,7 +123,8 @@ li{font-size:.82rem;margin:.1rem 0;overflow-wrap:anywhere}
 /* The game's own icons, at the size a row can carry. Pixel art scaled down
    smooths badly, so they are handed to the browser at a size close to a factor
    of the 64 pixel source and left alone. */
-.ico{width:1.15rem;height:1.15rem;vertical-align:-.28em;margin-right:.3rem;flex:0 0 auto}
+.ico{width:1.15rem;height:1.15rem;min-width:1.15rem;min-height:1.15rem;vertical-align:-.28em;
+  margin-right:.3rem;flex:0 0 auto;object-fit:contain}
 .named{display:inline-flex;align-items:center;min-width:0}
 .named .ico{margin-right:.35rem}
 td .named{max-width:100%}
