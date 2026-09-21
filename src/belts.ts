@@ -22,6 +22,17 @@ const TICKS_PER_SECOND = 60;
 /** A transport belt carries two lanes. */
 const LANES = 2;
 
+/**
+ * Items a full belt holds per tile, across every lane it has.
+ *
+ * Derived from the two constants above and nothing else. A belt carries
+ * `LANES / ITEM_SPACING_TILES` items on each tile it covers, and the tick rate
+ * cancels out of the quotient, so occupancy can be judged without one.
+ */
+export function beltItemsPerTile(): number {
+  return LANES / ITEM_SPACING_TILES;
+}
+
 export function beltItemsPerSecond(belt: Proto): number {
   const speed = belt["speed"];
   if (typeof speed !== "number") return 0;

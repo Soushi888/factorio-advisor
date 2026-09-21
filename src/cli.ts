@@ -11,9 +11,10 @@ import { decode, flatten, describeKind } from "./blueprint.ts";
 import { audit, byRecipe, type AuditResult } from "./audit.ts";
 import { judge } from "./target.ts";
 import { beltFor, buildRow } from "./layout.ts";
-import { newestSave, readState, readStateFile, type GameState } from "./state.ts";
+import { flowOf, newestSave, readState, readStateFile, type GameState } from "./state.ts";
+import { advise, type Advisory, type Requirement } from "./advise.ts";
 import { gateFor, pathFromHere, researchable } from "./next.ts";
-import { powerReport, solarAverageFactor } from "./power.ts";
+import { effectiveGeneration, powerReport, solarAverageFactor } from "./power.ts";
 import { bullet, heading, indent, num, pct, rate, sub, table } from "./render.ts";
 
 /**
@@ -898,42 +899,56 @@ async function cmdState(args: Args): Promise<void> {
     console.log(`  queue: ${force.technologies.queue.join(" -> ")}`);
   }
 
+  // Made and used are two columns, not one. They were one until U7, and the
+  // one they were was consumption printed under a production heading: the
+  // engine's item statistics call production `input_counts`, and this table
+  // read `output`. A saturated line and an idle one looked identical.
   const items = Object.entries(force.production.item)
-    .sort((a, b) => b[1].perMinute - a[1].perMinute)
+    .map(([name, f]) => ({ name, r: flowOf(f) }))
+    .sort((a, b) => b.r.producedPerMinute - a.r.producedPerMinute)
     .slice(0, top);
-  console.log(heading(`Top ${items.length} items produced`));
+  console.log(heading(`Top ${items.length} items by production`));
   console.log(
     table(
       [
         { header: "item" },
-        { header: "per min", align: "right" },
-        { header: "per s", align: "right" },
+        { header: "made/min", align: "right" },
+        { header: "used/min", align: "right" },
+        { header: "spare/min", align: "right" },
         { header: "made total", align: "right" },
         { header: "used total", align: "right" },
       ],
-      items.map(([name, f]) => [
+      items.map(({ name, r }) => [
         name,
-        f.perMinute.toFixed(1),
-        (f.perMinute / 60).toFixed(2),
-        String(f.output),
-        String(f.input),
+        r.producedPerMinute.toFixed(1),
+        r.consumedPerMinute.toFixed(1),
+        r.headroomPerMinute.toFixed(1),
+        String(r.produced),
+        String(r.consumed),
       ]),
     ),
   );
 
   const fluids = Object.entries(force.production.fluid)
-    .sort((a, b) => b[1].perMinute - a[1].perMinute)
+    .map(([name, f]) => ({ name, r: flowOf(f) }))
+    .sort((a, b) => b.r.producedPerMinute - a.r.producedPerMinute)
     .slice(0, top);
   if (fluids.length > 0) {
-    console.log(heading(`Top ${fluids.length} fluids produced`));
+    console.log(heading(`Top ${fluids.length} fluids by production`));
     console.log(
       table(
         [
           { header: "fluid" },
-          { header: "per min", align: "right" },
+          { header: "made/min", align: "right" },
+          { header: "used/min", align: "right" },
           { header: "made total", align: "right" },
         ],
-        fluids.map(([name, f]) => [name, f.perMinute.toFixed(1), String(f.output)]),
+        fluids.map(({ name, r }) => [
+          name,
+          r.producedPerMinute.toFixed(1),
+          r.consumedPerMinute.toFixed(1),
+          String(r.produced),
+        ]),
       ),
     );
   }
@@ -1405,20 +1420,14 @@ function cmdPower(args: Args): void {
     );
   }
 
-  const gen = r.solar?.averageTotal !== null && r.solar?.averageTotal !== undefined
-    ? r.generationTotal - r.solar.peakTotal + r.solar.averageTotal
-    : r.generationTotal;
-
   // Nameplate generation counts every engine built. If the boilers cannot make
   // enough steam for them, that figure is a fiction, so the steam-limited number
-  // is computed and it is the one the balance is drawn against.
-  let effective = gen;
-  const steamCapped =
-    r.steam && r.steam.enginesFed < r.steam.engines
-      ? (r.steam.engines - r.steam.enginesFed) *
-        (r.generation.find((g) => g.name === r.steam!.name)?.each ?? 0)
-      : 0;
-  effective -= steamCapped;
+  // is computed and it is the one the balance is drawn against. The derivation
+  // lives in power.ts so the advisor draws against the same figure.
+  const eff = effectiveGeneration(r);
+  const gen = eff.solarAveraged;
+  const effective = eff.effective;
+  const steamCapped = eff.starvedEngines > 0 ? gen - effective : 0;
 
   const rows: Array<[string, string]> = [["generation, nameplate peak", formatWatts(r.generationTotal)]];
   if (r.solar?.averageTotal != null) {
@@ -1661,6 +1670,7 @@ function usage(): void {
   bun run next --for=<item>               path from here to what unlocks that item
   bun run power                           generation against draw, from your census
   bun run gen <item> --rate=<n>           lay one recipe step out as a placeable row
+  bun run advise [--spm=<n>]              where the base stands and what the next step costs
 
 Flags for ratio:
   --rate=45 | 90/m | 5400/h               target output rate
@@ -1674,6 +1684,11 @@ Flags for bp:
   --rate=45 | 90/m | 5400/h               judge the print against this output
   --item=<name>                           which product (default: largest export)
 
+Flags for advise:
+  --spm=45                                target rate per science pack, per minute
+  --force=player                          which force to advise
+  --top=18                                how many requirement gaps to list
+
 Flags for state:
   --save="game 4"                         which save to read (copied, never opened)
   --force=player                          which force to report on
@@ -1682,6 +1697,155 @@ Flags for state:
 Nothing here writes to your game. sync and state launch Factorio headless with
 their write-data redirected into this project, and state reads a copy of the
 save rather than the save itself; every other command reads the snapshot.`,
+  );
+}
+
+
+/**
+ * The advisor's own command: where the base stands and what the next step costs.
+ *
+ * It prints nothing the save or the snapshot did not state, and every piece of
+ * advice arrives with the measurement that produced it on the line below, so a
+ * wrong recommendation can be argued with rather than merely disbelieved.
+ */
+function cmdAdvise(args: Args): void {
+  const data = load();
+  const index = new RecipeIndex(data);
+  const forceName = args.flags.get("force") ?? "player";
+  const state = requireState(args);
+
+  console.log(header(data.manifest));
+  console.log(stateHeader(state));
+
+  // Packs per minute, plainly. `parseRate` reads a bare number as per second,
+  // which turned `--spm=20` into a 1200/min target and a refactor nobody asked
+  // for. The flag's own name says the unit, so it is read that way.
+  const spmFlag = valueFlag(args, "spm");
+  const spm = spmFlag === null ? undefined : Number(spmFlag.replace(/\/m(in)?$/, ""));
+  if (spm !== undefined && (!Number.isFinite(spm) || spm <= 0)) {
+    throw new Error(`--spm takes a number of science packs per minute, such as --spm=45.`);
+  }
+  const r = researchable(data, state, forceName);
+  const techs = r.available.map((c) => c.tech);
+
+  const a = advise(data, index, state, techs, { force: forceName, spm });
+
+  console.log(heading("Where you stand"));
+  console.log(
+    table(
+      [
+        { header: "science pack" },
+        { header: "made/min", align: "right" },
+        { header: "used/min", align: "right" },
+        { header: "spare/min", align: "right" },
+        { header: "made total", align: "right" },
+      ],
+      a.packs
+        .filter((p) => p.everMade || p.rates.consumed > 0)
+        .map((p) => [
+          p.name === a.limiting ? `${p.name}  <- slowest` : p.name,
+          num(p.rates.producedPerMinute, 1),
+          num(p.rates.consumedPerMinute, 1),
+          num(p.rates.headroomPerMinute, 1),
+          String(p.rates.produced),
+        ]),
+    ),
+  );
+
+  if (a.currentResearch) {
+    console.log(`\n  researching ${a.currentResearch}.`);
+  } else {
+    console.log("\n  nothing is being researched.");
+  }
+
+  if (a.labs) {
+    console.log(
+      `  ${a.labs.labs} labs at ${num(a.labs.labSpeed, 2)}x could eat ` +
+        `${num(a.labs.capacityPerMinute, 1)} packs/min on ${a.labs.basis} ` +
+        `(${num(a.labs.unitSeconds, 0)} s per unit). They ate ${num(a.labs.actualPerMinute, 1)}, ` +
+        `which is ${num(a.labs.utilisation * 100, 1)}% of capacity.`,
+    );
+  }
+
+  if (a.grid) {
+    console.log(
+      `  grid: ${formatWatts(a.grid.deliveredWatts)} flowed over the last hour against ` +
+        `${formatWatts(a.grid.capacityWatts)} the generators can deliver ` +
+        `(nameplate ${formatWatts(a.grid.nameplateWatts)}), ` +
+        `${formatWatts(a.grid.spareWatts)} spare.`,
+    );
+  }
+
+  if (a.target) {
+    const t = a.target;
+    console.log(
+      heading(
+        `To reach ${num(t.spm, 0)}/min of every pack you already make` +
+          (t.derived ? " (twice your best line; set another with --spm=)" : ""),
+      ),
+    );
+    console.log(
+      table(
+        [
+          { header: "science pack" },
+          { header: "have/min", align: "right" },
+          { header: "to add/min", align: "right" },
+        ],
+        t.packs.map((p) => [p.name, num(p.havePerMinute, 1), num(p.addPerMinute, 1)]),
+      ),
+    );
+
+    const gaps = t.requirements.filter((x) => x.deficitPerMinute > 0);
+    const shown = gaps.slice(0, Number(args.flags.get("top") ?? "18"));
+    console.log(sub(`What that addition needs (${shown.length} of ${gaps.length} gaps)`));
+    console.log(
+      table(
+        [
+          { header: "item" },
+          { header: "needs/min", align: "right" },
+          { header: "spare/min", align: "right" },
+          { header: "build for/min", align: "right" },
+          { header: "machines", align: "right" },
+          { header: "kind" },
+        ],
+        shown.map((x: Requirement) => [
+          x.item,
+          num(x.requiredPerMinute, 1),
+          num(x.headroomPerMinute, 1),
+          num(x.deficitPerMinute, 1),
+          x.machines > 0 ? num(x.machines, 1) : "",
+          x.raw ? "raw" : "",
+        ]),
+      ),
+    );
+    console.log(
+      `\n  spare is what the base makes minus what it uses, over the last hour.\n` +
+        `  build for is the requirement minus that spare: new capacity, not total.\n` +
+        `  Raw rows are ore, fluid and water: the mining end, which no recipe makes.\n` +
+        `  About ${t.machinesAdded} machines and ${formatWatts(t.wattsAdded)} in total.`,
+    );
+    if (t.unresolved.length > 0) {
+      console.log(sub("Not resolvable from the snapshot"));
+      console.log(bullet(t.unresolved));
+    }
+    for (const cycle of t.cycles) {
+      console.log(`\n  cycle reported, not unrolled: ${cycle.join(" -> ")}`);
+    }
+  }
+
+  console.log(heading("Advice"));
+  if (a.advice.length === 0) {
+    console.log("  Nothing crossed a threshold worth naming.");
+  }
+  for (const [i, item] of a.advice.entries()) {
+    console.log(`\n  ${i + 1}. ${item.text}`);
+    console.log(`     ${item.because}`);
+  }
+  console.log(
+    `\n  Every line above is derived from the save read at ` +
+      `${a.readAt.slice(0, 16).replace("T", " ")} and the snapshot in the header.\n` +
+      `  The save has no map in it that this tool can read, so there is no advice\n` +
+      `  here about layout, placement or where to put anything.`,
   );
 }
 
@@ -1723,6 +1887,9 @@ async function main(): Promise<void> {
       break;
     case "gen":
       cmdGen(args);
+      break;
+    case "advise":
+      cmdAdvise(args);
       break;
     default:
       usage();

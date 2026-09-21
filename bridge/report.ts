@@ -1,4 +1,5 @@
-import type { GameState } from "../src/state.ts";
+import { flowOf, isLegacyFlows, type GameState } from "../src/state.ts";
+import type { Advisory } from "../src/advise.ts";
 
 /**
  * What changed since the last time we looked.
@@ -49,14 +50,38 @@ export interface ReportData {
   threshold: number;
   /** True when nothing crossed a threshold, which is itself worth saying. */
   quiet: boolean;
+  /** True when the rates above are consumption, from a pre-U7 state file. */
+  legacyRates: boolean;
+  /**
+   * True when the previous state measured the other direction, so no production
+   * delta is reported. One state file counting what was made against another
+   * counting what was used produces a swing that never happened.
+   */
+  rateBasisChanged: boolean;
+  /**
+   * The advisory for this save, when one was computed. A report says what
+   * moved; the advisory says what to do about it, and the loop is only worth
+   * leaving running if it carries both.
+   */
+  advisory: Advisory | null;
 }
 
+/**
+ * Production per minute, which is what a report about a factory is about.
+ *
+ * Until U7 this read the one rate the collector stored, and that rate was
+ * consumption: the diff said "iron plate fell 200/min" when what fell was what
+ * the base ate. A state file written before that change carries consumption
+ * only, so it is read as consumption and the page says which it is.
+ */
 function ratesOf(state: GameState, force: string): Map<string, number> {
   const out = new Map<string, number>();
   const f = state.forces[force];
   if (!f) return out;
+  const legacy = isLegacyFlows(state, force);
   for (const [name, flow] of Object.entries(f.production.item)) {
-    out.set(name, flow.perMinute);
+    const r = flowOf(flow);
+    out.set(name, legacy ? r.consumedPerMinute : r.producedPerMinute);
   }
   return out;
 }
@@ -78,6 +103,7 @@ export function buildReport(
   previous: GameState | null,
   force = "player",
   threshold = DEFAULT_RATE_THRESHOLD_PER_MIN,
+  advisory: Advisory | null = null,
 ): ReportData {
   const f = now.forces[force];
   if (!f) throw new Error(`No force "${force}" in ${now.save.name}.`);
@@ -90,7 +116,12 @@ export function buildReport(
   const nowRates = ratesOf(now, force);
   const prevRates = previous ? ratesOf(previous, force) : new Map<string, number>();
   const production: Array<Delta<number>> = [];
-  if (previous) {
+  // A pre-U7 state file measured consumption and a later one measures
+  // production. Subtracting one from the other reported iron ore falling
+  // 262/min across a save where mining never changed.
+  const rateBasisChanged =
+    previous !== null && isLegacyFlows(previous, force) !== isLegacyFlows(now, force);
+  if (previous && !rateBasisChanged) {
     for (const [name, after] of nowRates) {
       const before = prevRates.get(name) ?? 0;
       if (Math.abs(after - before) >= threshold) production.push({ name, before, after });
@@ -148,12 +179,36 @@ export function buildReport(
         : null,
     pollution: surface?.pollution ?? null,
     threshold,
+    legacyRates: isLegacyFlows(now, force),
+    rateBasisChanged,
+    advisory,
     quiet:
       previous !== null &&
+      !rateBasisChanged &&
       researched.length === 0 &&
       production.length === 0 &&
       machines.length === 0,
   };
+}
+
+/** The advisory, as markdown. Empty when no advisory was computed. */
+function adviceLines(r: ReportData): string[] {
+  const a = r.advisory;
+  if (!a || a.advice.length === 0) return [];
+  const lines: string[] = ["## What to do about it", ""];
+  for (const item of a.advice) {
+    lines.push(`- **${item.text}**  `);
+    lines.push(`  ${item.because}`);
+  }
+  lines.push("");
+  if (a.limiting && a.researchPerMinute !== null) {
+    lines.push(
+      `Science is running at ${a.researchPerMinute.toFixed(1)}/min, set by ${a.limiting}.` +
+        (a.labs ? ` Labs are at ${(a.labs.utilisation * 100).toFixed(1)}% of what they could eat.` : ""),
+    );
+    lines.push("");
+  }
+  return lines;
 }
 
 function signed(v: number, places = 1): string {
@@ -182,6 +237,7 @@ export function renderMarkdown(r: ReportData, stateFile: string): string {
     if (r.power) lines.push(`- grid delivering ${mw(r.power.produced)}, drawing ${mw(r.power.consumed)}`);
     if (r.evolution !== null) lines.push(`- evolution ${(r.evolution * 100).toFixed(1)}%`);
     lines.push("");
+    lines.push(...adviceLines(r));
     lines.push(`Source: \`${stateFile}\`.`);
     return lines.join("\n") + "\n";
   }
@@ -189,12 +245,14 @@ export function renderMarkdown(r: ReportData, stateFile: string): string {
   const gap = r.hoursElapsed !== null ? `${r.hoursElapsed.toFixed(2)} h of game time` : "an unknown gap";
   lines.push(`Since tick ${r.previousTick}, ${gap}.`);
   lines.push("");
+  lines.push(...adviceLines(r));
 
   if (r.quiet) {
     lines.push(
       `Nothing crossed a threshold. No technology finished, no machine was placed or removed, and no item's rate moved by ${r.threshold}/min or more.`,
     );
     lines.push("");
+    lines.push(...adviceLines(r));
     lines.push(`Source: \`${stateFile}\`.`);
     return lines.join("\n") + "\n";
   }
@@ -220,6 +278,15 @@ export function renderMarkdown(r: ReportData, stateFile: string): string {
       const d = m.after - m.before;
       lines.push(`- ${m.name}: ${signed(d, 0)} (${m.before} to ${m.after})`);
     }
+    lines.push("");
+  }
+
+  if (r.rateBasisChanged) {
+    lines.push(`## Production`);
+    lines.push("");
+    lines.push(
+      `No comparison this time. The previous report measured what the base consumed and this one measures what it produced, so a delta between them would be an artefact. The next report compares like with like.`,
+    );
     lines.push("");
   }
 

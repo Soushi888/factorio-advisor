@@ -194,6 +194,46 @@ export function solarAverageFactor(day: SurfaceDay): number {
   return light * 1 + dark * 0 + ramp * 0.5;
 }
 
+/**
+ * What the grid can really deliver, as opposed to what its nameplates add up to.
+ *
+ * Two corrections, in this order: solar is averaged over the day cycle rather
+ * than counted at noon, and every steam engine with no boiler behind it is
+ * subtracted, because an engine with no steam produces nothing whatever its
+ * prototype says. Both were already the balance `bun run power` prints; they
+ * live here so the advisor draws its headroom against the same figure instead
+ * of a second opinion.
+ */
+export interface EffectiveGeneration {
+  nameplate: number;
+  solarAveraged: number;
+  /** Nameplate minus the solar correction minus the unfed engines. */
+  effective: number;
+  /** Engines the boilers cannot feed. */
+  starvedEngines: number;
+}
+
+export function effectiveGeneration(r: PowerReport): EffectiveGeneration {
+  const solarAveraged =
+    r.solar?.averageTotal !== null && r.solar?.averageTotal !== undefined
+      ? r.generationTotal - r.solar.peakTotal + r.solar.averageTotal
+      : r.generationTotal;
+
+  const starved = r.steam && r.steam.enginesFed < r.steam.engines
+    ? r.steam.engines - r.steam.enginesFed
+    : 0;
+  const capped = starved > 0
+    ? starved * (r.generation.find((g) => g.name === r.steam!.name)?.each ?? 0)
+    : 0;
+
+  return {
+    nameplate: r.generationTotal,
+    solarAveraged,
+    effective: solarAveraged - capped,
+    starvedEngines: starved,
+  };
+}
+
 export function powerReport(
   data: Data,
   state: GameState,

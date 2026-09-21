@@ -3,6 +3,12 @@ import { join } from "node:path";
 import { PROJECT_ROOT, findUserdata } from "../src/paths.ts";
 import { readState, type GameState } from "../src/state.ts";
 import { buildReport, renderMarkdown, DEFAULT_RATE_THRESHOLD_PER_MIN } from "./report.ts";
+import { advise, type Advisory } from "../src/advise.ts";
+import type { SectionView } from "../src/sections.ts";
+import { load } from "../src/proto.ts";
+import { RecipeIndex } from "../src/recipes.ts";
+import { researchable } from "../src/next.ts";
+import { sections } from "../src/sections.ts";
 import { renderPage } from "./page.ts";
 
 /**
@@ -89,6 +95,25 @@ export interface ReportWritten {
   firstForSave: boolean;
 }
 
+/**
+ * The advisory for a state, or null when the snapshot cannot answer.
+ *
+ * A missing or stale snapshot is a reason to report less, never a reason to
+ * fail the report: the diff is still true without it. The loop runs unattended,
+ * so it says what it could not compute rather than stopping.
+ */
+function advisoryFor(state: GameState): { advisory: Advisory; views: SectionView[] } | null {
+  try {
+    const data = load();
+    const index = new RecipeIndex(data);
+    const techs = researchable(data, state, "player").available.map((c) => c.tech);
+    const advisory = advise(data, index, state, techs, { force: "player" });
+    return { advisory, views: sections(data, state, advisory) };
+  } catch {
+    return null;
+  }
+}
+
 /** Read a save and write its report. Returns null when that tick already has one. */
 export async function reportOn(
   save: string,
@@ -105,12 +130,23 @@ export async function reportOn(
   if (existsSync(mdPath)) return null;
 
   const previous = previousState(save, tick);
-  const report = buildReport(state, previous, "player", opts.threshold ?? DEFAULT_RATE_THRESHOLD_PER_MIN);
+  const derived = advisoryFor(state);
+  const report = buildReport(
+    state,
+    previous,
+    "player",
+    opts.threshold ?? DEFAULT_RATE_THRESHOLD_PER_MIN,
+    derived?.advisory ?? null,
+  );
   const stateFile = `data/state/${slug(save)}.json`;
 
   writeFileSync(mdPath, renderMarkdown(report, stateFile));
+  // The archived state drops the map. A report is kept forever and the map is
+  // 800 KB of coordinates that the diff never reads; the live state file under
+  // `data/state/` keeps it, and that is the one the dashboard renders from.
   const jsonPath = join(REPORTS_DIR, `${base}.json`);
-  writeFileSync(jsonPath, JSON.stringify(state, null, 2) + "\n");
+  const { map: _map, ...archived } = state;
+  writeFileSync(jsonPath, JSON.stringify(archived, null, 2) + "\n");
 
   const pagePath = join(REPORTS_DIR, "index.html");
   writeFileSync(
@@ -119,6 +155,7 @@ export async function reportOn(
       report,
       state,
       stateFile,
+      sections: derived?.views ?? [],
       history: historyFor(save).filter((f) => f !== `${base}.md`),
     }),
   );

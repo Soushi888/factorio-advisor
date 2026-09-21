@@ -96,6 +96,79 @@ export interface SurfaceState {
   pollution: number | null;
 }
 
+/**
+ * One item's or fluid's flow, as the engine's own statistics report it.
+ *
+ * The two cumulative fields are the engine's `input_counts` and `output_counts`
+ * for item and fluid production statistics, and on those statistics input is
+ * what was MADE and output is what was USED. That is not a guess: this save
+ * carries 84 labs placed and reports `input = 84, output = 0` for the lab item,
+ * and a lab is never consumed by anything. The opposite reading would have him
+ * consuming 84 labs he never made. Electric network statistics use the reverse
+ * convention and are collected separately; see the electric block below.
+ *
+ * `producedPerMinute` and `consumedPerMinute` are the game's own one-hour
+ * rolling averages. Both are collected because the gap between them is the
+ * whole diagnosis: a line making more than the base eats has headroom, a line
+ * making exactly what it eats has none, and only the pair tells them apart.
+ * State files written before U7 carry a single `perMinute`, which was the
+ * consumption rate under a production label; `flowOf` normalises them.
+ */
+export interface Flow {
+  /** Cumulative units made. */
+  produced: number;
+  /** Cumulative units consumed. */
+  consumed: number;
+  producedPerMinute: number;
+  consumedPerMinute: number;
+  /** Pre-U7 field names, read by `flowOf` and never written. */
+  input?: number;
+  output?: number;
+  perMinute?: number;
+}
+
+/** Normalised view of a flow, whichever schema version wrote it. */
+export interface Rates {
+  produced: number;
+  consumed: number;
+  producedPerMinute: number;
+  consumedPerMinute: number;
+  /** Made per minute minus used per minute: what the base has spare. */
+  headroomPerMinute: number;
+}
+
+/**
+ * Read a flow from either schema. A pre-U7 file knows only the consumption
+ * rate, so `producedPerMinute` comes back as null-equivalent 0 and headroom is
+ * reported as 0 rather than invented from the cumulative totals, which average
+ * over the whole save and say nothing about now.
+ */
+export function flowOf(flow: Flow | undefined): Rates {
+  if (!flow) {
+    return { produced: 0, consumed: 0, producedPerMinute: 0, consumedPerMinute: 0, headroomPerMinute: 0 };
+  }
+  const legacy = flow.producedPerMinute === undefined;
+  const produced = flow.produced ?? flow.input ?? 0;
+  const consumed = flow.consumed ?? flow.output ?? 0;
+  const consumedPerMinute = flow.consumedPerMinute ?? flow.perMinute ?? 0;
+  const producedPerMinute = legacy ? 0 : (flow.producedPerMinute ?? 0);
+  return {
+    produced,
+    consumed,
+    producedPerMinute,
+    consumedPerMinute,
+    headroomPerMinute: legacy ? 0 : producedPerMinute - consumedPerMinute,
+  };
+}
+
+/** True when this state file predates the two-rate collector. */
+export function isLegacyFlows(state: GameState, force = "player"): boolean {
+  const items = state.forces[force]?.production.item;
+  if (!items) return false;
+  const first = Object.values(items)[0];
+  return first !== undefined && first.producedPerMinute === undefined;
+}
+
 export interface ForceState {
   /** Present from U5 onward. */
   electric?: ElectricState;
@@ -110,10 +183,47 @@ export interface ForceState {
     queue: string[];
   };
   production: {
-    item: Record<string, { input: number; output: number; perMinute: number }>;
-    fluid: Record<string, { input: number; output: number; perMinute: number }>;
+    item: Record<string, Flow>;
+    fluid: Record<string, Flow>;
   };
   machines: Record<string, number>;
+}
+
+/**
+ * The base, as coordinates.
+ *
+ * Every figure elsewhere in a state file is an aggregate; this is the one place
+ * the save's geometry survives, and it exists so advice can point at a place.
+ * Two resolutions, because one does not fit: a per-chunk count for everything,
+ * and exact positions for prototypes rare enough that a point means something.
+ */
+export interface MapCell {
+  /** Chunk coordinates: tile position divided by the chunk size, floored. */
+  cx: number;
+  cy: number;
+  /** Placed entities of the force in this chunk, by prototype type. */
+  byType: Record<string, number>;
+  total: number;
+  /** The surface's own pollution at the chunk, or absent when unreadable. */
+  pollution?: number;
+}
+
+export interface OreCell {
+  cx: number;
+  cy: number;
+  /** Remaining amount by resource name, summed over the chunk. */
+  res: Record<string, number>;
+}
+
+export interface SurfaceMap {
+  name: string;
+  cellTiles: number;
+  /** Tile bounds of everything below, so a renderer needs no second pass. */
+  bounds: { minX: number; minY: number; maxX: number; maxY: number } | null;
+  cells: MapCell[];
+  ore: OreCell[];
+  /** Exact tile positions, only for prototypes under the point limit. */
+  points: Record<string, Array<[number, number]>>;
 }
 
 export interface GameState {
@@ -138,7 +248,95 @@ export interface GameState {
     surfaceState?: SurfaceState[];
   };
   forces: Record<string, ForceState>;
+  /** Present from U8 onward; absent in older state files. */
+  map?: SurfaceMap[];
 }
+
+/**
+ * A chunk is 32 tiles square. The map buckets everything into chunks because
+ * that is the grid the engine already thinks in, so a cell boundary on our map
+ * is a cell boundary in the game rather than an arbitrary one of ours.
+ */
+const MAP_CELL_TILES = 32;
+
+/**
+ * A prototype with at most this many placed instances gets exact positions;
+ * anything commoner is left as a per-chunk count. A choice, not a game fact:
+ * 3914 inserters as points would be noise on a map and megabytes in a file,
+ * while 115 boilers are exactly what an advisor needs to point at. The list of
+ * which prototypes qualify is derived from the census, never typed.
+ */
+const MAP_POINT_LIMIT = 600;
+
+/**
+ * The belt survey (C26), appended to the collector when a bus question asks for it.
+ *
+ * Every belt-like entity on the player force, with its prototype, position,
+ * direction, and what sits on each of its transport lines. The lane record is
+ * `[item, count, distinct, span]`: the item holding the most positions on that
+ * lane, how many items are on it, how many different items are, which is how a
+ * lane carrying one thing is told from a lane that has been contaminated, and
+ * how many tiles the line spans.
+ *
+ * The span matters because a transport line is not a belt. The engine merges a
+ * straight stretch of belts into one line, and every belt in that stretch reports
+ * the same contents, so a raw count says nothing until it is divided by the tiles
+ * the line covers. Density is that division; `line_length` is the engine's own
+ * figure for it, read rather than counted here.
+ *
+ * Shapes are probed rather than assumed. `get_contents()` returned a dictionary
+ * in 1.1 and an array of records in 2.0, so both are handled; every runtime call
+ * is inside a `pcall`, because a survey that throws loses the whole state read.
+ */
+const BELT_SURVEY_LUA = `
+  -- The belt survey (C26). Same surfaces, same force, no writes.
+  local belt_types = { "transport-belt", "underground-belt", "splitter",
+                       "loader", "loader-1x1", "linked-belt" }
+  local belt_surfaces = {}
+  for _, surface in pairs(game.surfaces) do
+    local recs = {}
+    for _, e in pairs(surface.find_entities_filtered{ force = player_force, type = belt_types }) do
+      local lanes = {}
+      local okn, lines = pcall(function() return e.get_max_transport_line_index() end)
+      if okn and type(lines) == "number" then
+        for i = 1, lines do
+          local okl, line = pcall(function() return e.get_transport_line(i) end)
+          if okl and line then
+            local top, topn, distinct, total = "", 0, 0, 0
+            local okc, contents = pcall(function() return line.get_contents() end)
+            if okc and type(contents) == "table" then
+              for k, v in pairs(contents) do
+                local nm, ct
+                if type(v) == "table" then nm, ct = v.name, (v.count or 1) else nm, ct = k, v end
+                if nm then
+                  distinct = distinct + 1
+                  total = total + ct
+                  if ct > topn then top, topn = nm, ct end
+                end
+              end
+            end
+            local span = 0
+            local oks, len = pcall(function() return line.line_length end)
+            if oks and type(len) == "number" then span = len end
+            lanes[#lanes + 1] = { top, total, distinct, span }
+          end
+        end
+      end
+      local ug = nil
+      if e.type == "underground-belt" then
+        local oku, side = pcall(function() return e.belt_to_ground_type end)
+        if oku then ug = side end
+      end
+      recs[#recs + 1] = { n = e.name, t = e.type, x = e.position.x, y = e.position.y,
+                          d = e.direction, u = ug, l = lanes }
+    end
+    belt_surfaces[#belt_surfaces + 1] = { name = surface.name, belts = recs }
+  end
+
+  helpers.write_file("factorio-advisor/belts.json", helpers.table_to_json({
+    tick = game.tick, surfaces = belt_surfaces,
+  }), false)
+`;
 
 /**
  * The collector, appended to the copied save's own control script.
@@ -146,8 +344,12 @@ export interface GameState {
  * It runs once, on the first tick, and writes one JSON file. Everything it reads
  * is a documented runtime API; nothing is computed here that the TypeScript side
  * could compute from the snapshot instead.
+ *
+ * `belts` adds a second file, the belt survey (C26). It is off by default because
+ * it walks every belt on the surface and the watcher runs this collector on every
+ * save; a bus question asks for it explicitly.
  */
-function collectorLua(): string {
+function collectorLua(opts: { belts?: boolean } = {}): string {
   return `
 
 -- ---------------------------------------------------------------------------
@@ -161,20 +363,29 @@ script.on_nth_tick(1, function()
   local hour = defines.flow_precision_index.one_hour
 
   local function collect_flows(stats)
+    -- On item and fluid production statistics, "input" is what was made and
+    -- "output" is what was used. Both directions are collected: one rate alone
+    -- cannot tell a line with spare capacity from one running flat out.
     local out = {}
-    for name, count in pairs(stats.output_counts) do
-      out[name] = { input = 0, output = count, perMinute = 0 }
-    end
-    for name, count in pairs(stats.input_counts) do
+    local function entry(name)
       local e = out[name]
-      if e then e.input = count else out[name] = { input = count, output = 0, perMinute = 0 } end
+      if not e then
+        e = { produced = 0, consumed = 0, producedPerMinute = 0, consumedPerMinute = 0 }
+        out[name] = e
+      end
+      return e
     end
+    for name, count in pairs(stats.input_counts) do entry(name).produced = count end
+    for name, count in pairs(stats.output_counts) do entry(name).consumed = count end
     for name, e in pairs(out) do
       -- The default return is a per-minute RATE over the window, not a total.
       -- Measured, not recalled: on iron-plate over the one-hour window the same
       -- call gave 113774.95 with count = true and 1896.249 without, and
       -- 113774.95 / 60 = 1896.249 exactly.
-      e.perMinute = stats.get_flow_count{
+      e.producedPerMinute = stats.get_flow_count{
+        name = name, category = "input", precision_index = hour,
+      }
+      e.consumedPerMinute = stats.get_flow_count{
         name = name, category = "output", precision_index = hour,
       }
     end
@@ -292,9 +503,10 @@ script.on_nth_tick(1, function()
       for name, e in pairs(from) do
         local acc = into[name]
         if acc then
-          acc.input = acc.input + e.input
-          acc.output = acc.output + e.output
-          acc.perMinute = acc.perMinute + e.perMinute
+          acc.produced = acc.produced + e.produced
+          acc.consumed = acc.consumed + e.consumed
+          acc.producedPerMinute = acc.producedPerMinute + e.producedPerMinute
+          acc.consumedPerMinute = acc.consumedPerMinute + e.consumedPerMinute
         else
           into[name] = e
         end
@@ -383,6 +595,93 @@ script.on_nth_tick(1, function()
     }
   end
 
+  -- The map.
+  --
+  -- Aggregated in here rather than shipped raw: a played surface holds hundreds
+  -- of thousands of resource entities and tens of thousands of machines, and a
+  -- file with every one of them in it would be slower to write than the read it
+  -- belongs to. Chunks are the bucket because the engine already uses them.
+  local CELL = ${String(MAP_CELL_TILES)}
+  local POINT_LIMIT = ${String(MAP_POINT_LIMIT)}
+  local player_force = game.forces["player"]
+  local map = {}
+  for _, surface in pairs(game.surfaces) do
+    local cells, ore, points = {}, {}, {}
+    local minx, miny, maxx, maxy
+
+    local function bound(x, y)
+      if not minx or x < minx then minx = x end
+      if not maxx or x > maxx then maxx = x end
+      if not miny or y < miny then miny = y end
+      if not maxy or y > maxy then maxy = y end
+    end
+
+    local function cell_of(store, x, y)
+      local cx, cy = math.floor(x / CELL), math.floor(y / CELL)
+      local key = cx .. ":" .. cy
+      local c = store[key]
+      if not c then c = { cx = cx, cy = cy }; store[key] = c end
+      return c
+    end
+
+    for _, e in pairs(surface.find_entities_filtered{ force = player_force }) do
+      local pos = e.position
+      local kind = e.type
+      -- Ground clutter carries no information a map can use and would swamp
+      -- the bounds: a stray corpse or an item on the ground is not the base.
+      -- Tile ghosts go with them for a different reason: this save holds 136298
+      -- of them, planned landfill, which is eighty percent of everything placed
+      -- and would have set the density shading for the whole map on its own.
+      -- Entity ghosts stay, because planned construction is part of the base.
+      if kind ~= "corpse" and kind ~= "item-entity" and kind ~= "character"
+         and kind ~= "tile-ghost" then
+        local c = cell_of(cells, pos.x, pos.y)
+        c.byType = c.byType or {}
+        c.byType[kind] = (c.byType[kind] or 0) + 1
+        c.total = (c.total or 0) + 1
+        bound(pos.x, pos.y)
+        local p = points[e.name]
+        if not p then p = {}; points[e.name] = p end
+        if #p <= POINT_LIMIT then p[#p + 1] = { pos.x, pos.y } end
+      end
+    end
+
+    -- Over the limit means the positions were never worth keeping. The count
+    -- per chunk above already carries that prototype.
+    for name, p in pairs(points) do
+      if #p > POINT_LIMIT then points[name] = nil end
+    end
+
+    for _, e in pairs(surface.find_entities_filtered{ type = "resource" }) do
+      local pos = e.position
+      local c = cell_of(ore, pos.x, pos.y)
+      c.res = c.res or {}
+      c.res[e.name] = (c.res[e.name] or 0) + (e.amount or 0)
+      bound(pos.x, pos.y)
+    end
+
+    local cell_list = {}
+    for _, c in pairs(cells) do
+      local okp, pol = pcall(function()
+        return surface.get_pollution({ c.cx * CELL + CELL / 2, c.cy * CELL + CELL / 2 })
+      end)
+      if okp and type(pol) == "number" and pol > 0 then c.pollution = pol end
+      cell_list[#cell_list + 1] = c
+    end
+    local ore_list = {}
+    for _, c in pairs(ore) do ore_list[#ore_list + 1] = c end
+
+    map[#map + 1] = {
+      name = surface.name,
+      cellTiles = CELL,
+      bounds = minx and { minX = minx, minY = miny, maxX = maxx, maxY = maxy } or nil,
+      cells = cell_list,
+      ore = ore_list,
+      points = points,
+    }
+  end
+
+${opts.belts ? BELT_SURVEY_LUA : ""}
   helpers.write_file("factorio-advisor/state.json", helpers.table_to_json({
     tick = game.tick,
     surfaces = surfaces,
@@ -390,6 +689,7 @@ script.on_nth_tick(1, function()
     censusClasses = energy_types(),
     surfaceState = surface_state,
     forces = forces,
+    map = map,
   }), false)
 end)
 `;
@@ -407,7 +707,11 @@ function slugify(name: string): string {
  * back into the copy with `zip`, which is the one external tool this needs. Bun's
  * own zip support cannot update an entry in place.
  */
-async function injectCollector(copyPath: string, innerDir: string): Promise<void> {
+async function injectCollector(
+  copyPath: string,
+  innerDir: string,
+  opts: { belts?: boolean } = {},
+): Promise<void> {
   const staging = join(RUNTIME_DIR, "inject");
   rmSync(staging, { recursive: true, force: true });
   mkdirSync(join(staging, innerDir), { recursive: true });
@@ -423,7 +727,7 @@ async function injectCollector(copyPath: string, innerDir: string): Promise<void
 
   const controlPath = join(staging, innerDir, "control.lua");
   const original = readFileSync(controlPath, "utf8");
-  writeFileSync(controlPath, original + collectorLua());
+  writeFileSync(controlPath, original + collectorLua(opts));
 
   const zip = Bun.spawn(["zip", "-q", copyPath, `${innerDir}/control.lua`], {
     cwd: staging,
@@ -474,6 +778,8 @@ export function newestSave(): { name: string; path: string; mtime: Date } | null
 export interface ReadStateOptions {
   save: string;
   quiet?: boolean;
+  /** Also run the belt survey (C26) and write `data/state/<slug>-belts.json`. */
+  belts?: boolean;
 }
 
 export async function readState(opts: ReadStateOptions): Promise<GameState> {
@@ -506,11 +812,13 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
   copyFileSync(source, copy);
 
   const innerDir = await innerDirOf(copy);
-  await injectCollector(copy, innerDir);
+  await injectCollector(copy, innerDir, { belts: opts.belts });
 
   const configPath = writeRuntimeConfig(core);
   const outPath = join(RUNTIME_DIR, "script-output", "factorio-advisor", "state.json");
+  const beltsPath = join(RUNTIME_DIR, "script-output", "factorio-advisor", "belts.json");
   rmSync(outPath, { force: true });
+  rmSync(beltsPath, { force: true });
 
   say(`  engine  ${binary} --benchmark, write-data redirected into this project`);
   const proc = Bun.spawn(
@@ -540,6 +848,7 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
     censusClasses?: string[];
     surfaceState?: SurfaceState[];
     forces: Record<string, ForceState>;
+    map?: SurfaceMap[];
   };
 
   const manifest: Manifest | null = readManifest();
@@ -562,6 +871,7 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
       ...(raw.surfaceState ? { surfaceState: raw.surfaceState } : {}),
     },
     forces: raw.forces,
+    ...(raw.map ? { map: raw.map } : {}),
   };
 
   // Electric network figures arrive as joules per tick. Watts is what a reader
@@ -578,6 +888,18 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
   const dest = join(stateDir, `${slug}.json`);
   writeFileSync(dest, JSON.stringify(state, null, 2) + "\n");
   say(`  wrote   ${dest}`);
+
+  if (opts.belts) {
+    if (!existsSync(beltsPath)) {
+      throw new Error(
+        `The belt survey did not write ${beltsPath}, although the state read succeeded.\n` +
+          `Reported rather than worked around: without the file there are no belts to judge.`,
+      );
+    }
+    const beltDest = join(stateDir, `${slug}-belts.json`);
+    copyFileSync(beltsPath, beltDest);
+    say(`  wrote   ${beltDest}`);
+  }
 
   return state;
 }

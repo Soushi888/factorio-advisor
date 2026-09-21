@@ -17,6 +17,7 @@ bun run next                              # what is researchable right now, from
 bun run next --for=carbon-fiber           # the unresearched path from here to what unlocks an item or tech.
 bun run power                             # generation against draw, priced from the census the last state read returned.
 bun run gen electronic-circuit --rate=45  # lay one recipe step out as a row and print the blueprint string. Warns on input belts and inserters.
+bun run advise --spm=45                   # where the base stands and what the next step costs, with the number behind each call.
 bun run report                            # one report for the newest save under reports/, a diff against the previous report of that save.
 bun run watch                             # leave it running from the MAIN tree; a save in game becomes a report and reports/index.html.
 bun run search asteroid                   # find prototypes by name across every class
@@ -59,7 +60,7 @@ The default-recipe rule is ordered and stated in the output: main product over b
 
 `audit.ts` resolves each machine's real loadout, works out which beacons physically reach it from the selection boxes and positions, and nets the flows so the print's own bottleneck shows up.
 
-`state.ts` is tier C. It copies the named save into `.factorio-runtime/saves/`, appends a collector to the copy's own `control.lua` (no mod, so the mod set the save was made with is unchanged and a modded save still loads), runs the binary with `--benchmark` on the copy under the same redirected write-data, and parses the JSON the collector wrote into `data/state/<save>.json`. Production rates come from `get_flow_count`, measured to be per minute (ADR-6), never assumed. The player's save is never opened in place. Freshness is the last save on disk, not the running session.
+`state.ts` is tier C. It copies the named save into `.factorio-runtime/saves/`, appends a collector to the copy's own `control.lua` (no mod, so the mod set the save was made with is unchanged and a modded save still loads), runs the binary with `--benchmark` on the copy under the same redirected write-data, and parses the JSON the collector wrote into `data/state/<save>.json`. Production rates come from `get_flow_count`, measured to be per minute (ADR-6), never assumed, and both directions are recorded: on item and fluid statistics the engine's `input_counts` is what was made and `output_counts` is what was used, settled against the save itself (84 labs placed, `input = 84`, nothing consuming a lab) rather than from recall. Electric network statistics use the reverse convention. `flowOf` normalises a state file written before that change, and a report refuses to diff one direction against the other. The player's save is never opened in place. Freshness is the last save on disk, not the running session.
 
 `next.ts` is a set operation between the technology graph and the researched set a state file reports: a technology is researchable exactly when it is unresearched and every prerequisite is researched. `--for=` walks the prerequisite closure of the target and subtracts what is done. Technology names the snapshot does not know are listed, never dropped.
 
@@ -68,6 +69,12 @@ The default-recipe rule is ordered and stated in the output: main product over b
 `layout.ts` lays one recipe step out as a row for `bun run gen` (ADR-9): machines from the ratio solver rounded up with the overcapacity stated, one inserter per machine per side with the tier chosen by rotation ceiling, an input belt above and an output belt below sized against demand, encoded through `blueprint.ts`. Two measured facts carry it: the tile footprint is `selection_box`, never `collision_box` (which is inset for movement), and Factorio 2.0 uses sixteen directions, so East is 4 and West 12, both checked against the shipped 83-entity print rather than recalled. Input demand, belt counts and the inserter ceiling print as warnings when the row cannot be fed as laid; a chain or a bus is out of scope and the output says so.
 
 `power.ts` joins the census a state read returned to the energy fields in the snapshot (ADR-7). Generation per source is derived and the derivation is printed in the row; the steam chain is priced from boiler consumption and engine fluid usage against steam's declared heat capacity; the solar average is computed from the day-night curve the collector records on the surface, never from a remembered factor. The census class list is derived from every prototype declaring an energy source, and usage, drain and buffer per class are the engine's own resolved values copied from the collector, because no single drain rule matches both an assembling machine and a radar. Per-event draws (inserter movements, radar sectors) are named in their own table and never converted to watts.
+
+`advise.ts` is the synthesis: the science pack lines, the pack that sets the pace, lab utilisation against the current research's own `unit.time` and the force's lab speed, grid headroom against the steam-limited capacity `power.ts` derives, and, for a target rate, what the extra chain needs per item against what the base has spare. Spare is made per minute minus used per minute, which is why the collector records both directions (C25): a requirement compared against total production calls a saturated line healthy. Every recommendation carries the measurement that produced it, and there is no advice about layout or placement, because no save this tool reads reports a position.
+
+`map.ts` is the geometry. The collector records, per chunk, the entities the player force has by prototype type and the remaining amount of each resource, plus exact positions for any prototype with fewer placed instances than `MAP_POINT_LIMIT`; `map.ts` clusters those chunks into power blocks (engines against the boilers that can feed them, at the ratio `power.ts` derives) and ore fields (amount remaining, and whether any drill stands on it), then renders SVG in the save's own tile coordinates so no projection sits between a point on the page and a position in the game. It draws no terrain, because terrain is never measured. Tile ghosts are excluded from the census: this save holds 136298 of them and they would set the density shading on their own.
+
+`sections.ts` cuts the dashboard into science, energy, defence, production, logistics and mining, each with its own figures, its own slice of the advice, and its own view of the map. Advice that needs coordinates is built in `advise.ts` from the same clusters, so the markdown report and the page say the same thing.
 
 `render.ts` formats tables. `cli.ts` is the only entry point of the advisor and the only place that formats its output.
 
@@ -81,6 +88,10 @@ The default-recipe rule is ordered and stated in the output: main product over b
 - **Never state a game fact without naming the snapshot.** Every command prints the version, build, mod set and dump date in its header.
 - Strict TypeScript with `noUncheckedIndexedAccess`; index access needs `!` or a guard.
 - bun always, never npm.
+
+## The advisor's own skill
+
+`.claude/skills/Factorio/` is the workflow layer: how to use these commands, how to read a base in the right order, and the traps found by running the tool against real data. It is versioned here rather than in `~/.claude` because `Commands.md` describes this CLI surface and a copy elsewhere drifts the first time a flag changes; `~/.claude/skills/Factorio` is a symlink to it so it still routes from any directory. **This file stays the authority on how the code must behave and the skill never restates a rule from here, pointer only.** A command added or a flag changed updates `Commands.md` in the same commit.
 
 ## Working in this repo
 

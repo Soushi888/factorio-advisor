@@ -16,6 +16,7 @@
     "next": "bun src/cli.ts next",
     "power": "bun src/cli.ts power",
     "gen": "bun src/cli.ts gen",
+    "advise": "bun src/cli.ts advise",
     "watch": "bun bridge/cli.ts",
     "report": "bun bridge/cli.ts --now",
     "typecheck": "tsc --noEmit"
