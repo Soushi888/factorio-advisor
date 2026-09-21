@@ -181,6 +181,17 @@ function runPath(runs: Array<[number, number, number]>, cls: string, fill?: stri
   return `<path class="${cls}"${fill ? ` fill="${fill}" color="${fill}"` : ""} d="${d}"/>`;
 }
 
+/**
+ * A stop name as Soushi wrote it, stripped of 2.0 rich-text markers for display.
+ *
+ * The name in the state file is untouched: this only decides what goes on the
+ * map, where fifteen characters of `[virtual-signal=...]` would bury the word
+ * the name is actually about.
+ */
+function cleanStopName(name: string): string {
+  return name.replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim() || name;
+}
+
 /** A label the page keeps at a readable size, with a halo so it survives anything under it. */
 function label(x: number, y: number, text: string): string {
   return `<text class="lbl" x="${round(x)}" y="${round(y)}">${esc(text)}</text>`;
@@ -406,7 +417,7 @@ export function mapModel(input: ModelInput): MapModel {
       census: tiles,
       missing: [],
       note: `${String(tiles)} water tiles, at their own edges`,
-      body: runPath(water, "tile"),
+      body: runPath(water, "tile water"),
     });
   }
 
@@ -455,15 +466,19 @@ export function mapModel(input: ModelInput): MapModel {
       missing: [],
       note: `${String(nests)} nests and ${String(worms)} worms in the charted area, counted per chunk`,
       body: enemy
-        .map((e) =>
-          chunkRect(
-            e.cx,
-            e.cy,
-            cell,
-            Math.min(0.8, 0.25 + 0.55 * Math.sqrt((e.nests + e.worms) / Math.max(1, max))),
-            `${String(e.nests)} nests, ${String(e.worms)} worms`,
-          ),
-        )
+        .map((e) => {
+          // Sized by how much is in the chunk, centred on it, never filling it:
+          // the count is real and the position is the chunk, which is as
+          // precise as this measurement gets.
+          const r = (cell / 2) * Math.min(1, 0.3 + 0.7 * Math.sqrt((e.nests + e.worms) / Math.max(1, max)));
+          const cx = e.cx * cell + cell / 2;
+          const cy = e.cy * cell + cell / 2;
+          return (
+            `<rect x="${round(cx - r)}" y="${round(cy - r)}" width="${round(r * 2)}" ` +
+            `height="${round(r * 2)}" opacity="0.62"><title>${String(e.nests)} nests, ` +
+            `${String(e.worms)} worms</title></rect>`
+          );
+        })
         .join(""),
     });
   }
@@ -518,6 +533,62 @@ export function mapModel(input: ModelInput): MapModel {
   layers.push(entityLayer("logistics", "Roboports and chests", "#5fb0f0", "square", "base", DOMAINS.logistics, ctx, true));
   layers.push(entityLayer("defence", "Turrets and radar", "#e8615a", "dot", "base", DOMAINS.defence, ctx, true));
   layers.push(entityLayer("science", "Labs", "#b88ae8", "square", "base", DOMAINS.science, ctx, true));
+
+  // Roboport coverage, from each roboport's own declared radius.
+  //
+  // The one layer here that draws something you cannot see standing in the
+  // game without turning the overlay on, and the reason it is worth drawing:
+  // a gap in the logistic area is invisible until a robot refuses to deliver
+  // into it. The square is the shape the game uses, `logistics_radius` tiles
+  // either side of the roboport, read from the prototype and never assumed.
+  const ports = map.points["roboport"] ?? [];
+  if (ports.length > 0) {
+    const proto = input.data?.find("roboport", ["roboport"]) ?? null;
+    const radius = Number(proto?.["logistics_radius"] ?? 0);
+    const build = Number(proto?.["construction_radius"] ?? 0);
+    if (radius > 0) {
+      const box = (r: number): string =>
+        ports
+          .map(([x, y]) => `M${round(x - r)} ${round(y - r)}h${round(r * 2)}v${round(r * 2)}h${round(-r * 2)}z`)
+          .join("");
+      layers.push({
+        id: "coverage",
+        label: "Roboport coverage",
+        colour: "#5fb0f0",
+        mark: "box",
+        group: "base",
+        on: false,
+        drawn: ports.length,
+        census: census["roboport"] ?? ports.length,
+        missing: [],
+        note: `${String(radius)} tiles of logistic area and ${String(build)} of construction area per roboport, from the prototype`,
+        body:
+          `<path class="cov build" d="${box(build)}"/>` +
+          `<path class="cov" d="${box(radius)}"/>`,
+      });
+    }
+  }
+
+  // Train stops, with the names Soushi gave them.
+  const stops = state.forces[input.force ?? "player"]?.stops ?? [];
+  if (stops.length > 0) {
+    const shown = stops.flatMap((s) =>
+      s.at.map(([x, y]) => label(x, y - 2, cleanStopName(s.name))),
+    );
+    layers.push({
+      id: "stops",
+      label: "Train stops",
+      colour: "#d0d6e0",
+      mark: "square",
+      group: "base",
+      on: true,
+      drawn: stops.reduce((n, s) => n + s.count, 0),
+      census: stops.reduce((n, s) => n + s.count, 0),
+      missing: [],
+      note: `${String(stops.length)} names across ${String(stops.reduce((n, s) => n + s.count, 0))} stops`,
+      body: shown.join(""),
+    });
+  }
 
   // ---- Places -----------------------------------------------------------
 

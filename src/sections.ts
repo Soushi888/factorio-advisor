@@ -30,6 +30,8 @@ export interface Table {
   rows: string[][];
   /** Column indexes to right-align. */
   numeric: number[];
+  /** What the table is of, when a section carries more than one. */
+  caption?: string;
 }
 
 export interface SectionView {
@@ -38,7 +40,8 @@ export interface SectionView {
   /** The one sentence a glance should take away. */
   lead: string;
   figures: Figure[];
-  table: Table | null;
+  /** Zero or more tables, because logistics is trains AND robots. */
+  tables: Table[];
   advice: Advisory["advice"];
   /**
    * What this part of the base can carry, with the number behind it.
@@ -98,6 +101,18 @@ function extent(map: SurfaceMap | null): string {
  * this evening's job or next month's. Ore under drills only, because ore nobody
  * is mining is not feeding anything.
  */
+/**
+ * A train stop name as Soushi wrote it.
+ *
+ * 2.0 parameterised stop names carry rich-text markers like
+ * `[virtual-signal=signal-item-parameter]`, which the game renders as an icon
+ * and a page renders as fifteen characters of noise. Stripped for display only:
+ * the name in the state file is untouched.
+ */
+function cleanStop(name: string): string {
+  return name.replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim() || name;
+}
+
 function runway(fields: Patch[], resource: string, perMinute: number): { minutes: number; amount: number } | null {
   if (perMinute <= 0) return null;
   const amount = fields
@@ -155,7 +170,7 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
         field: "forces.player.technologies.current",
       },
     ],
-    table: {
+    tables: [{
       headers: ["pack", "made/min", "used/min", "spare"],
       numeric: [1, 2, 3],
       rows: advisory.packs
@@ -166,7 +181,7 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
           n(p.rates.consumedPerMinute),
           n(p.rates.headroomPerMinute),
         ]),
-    },
+    }],
     advice: adviceFor("science"),
     carry: labs
       ? `${n(labs.capacityPerMinute, 0)} packs a minute through ${String(labs.labs)} labs, and ${n(labs.actualPerMinute)} is going through them.`
@@ -205,7 +220,7 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
             : []),
         ]
       : [],
-    table: {
+    tables: [{
       headers: ["what", "placed"],
       numeric: [1],
       rows: [
@@ -214,7 +229,7 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
         ["steam engine", String(count("generator"))],
         ["boiler", String(count("boiler"))],
       ].filter((r) => r[1] !== "0"),
-    },
+    }],
     advice: adviceFor("energy"),
     carry: grid
       ? `${mw(grid.capacityWatts)} of delivery, ${mw(grid.deliveredWatts)} of it flowing, and ${mw(grid.nameplateWatts - grid.capacityWatts)} standing idle behind engines with no boiler.`
@@ -255,7 +270,7 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
         tone: piercing.producedPerMinute + ammo.producedPerMinute > 0 ? "good" : "warn",
       },
     ],
-    table: {
+    tables: [{
       headers: ["what", "placed"],
       numeric: [1],
       rows: [
@@ -265,7 +280,7 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
         ["gate", String(count("gate"))],
         ["radar", String(count("radar"))],
       ].filter((r) => r[1] !== "0"),
-    },
+    }],
     advice: adviceFor("defense"),
     carry: `${String(count("ammo-turret", "electric-turret", "fluid-turret"))} turrets and ${String(count("wall"))} wall segments against an evolution of ${surface?.evolution != null ? n(surface.evolution * 100) : "?"}%, fed by ${n(piercing.producedPerMinute + ammo.producedPerMinute)} rounds a minute.`,
     layer: "defence",
@@ -289,16 +304,16 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
           ]
         : []),
     ],
-    table: target
-      ? {
+    tables: target
+      ? [{
           headers: ["item", "needs/min", "spare", "build for"],
           numeric: [1, 2, 3],
           rows: target.requirements
             .filter((x) => x.deficitPerMinute > 0 && !x.raw)
             .slice(0, 10)
             .map((x) => [x.item, n(x.requiredPerMinute), n(x.headroomPerMinute), n(x.deficitPerMinute)]),
-        }
-      : null,
+        }]
+      : [],
     advice: adviceFor("production"),
     carry: target
       ? `${String(count("assembling-machine", "furnace"))} machines standing, and ${String(target.machinesAdded)} more wanted to reach ${n(target.spm, 0)}/min of every pack.`
@@ -307,29 +322,136 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
   });
 
   // ---- logistics ---------------------------------------------------------
+  //
+  // Two networks, not one. Belts are the third and they are counted, but the
+  // question Soushi asked is about the two that have a state worth reading: a
+  // train network has routes and a queue, and a robot network has a fleet that
+  // can be entirely in the air.
+  const trains = force?.trains ?? [];
+  // Held up, against the engine's own names for the states it reports. The
+  // collector also computes this, and its boolean does not survive the JSON
+  // writer, so the reading is done here where it can be checked: which states
+  // count as held up is an editorial call, not a game fact, and it belongs in
+  // the open rather than in a Lua branch.
+  const HELD_UP = new Set(["wait_signal", "destination_full", "no_path", "path_lost"]);
+  const isWaiting = (t: { state?: string; waiting?: boolean }): boolean =>
+    t.waiting === true || (t.state !== undefined && HELD_UP.has(t.state));
+  const stops = force?.stops ?? [];
+  const networks = (force?.networks ?? []).filter((x) => x.cells > 0);
+  const fleet = networks.reduce(
+    (acc, x) => ({
+      logistic: acc.logistic + x.logisticRobots.all,
+      logisticIdle: acc.logisticIdle + x.logisticRobots.available,
+      construction: acc.construction + x.constructionRobots.all,
+      constructionIdle: acc.constructionIdle + x.constructionRobots.available,
+    }),
+    { logistic: 0, logisticIdle: 0, construction: 0, constructionIdle: 0 },
+  );
+  const flying = fleet.construction - fleet.constructionIdle + (fleet.logistic - fleet.logisticIdle);
+
+  // A route is a schedule, so trains told to do the same thing are one line.
+  const routes = new Map<string, { trains: number; wagons: number; fluid: number; carrying: Map<string, number>; waiting: number }>();
+  for (const t of trains) {
+    const key = t.schedule.map(cleanStop).join(" \u2192 ") || "no schedule";
+    const r = routes.get(key) ?? { trains: 0, wagons: 0, fluid: 0, carrying: new Map<string, number>(), waiting: 0 };
+    r.trains += 1;
+    r.wagons += t.cargoWagons;
+    r.fluid += t.fluidWagons;
+    if (isWaiting(t)) r.waiting += 1;
+    for (const [item, count] of Object.entries(t.contents ?? {})) {
+      r.carrying.set(item, (r.carrying.get(item) ?? 0) + count);
+    }
+    routes.set(key, r);
+  }
+  const routeRows = [...routes.entries()]
+    .sort((a, b) => b[1].trains - a[1].trains)
+    .map(([route, r]) => [
+      route,
+      String(r.trains),
+      String(r.wagons + r.fluid),
+      [...r.carrying.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([i, c]) => `${i} ${String(c)}`).join(", ") || "empty",
+      r.waiting > 0 ? String(r.waiting) : "",
+    ]);
+
+  const queued = trains.filter(isWaiting).length;
+
   out.push({
     id: "logistics",
     title: TITLES.logistics,
-    lead: `${String(count("transport-belt", "underground-belt", "splitter"))} belt pieces, ${String(count("roboport"))} roboports, ${String(count("locomotive"))} locomotives.`,
+    lead:
+      trains.length > 0
+        ? `${String(trains.length)} trains on ${String(routes.size)} routes, and ${String(fleet.logistic + fleet.construction)} robots across ${String(networks.length)} networks.`
+        : `${String(count("transport-belt", "underground-belt", "splitter"))} belt pieces, ${String(count("roboport"))} roboports, no trains.`,
     figures: [
+      { value: String(trains.length), label: "trains", field: "forces.player.trains" },
+      {
+        value: String(routes.size),
+        label: "routes",
+        field: "forces.player.trains[].schedule",
+      },
+      {
+        value: queued > 0 ? String(queued) : "0",
+        label: "waiting on a signal or a full stop",
+        field: "forces.player.trains[].state",
+        tone: queued > trains.length / 3 ? "warn" : "good",
+      },
+      { value: String(stops.length), label: "stop names", field: "forces.player.stops" },
+      {
+        value: String(fleet.logistic + fleet.construction),
+        label: "robots",
+        field: "forces.player.networks",
+      },
+      {
+        value: String(flying),
+        label: "robots in the air",
+        field: "forces.player.networks",
+        tone: fleet.logistic + fleet.construction > 0 && flying / (fleet.logistic + fleet.construction) > 0.9 ? "warn" : "good",
+      },
       { value: String(count("roboport")), label: "roboports", field: "forces.player.machines.roboport" },
-      { value: String(count("logistic-robot", "construction-robot")), label: "robots out", field: "map[0].cells[].byType" },
-      { value: String(count("locomotive")), label: "locomotives", field: "map[0].cells[].byType.locomotive" },
-      { value: String(count("train-stop")), label: "train stops", field: "map[0].cells[].byType.train-stop" },
+      {
+        value: String(count("transport-belt", "underground-belt", "splitter")),
+        label: "belt pieces",
+        field: "forces.player.machines",
+      },
     ],
-    table: {
-      headers: ["what", "placed"],
-      numeric: [1],
-      rows: [
-        ["belts", String(count("transport-belt"))],
-        ["undergrounds", String(count("underground-belt"))],
-        ["splitters", String(count("splitter"))],
-        ["rail", String(count("straight-rail", "curved-rail-a", "curved-rail-b", "half-diagonal-rail"))],
-        ["inserters", String(count("inserter"))],
-      ].filter((r) => r[1] !== "0"),
-    },
+    tables: [
+      ...(routeRows.length > 0
+        ? [
+            {
+              caption: "train routes",
+              headers: ["route", "trains", "wagons", "carrying", "waiting"],
+              numeric: [1, 2, 4],
+              rows: routeRows,
+            },
+          ]
+        : []),
+      ...(networks.length > 0
+        ? [
+            {
+              caption: "robot networks",
+              headers: ["network", "roboports", "logistic idle/all", "construction idle/all", "chests"],
+              numeric: [1, 2, 3, 4],
+              rows: networks
+                .sort((a, b) => b.cells - a.cells)
+                .slice(0, 6)
+                .map((x) => [
+                  x.bounds
+                    ? `at ${String(Math.round((x.bounds.minX + x.bounds.maxX) / 2))}, ${String(Math.round((x.bounds.minY + x.bounds.maxY) / 2))}`
+                    : x.surface,
+                  String(x.cells),
+                  `${String(x.logisticRobots.available)}/${String(x.logisticRobots.all)}`,
+                  `${String(x.constructionRobots.available)}/${String(x.constructionRobots.all)}`,
+                  String((x.providers ?? 0) + (x.requesters ?? 0) + (x.storage ?? 0)),
+                ]),
+            },
+          ]
+        : []),
+    ],
     advice: adviceFor("logistics"),
-    carry: `${String(count("transport-belt", "underground-belt", "splitter"))} belt pieces and ${String(count("roboport"))} roboports moving it, with ${String(count("locomotive"))} locomotives across ${String(count("train-stop"))} stops.`,
+    carry:
+      trains.length > 0
+        ? `${String(trains.length)} trains and ${String(fleet.logistic + fleet.construction)} robots moving it, with ${String(queued)} trains waiting on a signal or a full stop.`
+        : `${String(count("transport-belt", "underground-belt", "splitter"))} belt pieces and ${String(count("roboport"))} roboports moving it.`,
     layer: "logistics",
   });
 
@@ -374,9 +496,9 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
         tone: r.minutes < 60 * 20 ? ("warn" as const) : ("good" as const),
       })),
     ],
-    table:
+    tables:
       fields.length > 0
-        ? {
+        ? [{
             headers: ["field", "remaining", "chunks", "drills"],
             numeric: [1, 2, 3],
             // The biggest field of each resource first, so a resource he has
@@ -398,8 +520,8 @@ export function sections(data: Data, state: GameState, advisory: Advisory): Sect
                 String(p.chunks),
                 String(p.extractors),
               ]),
-          }
-        : null,
+          }]
+        : [],
     advice: adviceFor("mining"),
     carry: shortestRunway
       ? `${hours(shortestRunway.minutes)} of ${shortestRunway.resource} left under the drills, and ${String(untouched.length)} charted fields with nothing standing on them.`
