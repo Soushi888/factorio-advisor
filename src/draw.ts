@@ -2,7 +2,8 @@ import type { Blueprint, BpEntity } from "./blueprint.ts";
 import type { AuditResult, Box } from "./audit.ts";
 import type { Data, Proto } from "./proto.ts";
 import { EAST, NORTH, SOUTH, WEST, footprintOf } from "./layout.ts";
-import { PIXELS_PER_TILE, dataUri, iconCut, spritesFor, utilityCut, type SpriteCut } from "./sprites.ts";
+import { PIXELS_PER_TILE, beltCut, dataUri, iconCut, spritesFor, type SpriteCut } from "./sprites.ts";
+import { beltShapes } from "./belt-shape.ts";
 
 /**
  * Drawing a decoded print to scale (C29).
@@ -222,68 +223,6 @@ function esc(s: string): string {
   );
 }
 
-/**
- * The travel arrow, for belt-family entities only.
- *
- * The game has its own, and it is the one Soushi sees while playing:
- * `utility-sprites` carries `indication_arrow`, the yellow chevron the engine
- * draws over a belt to say which way it runs, pointing north at rotation zero.
- * A direction is sixteenths of a turn clockwise from north, so the sprite turns
- * by `direction * 22.5` degrees about the tile it sits on.
- *
- * It is drawn only where travel direction was actually measured: an underground
- * pair states which way it carries, and an inserter's direction names one of its
- * two ends without the print saying which, so inserters get their rotation and
- * no arrow.
- */
-function arrowImage(uri: string, cut: SpriteCut, p: Placed): string {
-  const cx = (p.box.x1 + p.box.x2) / 2;
-  const cy = (p.box.y1 + p.box.y2) / 2;
-  const w = (cut.w * cut.scale) / PIXELS_PER_TILE;
-  const h = (cut.h * cut.scale) / PIXELS_PER_TILE;
-  return (
-    `<image href="${uri}" x="${n(cx - w / 2)}" y="${n(cy - h / 2)}" ` +
-    `width="${n(w)}" height="${n(h)}" ` +
-    `transform="rotate(${n(p.direction * 22.5)} ${n(cx)} ${n(cy)})"/>`
-  );
-}
-
-/**
- * The drawn arrow, kept only as the fallback.
- *
- * Used when the installation has no `indication_arrow` to cut, so a direction
- * the drawing knows is never left unsaid.
- */
-function arrow(p: Placed): string {
-  const cx = (p.box.x1 + p.box.x2) / 2;
-  const cy = (p.box.y1 + p.box.y2) / 2;
-  const a = (p.direction * 22.5 * Math.PI) / 180;
-  const dx = Math.sin(a);
-  const dy = -Math.cos(a);
-  const r = Math.min(p.box.x2 - p.box.x1, p.box.y2 - p.box.y1) * 0.35;
-  const tx = cx + dx * r;
-  const ty = cy + dy * r;
-  // A chevron rather than a bare line: a line segment shows an axis and leaves
-  // which way it carries to the reader's imagination, which is the one thing a
-  // drawing of a belt exists to settle.
-  const b = r * 0.7;
-  const px = -dy;
-  const py = dx;
-  return (
-    `M${n(cx - dx * r)} ${n(cy - dy * r)}L${n(tx)} ${n(ty)}` +
-    `M${n(tx - dx * b + px * b * 0.7)} ${n(ty - dy * b + py * b * 0.7)}` +
-    `L${n(tx)} ${n(ty)}` +
-    `L${n(tx - dx * b - px * b * 0.7)} ${n(ty - dy * b - py * b * 0.7)}`
-  );
-}
-
-/**
- * The shapes' own stylesheet, carried INSIDE the svg element.
- *
- * `--svg` writes the same string as a file of its own, and a file whose colours
- * live in the page that embedded it renders as a black rectangle anywhere else.
- * One copy, inside the thing it styles.
- */
 const SVG_CSS = `
   .grid { fill:none; stroke:#232830; stroke-width:1; vector-effect:non-scaling-stroke; }
   .fp { fill:var(--c); fill-opacity:.55; stroke:var(--c); stroke-width:1.1;
@@ -373,6 +312,10 @@ export function drawPrint(data: Data, bp: Blueprint, result: AuditResult): Drawn
     return { item: f.item, shortfallPerSecond: -f.net, entities: count };
   });
 
+  // One lookup from a prototype name to its declared type, for the belt pass.
+  const placedType = new Map<string, string>();
+  for (const p of placed) placedType.set(p.entity.name, p.type);
+
   const byName = new Map<string, number>();
   for (const p of placed) byName.set(p.entity.name, (byName.get(p.entity.name) ?? 0) + 1);
   // The legend is the print's own census with the game's icons beside it, so a
@@ -407,11 +350,17 @@ export function drawPrint(data: Data, bp: Blueprint, result: AuditResult): Drawn
   const spriteless = new Map<string, number>();
   let sprited = 0;
   let tinted = 0;
+  // Every belt's picture comes from what its neighbours do, which is the whole
+  // print, so it is worked out once before anything is drawn.
+  const shapes = beltShapes(entities, (name) => placedType.get(name) ?? "");
+
   for (const p of painter) {
+    const shape = shapes.get(p.entity.entity_number);
     const cuts = spritesFor(data, {
       name: p.entity.name,
       direction: p.direction,
       kind: String(p.entity["type"] ?? ""),
+      beltRow: shape?.row,
     });
     if (cuts.length === 0) {
       spriteless.set(p.entity.name, (spriteless.get(p.entity.name) ?? 0) + 1);
@@ -428,7 +377,13 @@ export function drawPrint(data: Data, bp: Blueprint, result: AuditResult): Drawn
     sprited += 1;
     tinted += cuts.filter((c) => c.tint).length;
     if (shadow) shadows.push(shadow);
-    bodies.push(`<g><title>${esc(p.entity.name)}</title>${body}</g>`);
+    // The start and end caps are extra rows of the same sheet, drawn over the
+    // tile's own surface exactly as the game stacks them.
+    const caps = (shape?.caps ?? [])
+      .map((row) => beltCut(data, p.entity.name, row))
+      .filter((c): c is SpriteCut => c !== null);
+    const capArt = caps.length > 0 ? spriteShapes(caps, cx, cy, false) : "";
+    bodies.push(`<g><title>${esc(p.entity.name)}</title>${body}${capArt}</g>`);
   }
 
   const parts: string[] = [];
@@ -465,16 +420,7 @@ export function drawPrint(data: Data, bp: Blueprint, result: AuditResult): Drawn
           `</g>`,
       );
     }
-    if (family.id === "belt") {
-      const cut = utilityCut(data, "indication_arrow");
-      const uri = cut ? dataUri(cut) : null;
-      if (cut && uri) {
-        parts.push(`<g class="arrows">${list.map((p) => arrowImage(uri, cut, p)).join("")}</g>`);
-      } else {
-        const ticks = list.map((p) => arrow(p)).join("");
-        if (ticks) parts.push(`<path class="dir" style="--c:${family.colour}" d="${ticks}"/>`);
-      }
-    }
+
   }
 
   const marks = placed.filter((p) => starvedNumbers.has(p.entity.entity_number));
@@ -624,10 +570,13 @@ export function printPage(input: PageInput): string {
         gaps.push(
           `<p class="gap">${String(d.sprited)} of ${String(d.entityCount)} entities are drawn with ` +
             `the game's own art, read out of the installation and cut to the cell each prototype ` +
-            `declares. Two things the drawing does not do: it does not infer connections, so a belt ` +
-            `at a corner is drawn straight and a pipe is drawn as a straight run rather than a ` +
-            `junction, and an inserter is drawn as its base without its hand, because the string ` +
-            `says which way it faces and not which of its two ends that names.` +
+            `declares. Belts are shaped the way the engine shapes them: a belt fed from the side is ` +
+            `drawn as the curve, one nothing feeds gets its start cap, one whose output goes nowhere ` +
+            `gets its end cap, and only a belt fed from behind is the plain straight, so a corner ` +
+            `reads as a corner and a dead end as a dead end. Two things the drawing still does not ` +
+            `do: a pipe is drawn as a straight run rather than a junction, and an inserter is drawn ` +
+            `as its base without its hand, because the string says which way it faces and not which ` +
+            `of its two ends that names.` +
             (d.tinted > 0
               ? ` ${String(d.tinted)} layers declare a tint this tool does not apply.`
               : "") +
@@ -689,9 +638,11 @@ ${body}
 <p class="gap">${esc(input.snapshot)}<br>Decoded from ${esc(input.source)}.
 Every footprint is the prototype's <code>selection_box</code>, never its collision box, which is
 inset for movement. Direction 4 is East and 12 is West, measured from underground belt pairs in
-the shipped prints rather than recalled, and both swap width against height. An arrow is a belt's
-travel direction; inserters carry a direction and no arrow, because the print does not say which
-of an inserter's two ends that direction names.</p>
+the shipped prints rather than recalled, and both swap width against height. A belt's own picture
+carries its direction, because a belt sheet holds four straights, eight curves and eight end caps
+and the right one is chosen from what the tile's neighbours do, which is how the engine chooses
+it. Inserters carry a direction and no marker, because the print does not say which of an
+inserter's two ends that direction names.</p>
 </main></body></html>
 `;
 }

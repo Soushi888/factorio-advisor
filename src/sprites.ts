@@ -129,7 +129,7 @@ function directionIndex(direction: number, count: number): number {
  * for an animation and another for a rotated sprite, and reading the file is
  * cheaper than being right about which one applies.
  */
-function cutOf(leaf: Rec, direction: number): SpriteCut | null {
+function cutOf(leaf: Rec, direction: number, pick: number | null = null): SpriteCut | null {
   const declared =
     typeof leaf["filename"] === "string"
       ? (leaf["filename"] as string)
@@ -155,7 +155,7 @@ function cutOf(leaf: Rec, direction: number): SpriteCut | null {
   const perRow = Math.max(1, Math.floor((sheet.w - baseX) / w));
 
   // Frames of one direction are contiguous, and a sheet wraps at its own width.
-  const index = directionIndex(direction, dirs) * frames;
+  const index = (pick === null ? directionIndex(direction, dirs) : pick) * frames;
   const col = index % perRow;
   const row = Math.floor(index / perRow);
 
@@ -315,7 +315,12 @@ export interface SpriteSubject {
   direction?: number;
   /** An underground belt or loader end: "input" or "output", as the print says. */
   kind?: string;
+  /** Which of a belt sheet's twenty rows this tile needs, when the caller knows. */
+  beltRow?: number;
 }
+
+/** The four cardinal names, in the order a direction index counts them. */
+export const COMPASS_NAME = ["north", "east", "south", "west"] as const;
 
 function entityProto(data: Data, name: string): Proto | null {
   const list = data.all(name);
@@ -341,8 +346,9 @@ export function spritesFor(data: Data, entity: SpriteSubject): SpriteCut[] {
   // drawn straight: which way it bends depends on its neighbours, and the page
   // says so rather than the drawing guessing.
   if (String(proto["type"] ?? "") === "transport-belt") {
+    const row = entity.beltRow ?? BELT_ROW[COMPASS_NAME[directionIndex(direction, 4)] ?? "north"] ?? 0;
     const set = rec(rec(proto["belt_animation_set"])?.["animation_set"]);
-    const cut = set ? cutOf({ ...set, direction_count: 4 }, direction) : null;
+    const cut = set ? cutOf(set, 0, row) : null;
     if (cut) return [cut];
   }
 
@@ -350,6 +356,62 @@ export function spritesFor(data: Data, entity: SpriteSubject): SpriteCut[] {
   // scan inside `walk` reach a field nobody listed: an accumulator's
   // `chargable_graphics`, a lamp's `picture_off`, a mine's `picture_safe`.
   return walk(proto, direction, kind);
+}
+
+/**
+ * The twenty rows of a belt animation set, read off the sheet rather than recalled.
+ *
+ * A belt sheet is not twenty angles. It is four straights, eight curves and
+ * eight end caps, and the engine picks one per tile from what the tile's
+ * neighbours do. Drawing the straight everywhere and painting an arrow over it
+ * is not how the game uses this art, and it looks it.
+ *
+ * Every row below was measured off `fast-transport-belt.png`, by where the red
+ * marker sits, how much of it there is, and which quadrant of the cell the art
+ * leaves empty. The red marks the output end: on row 0 it is 14.7 pixels right
+ * of centre, on row 1 it is 15.7 left, on row 2 it is above and on row 3 below,
+ * so the straights run east, west, north, south and NOT the compass order a
+ * direction index would give. Reading them as a compass, which is what this
+ * tool did first, draws every belt turned a quarter and reversed.
+ *
+ * The curves were separated the same way: the red gives the output edge and the
+ * quadrant the art leaves thin gives the edge the items came in by. Row 4 has
+ * its red 23 pixels above centre and its thin quadrant bottom left, so items
+ * enter from the east side and leave north.
+ *
+ * The caps split by area: a start carries a full chevron of 96 to 139 red
+ * pixels, an end carries a stub of 8 to 58, and the edge each sits on says
+ * which direction it belongs to.
+ */
+export const BELT_ROW: Record<string, number> = {
+  east: 0,
+  west: 1,
+  north: 2,
+  south: 3,
+  east_to_north: 4,
+  north_to_east: 5,
+  west_to_north: 6,
+  north_to_west: 7,
+  south_to_east: 8,
+  east_to_south: 9,
+  south_to_west: 10,
+  west_to_south: 11,
+  starting_south: 12,
+  ending_north: 13,
+  starting_west: 14,
+  ending_east: 15,
+  starting_north: 16,
+  ending_south: 17,
+  starting_east: 18,
+  ending_west: 19,
+};
+
+/** One row of a prototype's belt animation set, or null when it has none. */
+export function beltCut(data: Data, name: string, row: number): SpriteCut | null {
+  const proto = entityProto(data, name);
+  const set = rec(rec(proto?.["belt_animation_set"])?.["animation_set"]);
+  if (!set) return null;
+  return cutOf(set, 0, row);
 }
 
 /**
