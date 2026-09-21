@@ -17,6 +17,7 @@
     "power": "bun src/cli.ts power",
     "gen": "bun src/cli.ts gen",
     "advise": "bun src/cli.ts advise",
+    "bottleneck": "bun src/cli.ts bottleneck",
     "bus": "bun src/cli.ts bus",
     "watch": "bun bridge/cli.ts",
     "report": "bun bridge/cli.ts --now",
