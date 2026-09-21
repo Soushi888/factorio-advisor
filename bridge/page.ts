@@ -5,6 +5,7 @@ import type { Advice } from "../src/advise.ts";
 import type { MapModel, MapLayer, LayerGroup } from "../src/layers.ts";
 import type { PlanView, StepView } from "../src/plan.ts";
 import type { Icons } from "../src/icons.ts";
+import type { BottleneckReport } from "../src/bottlenecks.ts";
 
 /**
  * The dashboard.
@@ -121,6 +122,15 @@ li{font-size:.82rem;margin:.1rem 0;overflow-wrap:anywhere}
 .named .ico{margin-right:.35rem}
 td .named{max-width:100%}
 .fig .l .ico{width:.95rem;height:.95rem;vertical-align:-.2em;margin-right:.2rem}
+/* The bottleneck card. Two tables that must never be blended: what the machines
+   did with their time, and what the lines have left. The finding above them is
+   the sentence; the tables are the evidence for it. */
+.holding{grid-column:1/-1}
+.holding .find{margin:.2rem 0 .5rem;font-size:.86rem;font-weight:500}
+.holding .find .because{display:block;font-weight:400;color:var(--dim);font-size:.78rem;margin-top:.1rem}
+.holding .pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(23rem,1fr));gap:0 1.5rem}
+.holding .limits{font-size:.72rem;color:var(--dim);margin:.6rem 0 0}
+.holding .bar{grid-template-columns:8rem 1fr auto}
 .plan{grid-column:1/-1}
 .plan .why{color:var(--dim);font-size:.78rem;margin:.15rem 0 0}
 .steps{list-style:none;margin:.6rem 0 0;padding:0;display:grid;gap:.55rem}
@@ -597,6 +607,8 @@ export interface PageInput {
    * name simply stands on its own.
    */
   icons?: Icons | null;
+  /** What is holding the factory back, when the state file can answer. */
+  bottlenecks?: BottleneckReport | null;
   /** The one map's layers, or null when the state file carries no map. */
   model?: MapModel | null;
 }
@@ -758,6 +770,76 @@ function stepOf(step: StepView, i: number): string {
   );
 }
 
+/**
+ * What is holding the factory back, as one card.
+ *
+ * The finding leads because it is the sentence Soushi would read out loud, and
+ * the two tables under it are the evidence rather than the answer. They are
+ * never blended: machine-class utilisation says whether the machines are the
+ * constraint, item tightness says which line is, and a factory where every
+ * class is idle and one input is short wants the opposite advice from one where
+ * a class is at the wall.
+ */
+function holdingSection(b: BottleneckReport): string {
+  if (b.legacy || (b.utilisation.length === 0 && b.tightness.length === 0)) return "";
+  const busiest = b.utilisation[0] ?? null;
+  const pct = (n: number): string => `${(n * 100).toFixed(n < 0.1 ? 1 : 0)}%`;
+
+  const findings = b.findings
+    .slice(0, 4)
+    .map(
+      (f) =>
+        `<p class="find">${esc(f.text)}<span class="because">${esc(f.because)}</span></p>`,
+    )
+    .join("");
+
+  const classes =
+    b.utilisation.length > 0
+      ? `<div><p class="tcap">machines, by how much of their time the output accounts for</p>` +
+        `<table><tr><th>class</th><th class="n">placed</th><th class="n">busy</th><th class="n">of them</th></tr>` +
+        b.utilisation
+          .slice(0, 8)
+          .map(
+            (u) =>
+              `<tr><td>${cellWithIcon(u.machine)}</td><td class="n">${String(u.count)}</td>` +
+              `<td class="n">${u.busyEquivalent.toFixed(1)}</td>` +
+              `<td class="n">${esc(pct(u.fraction))}</td></tr>`,
+          )
+          .join("") +
+        `</table></div>`
+      : "";
+
+  const lines =
+    b.tightness.length > 0
+      ? `<div><p class="tcap">lines, by what is left over</p>` +
+        `<table><tr><th>item</th><th class="n">made/min</th><th class="n">used/min</th><th class="n">spare/min</th></tr>` +
+        b.tightness
+          .slice(0, 8)
+          .map(
+            (t) =>
+              `<tr><td>${cellWithIcon(t.name)}</td>` +
+              `<td class="n">${t.madePerMinute.toFixed(1)}</td>` +
+              `<td class="n">${t.usedPerMinute.toFixed(1)}</td>` +
+              `<td class="n ${t.sparePerMinute < 0 ? "down" : "up"}">${esc(signed(t.sparePerMinute))}</td></tr>`,
+          )
+          .join("") +
+        `</table></div>`
+      : "";
+
+  const lead = busiest
+    ? `The busiest machine class is ${busiest.machine} at ${pct(busiest.fraction)} of its time.`
+    : "";
+
+  return (
+    `<section class="holding"><h2>What is holding you back</h2>` +
+    (lead ? `<p class="lead">${esc(lead)}</p>` : "") +
+    findings +
+    `<div class="pair">${classes}${lines}</div>` +
+    (b.limits.length > 0 ? `<p class="limits">${esc(b.limits.join(" \u00b7 "))}</p>` : "") +
+    `</section>`
+  );
+}
+
 function planSection(plan: PlanView): string {
   const stale =
     plan.ticksBehind > 0
@@ -848,6 +930,10 @@ export function renderPage(input: PageInput): string {
   // in what order, and how far along each step already is. They are different
   // things and the page shows both rather than choosing.
   if (input.plan) cards.push(planSection(input.plan));
+
+  // Then what is holding the factory back, because the plan says what to do and
+  // this says what is stopping it.
+  if (input.bottlenecks) cards.push(holdingSection(input.bottlenecks));
 
   // The whole advice list, tagged by section, because the reason to open the
   // page is to be told what to do, not to browse the base.
