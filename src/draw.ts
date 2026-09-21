@@ -2,6 +2,7 @@ import type { Blueprint, BpEntity } from "./blueprint.ts";
 import type { AuditResult, Box } from "./audit.ts";
 import type { Data, Proto } from "./proto.ts";
 import { EAST, NORTH, SOUTH, WEST, footprintOf } from "./layout.ts";
+import { PIXELS_PER_TILE, dataUri, iconCut, spritesFor, type SpriteCut } from "./sprites.ts";
 
 /**
  * Drawing a decoded print to scale (C29).
@@ -201,6 +202,14 @@ export interface DrawnPrint {
   unknown: string[];
   /** Machines the audit says are fed short, by the item they are short of. */
   starved: Array<{ item: string; shortfallPerSecond: number; entities: number }>;
+  /** One row per prototype in the print, with its own item icon. */
+  census: Array<{ name: string; count: number; icon: string | null }>;
+  /** Entities drawn with the game's own sprite. */
+  sprited: number;
+  /** Prototypes the install has no resolvable sprite for, drawn as a box. */
+  spriteless: Array<{ name: string; count: number }>;
+  /** Sprites that declare a tint this tool does not apply. */
+  tinted: number;
 }
 
 function n(v: number): string {
@@ -256,14 +265,47 @@ const SVG_CSS = `
   .grid { fill:none; stroke:#232830; stroke-width:1; vector-effect:non-scaling-stroke; }
   .fp { fill:var(--c); fill-opacity:.55; stroke:var(--c); stroke-width:1.1;
         vector-effect:non-scaling-stroke; stroke-linejoin:round; }
-  .dir { fill:none; stroke:#14161a; stroke-width:1.4; stroke-linecap:round;
-         vector-effect:non-scaling-stroke; opacity:.8; }
+  .dir { fill:none; stroke:#f2e37a; stroke-width:1.3; stroke-linecap:round;
+         vector-effect:non-scaling-stroke; opacity:.75; }
+  /* The category boxes are the fallback, not the drawing: a prototype with a
+     sprite is shown as itself, and the boxes are a layer the page turns on. */
+  .schematic { display:none; }
+  .shadows { opacity:.5; }
+  image { image-rendering:auto; }
   .starved { fill:none; stroke:#ffffff; stroke-width:2.2; stroke-dasharray:4 2.5;
              vector-effect:non-scaling-stroke; }
 `;
 
 function rect(b: Box): string {
   return `M${n(b.x1)} ${n(b.y1)}h${n(b.x2 - b.x1)}v${n(b.y2 - b.y1)}h${n(b.x1 - b.x2)}z`;
+}
+
+/**
+ * One entity's game sprites, placed in tile coordinates.
+ *
+ * A sprite is not the footprint and is not meant to be: an assembling machine
+ * occupies three tiles and its picture is 3.34 tiles across, because the art
+ * overhangs on purpose. So the placement is the sprite's own declared size and
+ * shift around the entity's centre, never the box, and the two disagreeing is
+ * the drawing being right rather than a bug.
+ *
+ * A tile is 32 pixels at scale 1, which is why the size divides by that and by
+ * nothing else.
+ */
+function spriteShapes(cuts: SpriteCut[], cx: number, cy: number, shadow: boolean): string {
+  const out: string[] = [];
+  for (const cut of cuts) {
+    if (cut.shadow !== shadow) continue;
+    const uri = dataUri(cut);
+    if (!uri) continue;
+    const w = (cut.w * cut.scale) / PIXELS_PER_TILE;
+    const h = (cut.h * cut.scale) / PIXELS_PER_TILE;
+    out.push(
+      `<image href="${uri}" x="${n(cx + cut.shiftX - w / 2)}" y="${n(cy + cut.shiftY - h / 2)}" ` +
+        `width="${n(w)}" height="${n(h)}"/>`,
+    );
+  }
+  return out.join("");
 }
 
 /**
@@ -307,6 +349,17 @@ export function drawPrint(data: Data, bp: Blueprint, result: AuditResult): Drawn
     return { item: f.item, shortfallPerSecond: -f.net, entities: count };
   });
 
+  const byName = new Map<string, number>();
+  for (const p of placed) byName.set(p.entity.name, (byName.get(p.entity.name) ?? 0) + 1);
+  // The legend is the print's own census with the game's icons beside it, so a
+  // row on the page and a silhouette on the drawing are the same thing.
+  const census = [...byName]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([name, count]) => {
+      const cut = iconCut(data, name);
+      return { name, count, icon: cut ? dataUri(cut) : null };
+    });
+
   const byFamily = new Map<string, Placed[]>();
   const guessed = new Map<string, number>();
   const diagonal = new Map<string, number>();
@@ -318,7 +371,46 @@ export function drawPrint(data: Data, bp: Blueprint, result: AuditResult): Drawn
     if (p.diagonal) diagonal.set(p.entity.name, (diagonal.get(p.entity.name) ?? 0) + 1);
   }
 
+  // The sprites, in the order the game itself draws them: every shadow first,
+  // flattened onto the ground, then the entities from the back of the picture
+  // to the front, so a tall machine overlaps the belt behind it rather than the
+  // other way round. Sorting by y and then x is the whole of that rule.
+  const painter = [...placed].sort(
+    (a, b) => a.box.y1 - b.box.y1 || a.box.x1 - b.box.x1,
+  );
+  const shadows: string[] = [];
+  const bodies: string[] = [];
+  const spriteless = new Map<string, number>();
+  let sprited = 0;
+  let tinted = 0;
+  for (const p of painter) {
+    const cuts = spritesFor(data, {
+      name: p.entity.name,
+      direction: p.direction,
+      kind: String(p.entity["type"] ?? ""),
+    });
+    if (cuts.length === 0) {
+      spriteless.set(p.entity.name, (spriteless.get(p.entity.name) ?? 0) + 1);
+      continue;
+    }
+    const cx = (p.box.x1 + p.box.x2) / 2;
+    const cy = (p.box.y1 + p.box.y2) / 2;
+    const shadow = spriteShapes(cuts, cx, cy, true);
+    const body = spriteShapes(cuts, cx, cy, false);
+    if (!body) {
+      spriteless.set(p.entity.name, (spriteless.get(p.entity.name) ?? 0) + 1);
+      continue;
+    }
+    sprited += 1;
+    tinted += cuts.filter((c) => c.tint).length;
+    if (shadow) shadows.push(shadow);
+    bodies.push(`<g><title>${esc(p.entity.name)}</title>${body}</g>`);
+  }
+
   const parts: string[] = [];
+  if (shadows.length > 0) parts.push(`<g class="shadows">${shadows.join("")}</g>`);
+  if (bodies.length > 0) parts.push(`<g class="art">${bodies.join("")}</g>`);
+
   const families: Array<{ family: Family; count: number }> = [];
   for (const family of FAMILIES) {
     const list = byFamily.get(family.id) ?? [];
@@ -330,12 +422,25 @@ export function drawPrint(data: Data, bp: Blueprint, result: AuditResult): Drawn
       .sort((a, b) => b[1] - a[1])
       .map(([name, count]) => `${name} x${String(count)}`)
       .join(", ");
+    // Two box layers, and the difference between them is the honest part. The
+    // `gap` one is for entities that have no sprite: it is what the drawing has
+    // instead of a picture, so it is always on. The `schematic` one is every
+    // entity, off by default, there for reading a layout by category rather
+    // than by silhouette.
+    const missing = list.filter((p) => spriteless.has(p.entity.name));
     parts.push(
-      `<g class="fam" data-family="${family.id}" style="--c:${family.colour}">` +
+      `<g class="fam schematic" data-family="${family.id}" style="--c:${family.colour}">` +
         `<title>${esc(family.label)}: ${esc(tip)}</title>` +
         `<path class="fp" d="${list.map((p) => rect(p.box)).join("")}"/>` +
         `</g>`,
     );
+    if (missing.length > 0) {
+      parts.push(
+        `<g class="fam gap" data-family="${family.id}" style="--c:${family.colour}">` +
+          `<path class="fp" d="${missing.map((p) => rect(p.box)).join("")}"/>` +
+          `</g>`,
+      );
+    }
     if (family.id === "belt") {
       const ticks = list.map((p) => arrow(p)).join("");
       if (ticks) parts.push(`<path class="dir" style="--c:${family.colour}" d="${ticks}"/>`);
@@ -382,6 +487,10 @@ export function drawPrint(data: Data, bp: Blueprint, result: AuditResult): Drawn
     diagonal: [...diagonal].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
     unknown: result.unknownEntities,
     starved: starved.filter((s) => s.entities > 0),
+    census,
+    sprited,
+    spriteless: [...spriteless].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+    tinted,
   };
 }
 
@@ -398,6 +507,13 @@ const PAGE_CSS = `
   ul.key { list-style:none; padding:0; margin:1rem 0 0; display:flex; flex-wrap:wrap; gap:.4rem 1.25rem; }
   ul.key li { display:flex; align-items:center; gap:.45rem; font-size:.9em; }
   ul.key i { width:.85rem; height:.85rem; border-radius:2px; display:inline-block; }
+  ul.key img.ico { width:1.15rem; height:1.15rem; display:inline-block; }
+  input.toggle { position:absolute; opacity:0; pointer-events:none; }
+  label[for^="sch"] { cursor:pointer; text-decoration:underline dotted; }
+  .swatches { display:none; margin-left:.75rem; }
+  .swatches ul.key { display:inline-flex; margin:0; }
+  input.toggle:checked + figure .schematic { display:inline; }
+  input.toggle:checked + figure .swatches { display:inline-block; }
   table { border-collapse:collapse; width:100%; font-size:.92em; }
   th, td { text-align:left; padding:.35rem .75rem .35rem 0; border-bottom:1px solid var(--line); }
   td.n, th.n { text-align:right; }
@@ -428,7 +544,15 @@ export function printPage(input: PageInput): string {
       const size = d.box
         ? `${String(Math.round(d.box.x2 - d.box.x1))} x ${String(Math.round(d.box.y2 - d.box.y1))} tiles`
         : "empty";
-      const key = d.families
+      const key = d.census
+        .map(
+          (c) =>
+            `<li>` +
+            (c.icon ? `<img class="ico" src="${c.icon}" alt="">` : `<i></i>`) +
+            `${esc(c.name)} <span class="gap">${String(c.count)}</span></li>`,
+        )
+        .join("");
+      const colours = d.families
         .map(
           (f) =>
             `<li><i style="background:${f.family.colour}"></i>${esc(f.family.label)} ` +
@@ -456,6 +580,28 @@ export function printPage(input: PageInput): string {
             `which no declared box describes: ` +
             d.diagonal.map((g) => `${esc(g.name)} x${String(g.count)}`).join(", ") +
             `.</p>`,
+        );
+      }
+      if (d.spriteless.length > 0) {
+        gaps.push(
+          `<p class="gap">Drawn as a category box because this installation has no sprite this ` +
+            `tool could resolve for them: ` +
+            d.spriteless.map((g) => `${esc(g.name)} x${String(g.count)}`).join(", ") +
+            `. The box is the fallback, not a failure.</p>`,
+        );
+      }
+      if (d.sprited > 0) {
+        gaps.push(
+          `<p class="gap">${String(d.sprited)} of ${String(d.entityCount)} entities are drawn with ` +
+            `the game's own art, read out of the installation and cut to the cell each prototype ` +
+            `declares. Two things the drawing does not do: it does not infer connections, so a belt ` +
+            `at a corner is drawn straight and a pipe is drawn as a straight run rather than a ` +
+            `junction, and an inserter is drawn as its base without its hand, because the string ` +
+            `says which way it faces and not which of its two ends that names.` +
+            (d.tinted > 0
+              ? ` ${String(d.tinted)} layers declare a tint this tool does not apply.`
+              : "") +
+            `</p>`,
         );
       }
       if (d.unknown.length > 0) {
@@ -488,7 +634,15 @@ export function printPage(input: PageInput): string {
         `<h1>${esc(d.label)}</h1>` +
         `<p class="meta">${String(d.entityCount)} entities, ${size}, drawn at the footprint each ` +
         `prototype declares and the position the print states.</p>` +
-        `<figure>${d.svg}<ul class="key">${key}</ul></figure>` +
+        `<input type="checkbox" class="toggle" id="sch${String(i)}">` +
+        `<figure>${d.svg}` +
+        `<ul class="key">${key}</ul>` +
+        // A div and not a paragraph: a list inside a `p` is invalid, the parser
+        // closes the paragraph at the `ul`, and the swatches escape the element
+        // whose rule was hiding them. Measured on this page, not assumed.
+        `<div class="gap"><label for="sch${String(i)}">Show the category boxes over the art</label>` +
+        `<span class="swatches"><ul class="key">${colours}</ul></span></div>` +
+        `</figure>` +
         gaps.join("") +
         starved
       );

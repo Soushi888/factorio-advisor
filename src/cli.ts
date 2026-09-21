@@ -639,6 +639,20 @@ function writeDrawing(
       `${drawings.length === 1 ? "" : "s"}, each at its prototype's selection box.`,
   );
   for (const d of drawings) {
+    if (d.sprited > 0) {
+      console.log(
+        `  ${d.label}: ${String(d.sprited)} of ${String(d.entityCount)} drawn with the game's own ` +
+          `sprites, cut from the installation.`,
+      );
+    }
+    if (d.spriteless.length > 0) {
+      console.log(
+        `  ${d.label}: ${String(d.spriteless.reduce((n, g) => n + g.count, 0))} entities have no ` +
+          `sprite this tool could resolve and keep a category box (${d.spriteless
+            .map((g) => g.name)
+            .join(", ")}).`,
+      );
+    }
     if (d.entityCount === 0) {
       console.log(`  ${d.label}: decodes and holds no entities, so it draws empty.`);
     }
