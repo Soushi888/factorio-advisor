@@ -69,6 +69,8 @@ export interface MapModel {
   cellTiles: number;
   viewBox: { x: number; y: number; w: number; h: number };
   layers: MapLayer[];
+  /** What a click can read, beside what the eye can see. */
+  facts: MapFacts;
 }
 
 /** Where a click on a line of text should send the map. */
@@ -436,6 +438,8 @@ function entityLayer(
 export interface ModelInput {
   state: GameState;
   map: SurfaceMap;
+  /** The game's own icons, so a panel can show the thing it names. */
+  icons?: { url(name: string): string | null } | null;
   /** The prototype snapshot, for footprints and types. */
   data?: Data | null;
   /** The bus corridors, when a belt survey has been read for this save. */
@@ -446,6 +450,45 @@ export interface ModelInput {
   powerAreas?: Area[];
   oreAreas?: Area[];
   force?: string;
+}
+
+/**
+ * Everything the page can say about a place, as data rather than as drawing.
+ *
+ * The map draws merged runs and banded paths, which is what makes it fast and
+ * what makes a single entity impossible to hit-test out of it. So the facts
+ * travel beside the picture: what stands in each chunk, what ore is under it,
+ * what the census and the engine say about each prototype. A click reads this;
+ * it computes nothing and it invents nothing, and a prototype the state file
+ * has no row for simply has fewer lines in its panel.
+ */
+export interface MapFacts {
+  cell: number;
+  /** Per chunk, keyed `cx,cy`: what the force has standing there. */
+  chunks: Record<string, { by: Record<string, number>; total: number; pollution?: number }>;
+  /** Per chunk: remaining amount by resource. */
+  ore: Record<string, Record<string, number>>;
+  /** Per chunk: nests and worms. */
+  enemy: Record<string, [number, number]>;
+  /** Per prototype the census or the points know about. */
+  protos: Record<
+    string,
+    {
+      /** The entity type, for the sentence that says what kind of thing it is. */
+      type: string;
+      /** Placed, from the census. Absent for a class the census does not count. */
+      count?: number;
+      /** Tile footprint. */
+      w: number;
+      h: number;
+      /** The game's own icon, when the installation has one. */
+      icon?: string;
+      /** The engine's own resolved figures, in watts and joules. */
+      usage?: number;
+      drain?: number;
+      buffer?: number;
+    }
+  >;
 }
 
 export function mapModel(input: ModelInput): MapModel {
@@ -804,5 +847,50 @@ export function mapModel(input: ModelInput): MapModel {
     body: areaShapes(advice),
   });
 
-  return { surface: map.name, cellTiles: cell, viewBox, layers };
+  return { surface: map.name, cellTiles: cell, viewBox, layers, facts: factsOf(input, ctx) };
+}
+
+function factsOf(input: ModelInput, ctx: BuildContext): MapFacts {
+  const { map } = input;
+  const force = input.state.forces[input.force ?? "player"];
+  const energy = force?.energy ?? {};
+  const facts: MapFacts = { cell: map.cellTiles, chunks: {}, ore: {}, enemy: {}, protos: {} };
+
+  for (const c of map.cells) {
+    const entry: MapFacts["chunks"][string] = { by: c.byType, total: c.total ?? 0 };
+    if (c.pollution !== undefined) entry.pollution = Math.round(c.pollution);
+    facts.chunks[`${String(c.cx)},${String(c.cy)}`] = entry;
+  }
+  for (const c of map.ore) {
+    const rounded: Record<string, number> = {};
+    for (const [name, amount] of Object.entries(c.res)) rounded[name] = Math.round(amount);
+    facts.ore[`${String(c.cx)},${String(c.cy)}`] = rounded;
+  }
+  for (const e of map.enemy ?? []) {
+    facts.enemy[`${String(e.cx)},${String(e.cy)}`] = [e.nests, e.worms];
+  }
+
+  const names = new Set([...Object.keys(map.points), ...Object.keys(ctx.census)]);
+  for (const name of names) {
+    const shape = ctx.shapes.get(name);
+    const row: MapFacts["protos"][string] = {
+      type: shape?.type ?? "",
+      w: shape?.w ?? 1,
+      h: shape?.h ?? 1,
+    };
+    const placed = ctx.census[name];
+    if (placed !== undefined) row.count = placed;
+    const icon = input.icons?.url(name);
+    if (icon) row.icon = icon;
+    const e = energy[name];
+    if (e) {
+      // The collector copies the engine's own resolved values per tick; a watt
+      // is a joule per tick times the tick rate, which power.ts already states.
+      if (e.usagePerTick !== undefined) row.usage = Math.round(e.usagePerTick * 60);
+      if (e.drainPerTick !== undefined) row.drain = Math.round(e.drainPerTick * 60);
+      if (e.buffer !== undefined) row.buffer = e.buffer;
+    }
+    facts.protos[name] = row;
+  }
+  return facts;
 }

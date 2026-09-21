@@ -301,6 +301,7 @@ function modelFor(state: GameState, advisory: Advisory | null): ReturnType<typeo
     state,
     map: surfaceMap,
     data: protoData(),
+    icons: new Icons(protoData()),
     busAreas: corridors,
     adviceAreas,
     powerAreas: advisory?.blocks ?? [],

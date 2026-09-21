@@ -229,6 +229,21 @@ footer{margin-top:1.25rem;color:var(--dim);font-size:.72rem;border-top:1px solid
 #map g[data-layer].on{pointer-events:auto}
 #map g[data-layer]:not(.on){display:none}
 #map .flash rect{stroke-width:4;fill-opacity:.28}
+/* The panel a click opens. It is anchored in the map box rather than in the
+   page, so it travels with the map and never lands under the reading. */
+#pin{position:absolute;z-index:3;max-width:19rem;min-width:12rem;background:var(--card);
+  border:1px solid var(--line);border-radius:.4rem;padding:.5rem .6rem;font-size:.76rem;
+  box-shadow:0 .4rem 1.2rem rgba(0,0,0,.35);line-height:1.4}
+#pin h4{margin:0 0 .25rem;font-size:.85rem;font-weight:640;display:flex;align-items:center;gap:.35rem}
+#pin h4 img{width:1.15rem;height:1.15rem}
+#pin .kind{color:var(--dim);font-weight:400;font-size:.7rem}
+#pin dl{margin:.3rem 0 0;display:grid;grid-template-columns:auto 1fr;gap:.1rem .5rem}
+#pin dt{color:var(--dim)}
+#pin dd{margin:0;font-variant-numeric:tabular-nums;text-align:right}
+#pin .where{margin:.35rem 0 0;color:var(--dim);font-size:.7rem}
+#pin .close{position:absolute;top:.2rem;right:.35rem;border:0;background:none;color:var(--dim);
+  cursor:pointer;font:inherit;font-size:.9rem;line-height:1;padding:.1rem .2rem}
+#pin .close:hover{color:var(--fg)}
 #xy{position:absolute;right:.4rem;bottom:.4rem;font-size:.68rem;font-variant-numeric:tabular-nums;
   color:var(--fg);background:color-mix(in srgb,var(--card) 82%,transparent);border:1px solid var(--line);
   border-radius:.25rem;padding:.05rem .35rem;pointer-events:none;opacity:0;transition:opacity .12s}
@@ -589,6 +604,181 @@ const SCRIPT = `
     xy.textContent = Math.round(ux) + ", " + Math.round(uy);
   });
 
+  // ---- What is here -----------------------------------------------------
+  //
+  // A click answers in three passes, cheapest first, and each one is a
+  // different kind of knowing. The art layer draws one element per machine, so
+  // a hit there names that machine exactly. Failing that, the layer paths are
+  // asked which of them covers the point, which names a family rather than a
+  // thing: merged runs are what make the map fast and what make a single belt
+  // impossible to pick out of it, and the panel says so rather than guessing.
+  // The chunk is always read, because a place is worth describing even where
+  // nothing was hit.
+  var facts = null;
+  try {
+    var el = document.getElementById("mapfacts");
+    if (el) facts = JSON.parse(el.textContent);
+  } catch (e) { facts = null; }
+  var pin = document.getElementById("pin");
+
+  function tidy(name) { return name.replace(/-/g, " "); }
+  function commas(n) { return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, " "); }
+  function watts(w) {
+    if (!w) return "0";
+    if (w >= 1e6) return (w / 1e6).toFixed(1) + " MW";
+    if (w >= 1e3) return (w / 1e3).toFixed(0) + " kW";
+    return w + " W";
+  }
+  function amount(n) {
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(0) + "k";
+    return commas(n);
+  }
+
+  // The entity the pointer is over, from the art layer, which is the only layer
+  // with one element per thing.
+  function hitEntity(x, y) {
+    var stack = document.elementsFromPoint(x, y);
+    for (var i = 0; i < stack.length; i++) {
+      var e = stack[i];
+      if (e.tagName === "use") {
+        var href = e.getAttribute("href") || "";
+        if (href.indexOf("#s-") === 0) return href.slice(3);
+      }
+    }
+    return null;
+  }
+
+  // Which drawing layers cover a tile, asked of the geometry itself.
+  function layersAt(ux, uy) {
+    var out = [];
+    var pt = svg.createSVGPoint();
+    pt.x = ux; pt.y = uy;
+    var gs = svg.querySelectorAll('g[data-layer].on');
+    for (var i = 0; i < gs.length; i++) {
+      var id = gs[i].getAttribute("data-layer");
+      if (id === "art" || id === "ground") continue;
+      var paths = gs[i].querySelectorAll("path,rect");
+      for (var j = 0; j < paths.length; j++) {
+        var p = paths[j];
+        try {
+          if (p.isPointInFill && p.isPointInFill(pt)) { out.push(id); break; }
+        } catch (err) { /* a shape that cannot be asked is not a hit */ }
+      }
+    }
+    return out;
+  }
+
+  // The areas a point falls inside, which already carry their own label.
+  function areasAt(ux, uy) {
+    var out = [];
+    var gs = svg.querySelectorAll("g.area");
+    for (var i = 0; i < gs.length; i++) {
+      var g = gs[i];
+      if (!g.closest("g[data-layer].on")) continue;
+      var ax = Number(g.getAttribute("data-x")), ay = Number(g.getAttribute("data-y"));
+      var aw = Number(g.getAttribute("data-w")), ah = Number(g.getAttribute("data-h"));
+      if (ux >= ax && ux <= ax + aw && uy >= ay && uy <= ay + ah) {
+        var t = g.querySelector("title");
+        if (t) out.push(t.textContent);
+      }
+    }
+    return out;
+  }
+
+  function rows(pairs) {
+    var out = "";
+    for (var i = 0; i < pairs.length; i++) {
+      if (pairs[i][1] === null) continue;
+      out += "<dt>" + pairs[i][0] + "</dt><dd>" + pairs[i][1] + "</dd>";
+    }
+    return out ? "<dl>" + out + "</dl>" : "";
+  }
+
+  function describe(ux, uy, name) {
+    var cell = facts ? facts.cell : chunk;
+    var cx = Math.floor(ux / cell), cy = Math.floor(uy / cell);
+    var key = cx + "," + cy;
+    var html = "";
+    var pairs = [];
+
+    if (name && facts && facts.protos[name]) {
+      var p = facts.protos[name];
+      html += '<h4>' + (p.icon ? '<img src="' + p.icon + '" alt="">' : "") + tidy(name) +
+        (p.type ? ' <span class="kind">' + tidy(p.type) + "</span>" : "") + "</h4>";
+      pairs.push(["footprint", p.w + " x " + p.h + " tiles"]);
+      pairs.push(["placed on this base", p.count === undefined ? null : commas(p.count)]);
+      pairs.push(["draws", p.usage ? watts(p.usage) : null]);
+      pairs.push(["idle drain", p.drain ? watts(p.drain) : null]);
+      pairs.push(["buffer", p.buffer ? (p.buffer / 1e6).toFixed(1) + " MJ" : null]);
+    } else {
+      var here = facts && facts.chunks[key];
+      html += "<h4>" + Math.round(ux) + ", " + Math.round(uy) +
+        ' <span class="kind">chunk ' + cx + ", " + cy + "</span></h4>";
+      if (here) {
+        var kinds = Object.keys(here.by).sort(function (a, b) { return here.by[b] - here.by[a]; });
+        for (var i = 0; i < Math.min(5, kinds.length); i++) {
+          pairs.push([tidy(kinds[i]), commas(here.by[kinds[i]])]);
+        }
+        if (kinds.length > 5) pairs.push(["and " + (kinds.length - 5) + " more kinds", commas(here.total)]);
+      }
+    }
+
+    var ore = facts && facts.ore[key];
+    if (ore) {
+      var res = Object.keys(ore).sort(function (a, b) { return ore[b] - ore[a]; });
+      for (var r = 0; r < res.length; r++) pairs.push([tidy(res[r]) + " here", amount(ore[res[r]])]);
+    }
+    var foe = facts && facts.enemy[key];
+    if (foe) pairs.push(["nests and worms", foe[0] + " and " + foe[1]]);
+    var chunkNow = facts && facts.chunks[key];
+    if (chunkNow && chunkNow.pollution) pairs.push(["pollution", commas(chunkNow.pollution)]);
+
+    html += rows(pairs);
+
+    var areas = areasAt(ux, uy);
+    var fams = layersAt(ux, uy);
+    var where = [];
+    if (areas.length) where.push(areas.join(" · "));
+    if (fams.length) where.push("in the " + fams.join(", ") + " layer" + (fams.length > 1 ? "s" : ""));
+    if (name) where.push("position and size from the save and the snapshot");
+    else if (chunkNow) where.push("counted per chunk: merged runs cannot name one belt");
+    if (where.length) html += '<p class="where">' + where.join("<br>") + "</p>";
+    return html;
+  }
+
+  function openPin(clientX, clientY) {
+    if (!pin) return;
+    var d = drawn();
+    var ux = vb.x + (clientX - d.left) / d.s;
+    var uy = vb.y + (clientY - d.top) / d.s;
+    var name = hitEntity(clientX, clientY);
+    pin.innerHTML = '<button type="button" class="close" aria-label="close">&times;</button>' +
+      describe(ux, uy, name);
+    pin.hidden = false;
+    var r = box.getBoundingClientRect();
+    var px = Math.min(Math.max(clientX - r.left + 12, 6), r.width - pin.offsetWidth - 6);
+    var py = Math.min(Math.max(clientY - r.top + 12, 6), r.height - pin.offsetHeight - 6);
+    pin.style.left = px + "px";
+    pin.style.top = py + "px";
+    var c = pin.querySelector(".close");
+    if (c) c.addEventListener("click", function () { pin.hidden = true; });
+  }
+
+  // A click that followed a drag is a pan, not a question.
+  var downAt = null;
+  svg.addEventListener("pointerdown", function (e) { downAt = [e.clientX, e.clientY]; });
+  svg.addEventListener("click", function (e) {
+    if (!downAt) return;
+    var moved = Math.abs(e.clientX - downAt[0]) + Math.abs(e.clientY - downAt[1]);
+    downAt = null;
+    if (moved > 4) return;
+    openPin(e.clientX, e.clientY);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && pin && !pin.hidden) pin.hidden = true;
+  });
+
   new ResizeObserver(function () { drawGrid(); drawScale(); ink(); }).observe(box);
   apply();
 })();
@@ -723,7 +913,8 @@ function mapPane(model: MapModel): string {
     `data-chunk="${String(model.cellTiles)}" preserveAspectRatio="xMidYMid meet">` +
     `<g id="grid" stroke="currentColor" stroke-width="0.5" opacity="0.14"></g>` +
     groups +
-    `</svg><span id="xy"></span></div>` +
+    `</svg><span id="xy"></span><div id="pin" hidden></div></div>` +
+    `<script type="application/json" id="mapfacts">${JSON.stringify(model.facts).replace(/</g, "\\u003c")}</script>` +
     `<div id="scalebar"><span class="bar"></span><span class="txt"></span></div>` +
     `<div class="legend-groups">${legend}</div>` +
     `</aside>`
