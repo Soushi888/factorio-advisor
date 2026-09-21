@@ -183,6 +183,46 @@ Nothing static could have caught it. The entity census, the ratios, the belt sat
 
 **Worktrees share `data/` by symlink.** The snapshot is gitignored, so a worktree has none until it is linked from the main tree. That link is read-only in practice and must stay so: `bun run state` writes `data/state/<save>.json`, and two trees writing it at once would corrupt what the other reads. `.gitignore` carries `/data` and `/.local` because a trailing-slash pattern does not match a symlink.
 
+## ADR-10: both flow directions, because the gap is the diagnosis
+
+The collector originally stored one rate per item, and that rate was consumption printed under a production heading. On item and fluid production statistics the engine's `input_counts` is what was made and `output_counts` is what was used; the reverse holds for electric network statistics. Neither was read off the docs. The item convention was settled against a real save that reports `input = 84` for the lab item on a base with 84 labs placed, and nothing in Factorio consumes a lab. The electric convention was settled by 34 radars at a 300 kW nameplate landing at 10.14 MW.
+
+**Consequence:** every flow carries `produced`, `consumed`, `producedPerMinute` and `consumedPerMinute`, and the difference is named headroom. A line making exactly what the base eats has no spare and cannot feed anything new however many machines stand in it, and a single rate cannot tell that line from an idle one. Every requirement in `advise.ts` is compared against headroom rather than against production, because comparing against production calls a saturated line healthy.
+
+`flowOf()` normalises a pre-U7 file, and a report refuses to diff across the schema change rather than invent a swing that never happened. Schema in `STATE.md`.
+
+## ADR-11: geometry in the state file, at two resolutions, and no terrain
+
+An advisor that can only say "you are short of copper" is worth less than one that can say which field to put drills on. The collector therefore records position, at two resolutions because one does not fit: **per chunk** for everything the force has placed and for the remaining amount of every resource, and **exact positions** for any prototype with fewer placed instances than `MAP_POINT_LIMIT`. Which prototypes qualify is derived from the census rather than listed, so a rare machine added by a future version arrives on its own.
+
+Chunks are the bucket because the engine already thinks in them, so a cell boundary on the page is a cell boundary in the game.
+
+**Two deliberate exclusions.** Tile ghosts, because one real save holds 136,298 of them, planned landfill, eighty percent of everything placed, and they set the density shading of the whole map on their own. And terrain: the collector reads entities and resources, not tiles, so a drawn map carries no water, no cliffs and no ore it did not count. A map that drew terrain it had not measured would be a picture rather than a report, and the page says so in its own footer.
+
+**Consequence:** `map.ts` clusters chunks into power blocks and ore fields and renders SVG in the save's own tile coordinates, with no projection between a point on the page and a position in the game. Advice that needs a place names one, and the falsifier is that a named coordinate must have an entity or a resource at it.
+
+## ADR-12: the dashboard is sections, and one map is replacing six
+
+A single column of forty figures is a log. The page is cut into the parts a player thinks in, science, energy, defence, production, logistics and mining, each carrying its own figures, its own advice and its own view of the map, so a recommendation and the place it applies to are in the same card.
+
+Six thumbnails were the right first answer and they are what made the next question askable. They are being superseded by one interactive, zoomable, layered map with the sections carrying the text there was no room for (C33). The thumbnails stay built and working until that lands; being superseded by something better is not the same as being wrong.
+
+**Consequence:** `sections.ts` derives the cut and `bridge/page.ts` lays it out, so a new section is a data change rather than a template change. Every figure carries `data-source` and `data-field` into the DOM, which is the same discipline the CLI follows by printing the snapshot in its header.
+
+## ADR-13: the skill lives in this repo
+
+`.claude/skills/Factorio/` documents how to use this toolkit and how to read a base. It was first written into the user-level skills directory and moved here within the hour, because its `Commands.md` describes this CLI surface and that surface changed twice while the skill was being written. A copy outside the repo drifts the first time a flag changes. The user-level path is a symlink to it, so it still routes from any directory.
+
+**Consequence:** `CLAUDE.md` is the authority on how the code must behave and the skill is the authority on how to use it; the skill never restates a rule from `CLAUDE.md`, pointer only, because a rule copied into two files rots in one of them. A command added or a flag changed updates `Commands.md` in the same commit.
+
+## ADR-14: two agent sessions, PM and builder, one covenant
+
+This repo is worked by more than one agent session at a time, coordinating through an append-only ledger under `.local/convene/` rather than through a shared context. A hold on a path precedes any write to it, evidence is required for any completion, and each peer re-derives a claim rather than citing another peer's record.
+
+The split is the one this file has always described: the builder owns `src/` and commits, the PM owns `ISA.md`, the claims and the verdicts. Units are cut in worktrees under `.worktrees/` off a named commit and merged fast-forward after a verdict.
+
+**Consequence, learned the hard way on 2026-09-21:** two peers wrote the same uncommitted tree for an hour, produced two claims numbered C26, and `ISA.md` changed under one of them mid-write. Nothing was lost, but there was no prior state to fall back to. A hold claimed over a long-shared document retroactively marks every historical write to it as a violation, so claim the files you authored and coordinate on the shared ones. Staging the whole tree in one gesture is refused by a hook for the same reason; name the paths.
+
 ## Module map
 
 Bottom up, one data flow, mirroring the sibling project.
@@ -204,8 +244,15 @@ target.ts    judge an audited print against a target rate
 layout.ts    lay one recipe step out as a row and emit a blueprint string
 power.ts     generation, steam chain and draw, priced from the machine census
 audit.ts     entity census, ratio check against the solver, belt saturation, module and beacon coverage
+advise.ts    the synthesis: what the base is doing, what limits it, what the next step costs
+map.ts       chunks clustered into power blocks and ore fields; SVG in the save's own tile coordinates
+sections.ts  the base cut into science, energy, defence, production, logistics, mining
+bus.ts       belt runs grouped into buses, lanes priced against the item's own rate
 render.ts    tables and trees for the terminal
 cli.ts       the only entry point and the only place that formats output
+
+bridge/      the loop around the advisor: watch a save directory, write a report, render the page
+             imports src/, and nothing in src/ imports it, which a grep in the ISA keeps honest
 ```
 
 `proto.ts` is the choke point every other module reads through, the way `save.ts` is in the sibling project.
@@ -227,8 +274,14 @@ bun run next                              # what is researchable now, from that 
 bun run next --for=carbon-fiber           # the unresearched path to what unlocks an item
 bun run power                             # generation against draw, from the census
 bun run gen electronic-circuit --rate=45  # one recipe step as a placeable row
+bun run advise --spm=45                   # where the base stands and what the next step costs
+bun run bus --save="game 4" --map         # buses, lanes, saturation, corridors on the base map
+bun run report --save="game 4"            # one report and the dashboard for a save
+bun run watch                             # leave running: a save becomes a report (MAIN tree only)
 bun run typecheck
 ```
+
+The state file every command above reads is documented in `STATE.md`, and how to use them to read a base is in `.claude/skills/Factorio/`.
 
 ## Constraints that must hold
 

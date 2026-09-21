@@ -4,6 +4,19 @@ A read-only advisory toolkit for a vanilla Factorio 2.0 Space Age playthrough. I
 
 Sibling of `wesnoth-advisor`, with one structural difference. A Wesnoth save is plain text, so that tool reads the live board directly. A Factorio save is a version-locked binary blob, so this one works from two sources instead: what the game declares before a map exists (every recipe, machine, module, technology, belt and quality tier), and what the engine itself reports when asked to tick a copy of your save. Between them they cover the questions Factorio actually provokes.
 
+## What it tells you about your own base
+
+```bash
+bun run report --save="game 4"   # read the save, write a report, render the dashboard
+bun run advise --spm=45          # what limits you now, and what the next step costs
+bun run bus --save="game 4"      # your buses: lanes, what they carry, how saturated
+bun run watch                    # leave it running: every save becomes a report
+```
+
+`report` writes `reports/index.html`, a dashboard cut into science, energy, defence, production, logistics and mining. Each section carries its figures, the advice that belongs to it, and a map drawn from your save's own coordinates, so a recommendation like "put the next copper outpost at 0, 1152" can be checked against the picture. There is no terrain on those maps: the tool reads entities and resources, not tiles, and it does not draw what it has not measured.
+
+Every recommendation carries the measurement that produced it. That is the point of the project: not "build more smelters", but "iron ore is running 263/min behind what your furnaces eat, and the patch under your 82 drills has 4.8M left against an untouched 11.4M at -128, 1376".
+
 ## Quick start
 
 ```bash
@@ -222,3 +235,10 @@ cli.ts       the only entry point and the only place that formats output
 ```
 
 Design rationale and the decisions behind it are in `DESIGN.md`. What "done" means, with falsifiers, is in `ISA.md`.
+
+## Where things are written down
+
+- `DESIGN.md`: the decisions and why, as numbered ADRs.
+- `STATE.md`: the schema of the state file every command reads, and the two engine conventions that are easy to get backwards.
+- `ISA.md`: the state of record. Its claims are the test suite, and its "Not yet specified" section is the real backlog.
+- `.claude/skills/Factorio/`: how to use this toolkit and how to read a base, for an agent or a person.
