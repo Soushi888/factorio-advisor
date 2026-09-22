@@ -1,7 +1,7 @@
 import { EMPTY_LOADOUT, machinesFor, multipliers, runOne } from "./machines.ts";
 import type { CraftingMachine, Data } from "./proto.ts";
 import type { Recipe, RecipeIndex } from "./recipes.ts";
-import { flowOf, isLegacyFlows, type GameState } from "./state.ts";
+import { flowOf, pavingPerMinute, isLegacyFlows, type GameState } from "./state.ts";
 
 /**
  * What is holding the factory back, read two independent ways.
@@ -497,6 +497,16 @@ export function bottlenecks(
   index: RecipeIndex,
   state: GameState,
   force = "player",
+  /**
+   * The previous report's state, for measuring paving.
+   *
+   * Laying a tile is a consumption the game's statistics do not record, so a
+   * paved item reads as pure slack: refined concrete showed 155.7/min spare on
+   * a base laying 129.8 a minute. Absent is normal and the correction simply
+   * does not apply, which is the honest fallback since the alternative is
+   * inventing a rate.
+   */
+  previous: GameState | null = null,
 ): BottleneckReport {
   const f = state.forces[force];
   const legacy = isLegacyFlows(state, force);
@@ -522,11 +532,15 @@ export function bottlenecks(
   // `production.item` once reported a base running 43 refineries as making no
   // crude oil at all.
   const made = new Map<string, { kind: "item" | "fluid"; perMinute: number }>();
+  const paving = pavingPerMinute(state, previous);
   const flows = new Map<string, { kind: "item" | "fluid"; made: number; used: number }>();
   for (const kind of ["item", "fluid"] as const) {
     for (const [name, flow] of Object.entries(f.production[kind])) {
       const r = flowOf(flow);
-      flows.set(name, { kind, made: r.producedPerMinute, used: r.consumedPerMinute });
+      // Paving counts as use. Without it a paved line reads as pure slack and
+      // both readings on this card inherit it (MAP-2, ADVISE-1).
+      const laid = paving?.[name] ?? 0;
+      flows.set(name, { kind, made: r.producedPerMinute, used: r.consumedPerMinute + laid });
       if (r.producedPerMinute > 0) made.set(name, { kind, perMinute: r.producedPerMinute });
     }
   }

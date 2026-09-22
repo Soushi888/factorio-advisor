@@ -116,12 +116,15 @@ export interface ReportWritten {
  * fail the report: the diff is still true without it. The loop runs unattended,
  * so it says what it could not compute rather than stopping.
  */
-function advisoryFor(state: GameState): { advisory: Advisory; views: SectionView[] } | null {
+function advisoryFor(state: GameState, previous: GameState | null = null): { advisory: Advisory; views: SectionView[] } | null {
   try {
     const data = load();
     const index = new RecipeIndex(data);
     const techs = researchable(data, state, "player").available.map((c) => c.tech);
-    const advisory = advise(data, index, state, techs, { force: "player" });
+    // The previous report is what makes paving measurable, and paving is the one
+    // consumption the game does not record. Without it refined concrete reads as
+    // 155.7/min of spare on a base laying 130 a minute (MAP-2, ADVISE-1).
+    const advisory = advise(data, index, state, techs, { force: "player", previous });
     return { advisory, views: sections(data, state, advisory) };
   } catch {
     return null;
@@ -149,7 +152,7 @@ export async function reportOn(
   if (existsSync(mdPath)) return null;
 
   const previous = previousState(save, tick);
-  const derived = advisoryFor(state);
+  const derived = advisoryFor(state, previous);
   const report = buildReport(
     state,
     previous,
@@ -185,14 +188,25 @@ export async function reportOn(
     history: historyFor(save).filter((f) => f !== `${base}.md`),
     plan: planned.view,
     icons: new Icons(protoData()),
-    bottlenecks: bottlenecksFor(state),
+    bottlenecks: bottlenecksFor(state, previous),
     model: modelFor(state, derived?.advisory ?? null),
   });
 
-  // The archived state drops the map. A report is kept forever and the map is
-  // 800 KB of coordinates that the diff never reads; the live state file under
-  // `data/state/` keeps it, and that is the one the dashboard renders from.
-  const { map: _map, ...archived } = state;
+  // The archived state drops the map's geometry and keeps its paved counts.
+  //
+  // A report is kept forever and the map is 800 KB of coordinates the diff
+  // never reads, so it goes. `paved` stays, and it is a handful of numbers: it
+  // is the ONLY record of a consumption the game does not report, and the next
+  // report measures the paving rate as the delta against this one. Dropping the
+  // whole map put that delta permanently out of reach, which is how refined
+  // concrete kept reading as 155.7/min of spare on a base laying 130 a minute.
+  const { map: fullMap, ...rest } = state;
+  const archived: GameState = {
+    ...rest,
+    ...(fullMap
+      ? { map: fullMap.map((s) => ({ name: s.name, cellTiles: s.cellTiles, bounds: s.bounds, cells: [], ore: [], points: {}, ...(s.paved ? { paved: s.paved } : {}) })) }
+      : {}),
+  };
   writeFileSync(pagePath, page);
   writeFileSync(jsonPath, JSON.stringify(archived, null, 2) + "\n");
   writeFileSync(mdPath, markdown);
@@ -222,7 +236,7 @@ export async function reportOn(
 export function rerenderPage(save: string, opts: { threshold?: number } = {}): string | null {
   const state = readStateFile(save);
   if (!state) return null;
-  const derived = advisoryFor(state);
+  const derived = advisoryFor(state, previousState(save, state.save.tick));
   const report = buildReport(
     state,
     previousState(save, state.save.tick),
@@ -242,7 +256,7 @@ export function rerenderPage(save: string, opts: { threshold?: number } = {}): s
       history: historyFor(save).filter((f) => f !== `${slug(save)}-${String(state.save.tick)}.md`),
       plan: planFor(save, state),
       icons: new Icons(protoData()),
-      bottlenecks: bottlenecksFor(state),
+      bottlenecks: bottlenecksFor(state, previousState(save, state.save.tick)),
       model: modelFor(state, derived?.advisory ?? null),
     }),
   );
@@ -337,7 +351,7 @@ export function planForReport(
  * on a machine whose prototype dump is missing, and a page with one card fewer
  * is a better answer than no page.
  */
-function bottlenecksFor(state: GameState): BottleneckReport | null {
+function bottlenecksFor(state: GameState, previous: GameState | null = null): BottleneckReport | null {
   try {
     const data = load();
     return bottlenecks(data, new RecipeIndex(data), state, "player");

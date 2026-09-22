@@ -3,7 +3,7 @@ import type { RecipeIndex } from "./recipes.ts";
 import { mapOf, patches, powerBlocks, type Patch, type PowerBlock } from "./map.ts";
 import { effectiveGeneration, powerReport } from "./power.ts";
 import { solve } from "./solve.ts";
-import { flowOf, isLegacyFlows, type GameState, type Rates } from "./state.ts";
+import { flowOf, isLegacyFlows, machinesOf, pavingPerMinute, type GameState, type Rates } from "./state.ts";
 
 /**
  * The advisor's synthesis: what the save says about where the base stands, and
@@ -146,6 +146,8 @@ export interface Advisory {
   /** Ore fields, largest first. Empty when the save carries no map. */
   fields: Patch[];
   advice: Advice[];
+  /** Stages the census finds set to a recipe and producing nothing. */
+  stalled: StalledStage[];
 }
 
 function isSciencePack(data: Data, name: string): boolean {
@@ -200,10 +202,77 @@ function gridOf(data: Data, state: GameState, force: string): GridReport | null 
   };
 }
 
+/**
+ * Every item the chain for these products passes through, down to raw.
+ *
+ * Used to tell a stage that is broken from one that is parked: a stopped
+ * battery line matters because batteries are on the way to a science pack the
+ * player could research right now, and a stopped grenade line does not, because
+ * nothing wants a grenade. The walk uses the index's own default recipe, which
+ * is the same rule `bun run ratio` answers by, so the two cannot disagree.
+ */
+function chainItems(index: RecipeIndex, products: Iterable<string>): Set<string> {
+  const seen = new Set<string>();
+  const stack = [...products];
+  while (stack.length > 0) {
+    const item = stack.pop()!;
+    if (seen.has(item)) continue;
+    seen.add(item);
+    if (index.isRaw(item)) continue;
+    const recipe = index.defaultFor(item);
+    if (!recipe) continue;
+    for (const ing of recipe.ingredients) stack.push(ing.name);
+  }
+  return seen;
+}
+
+/**
+ * How thin a raw line's own slack has to be before an outpost is the answer.
+ *
+ * Two percent of what the base already eats, and it is a reading choice named
+ * here rather than buried in a filter. The important half is what it is NOT
+ * measured against: a hypothetical target. Ranking outposts by what a 38/min
+ * sizing exercise would like put stone first while stone ran 32.9/min spare,
+ * and ranking them by how much ore is left in the ground did the same for a
+ * different reason. A line's slack against its OWN consumption is a fact about
+ * tonight: copper 0.30%, coal 1.43%, stone 6.17%, iron ore 16.56%.
+ */
+const OUTPOST_SLACK = 0.02;
+
+/**
+ * How close two pack rates have to be before naming a winner is noise.
+ *
+ * One a minute, and it is a reading choice about this instrument rather than a
+ * game fact. The rates are the engine's own one-hour rolling average and they
+ * drift by a fraction of a percent between reads; on 2026-09-21 the leader
+ * changed twice in two hours on gaps under 0.5/min.
+ */
+const PACK_NOISE_PER_MINUTE = 1;
+
+/** A recipe a census of machines is set to, and what those machines are doing. */
+export interface StalledStage {
+  recipe: string;
+  /** The product the recipe's own default output names. */
+  product: string;
+  machines: number;
+  /** Something consumes the product, or a researchable pack chain wants it. */
+  wanted: boolean;
+  /** The first ingredient of this recipe that nothing is producing. */
+  missingInput: string | null;
+}
+
 export interface AdviseOptions {
   force?: string;
   /** Target rate per science pack, per minute. Derived when absent. */
   spm?: number;
+  /**
+   * The previous report's state, when there is one.
+   *
+   * Only used to measure paving, which is the one consumption the game's own
+   * statistics do not record. Absent is normal and the advisor simply says it
+   * cannot measure paving rather than assuming there is none.
+   */
+  previous?: GameState | null;
 }
 
 export function advise(
@@ -223,8 +292,21 @@ export function advise(
   // Fluids live in their own map. Reading only the item map once reported
   // "3453/min of crude-oil needed, 0 spare (0 made, 0 used)" on a base running
   // 43 refineries: every fluid gap was the lookup missing, not the base.
-  const rateOf = (name: string): Rates =>
-    flowOf(force.production.item[name] ?? force.production.fluid[name]);
+  // Paving is a consumption the statistics do not record (MAP-2). Without this
+  // correction refined concrete reads as 155.7/min of spare on a base laying
+  // 130 tiles a minute with 100 in its chests, and every line that ranks by
+  // spare inherits it.
+  const paving = pavingPerMinute(state, opts.previous ?? null);
+  const rateOf = (name: string): Rates => {
+    const raw = flowOf(force.production.item[name] ?? force.production.fluid[name]);
+    const laid = paving?.[name];
+    if (laid === undefined || laid <= 0) return raw;
+    return {
+      ...raw,
+      consumedPerMinute: raw.consumedPerMinute + laid,
+      headroomPerMinute: raw.headroomPerMinute - laid,
+    };
+  };
 
   // ---- the packs ---------------------------------------------------------
   const packs: PackLine[] = [];
@@ -377,10 +459,62 @@ export function advise(
   const fields = surfaceMap
     ? patches(surfaceMap, ["electric-mining-drill", "burner-mining-drill", "big-mining-drill", "pumpjack"])
     : [];
-  const shortResources = ["iron-ore", "copper-ore", "coal", "stone"].filter((r) => {
-    const wanted = target?.requirements.find((x) => x.item === r);
-    return rateOf(r).headroomPerMinute < 0 || (wanted?.deficitPerMinute ?? 0) > 0;
-  });
+  // ---- what the census says is standing still ----------------------------
+  //
+  // The biggest fact about this base and the advisor did not read it: 494 of
+  // its 2152 crafting machines are set to a recipe and producing nothing. The
+  // section could say "you have never made a utility science pack" and not say
+  // that 47 battery machines and 48 robot frame machines are the reason.
+  const stalled: StalledStage[] = [];
+  if (surfaceMap) {
+    const byRecipe = new Map<string, number>();
+    for (const m of machinesOf(surfaceMap)) {
+      if (typeof m.recipe !== "string") continue;
+      byRecipe.set(m.recipe, (byRecipe.get(m.recipe) ?? 0) + 1);
+    }
+    // What a researchable technology's packs need, all the way down. A stopped
+    // stage on this path is a broken chain; one off it is a line he parked.
+    const wantedChain = chainItems(index, [...required.keys(), ...missingPacks.map((m) => m.pack)]);
+    for (const [recipeName, machines] of byRecipe) {
+      const recipe = index.get(recipeName);
+      const product = recipe?.mainProduct ?? recipe?.results[0]?.name ?? null;
+      if (!recipe || product === null) continue;
+      if (rateOf(product).producedPerMinute > 0) continue;
+      // A stage whose ingredients nothing produces has a first missing input,
+      // and naming it is the difference between "this is stopped" and "this is
+      // stopped because nothing upstream is running".
+      const missingInput =
+        recipe.ingredients.find((i) => rateOf(i.name).producedPerMinute <= 0)?.name ?? null;
+      stalled.push({
+        recipe: recipeName,
+        product,
+        machines,
+        wanted: rateOf(product).consumedPerMinute > 0 || wantedChain.has(product),
+        missingInput,
+      });
+    }
+    stalled.sort((a, b) => b.machines - a.machines);
+  }
+
+  // ---- which outposts actually matter ------------------------------------
+  //
+  // Ranked by what the base is short of, never by what the patches look like.
+  // Ranking by depletion recommended a stone outpost while stone ran 32.9/min
+  // spare and copper ran 1.6, and copper was listed third.
+  const shortResources = ["iron-ore", "copper-ore", "coal", "stone"]
+    .map((r) => {
+      const rates = rateOf(r);
+      const used = rates.consumedPerMinute;
+      return {
+        resource: r,
+        spare: rates.headroomPerMinute,
+        used,
+        slack: used > 0 ? rates.headroomPerMinute / used : Infinity,
+        wanted: target?.requirements.find((x) => x.item === r)?.deficitPerMinute ?? 0,
+      };
+    })
+    .filter((r) => r.slack < OUTPOST_SLACK)
+    .sort((a, b) => a.slack - b.slack);
 
   return {
     save: state.save.name,
@@ -399,6 +533,7 @@ export function advise(
     missingPacks,
     blocks,
     fields,
+    stalled,
     advice: buildAdvice({
       legacy,
       packs,
@@ -412,6 +547,8 @@ export function advise(
       blocks,
       fields,
       shortResources,
+      stalled,
+      pavingMeasured: paving !== null,
     }),
   };
 }
@@ -428,7 +565,10 @@ interface AdviceInput {
   missingPacks: Array<{ pack: string; gatedTechs: number }>;
   blocks: PowerBlock[];
   fields: Patch[];
-  shortResources: string[];
+  shortResources: Array<{ resource: string; spare: number; used: number; slack: number; wanted: number }>;
+  stalled: StalledStage[];
+  /** False when no previous read was available, so paving could not be measured. */
+  pavingMeasured: boolean;
 }
 
 /**
@@ -478,21 +618,72 @@ function buildAdvice(a: AdviceInput): Advice[] {
       .filter((p): p is PackLine => p !== undefined)
       .map((p) => (a.legacy ? p.rates.consumedPerMinute : p.rates.producedPerMinute));
     const nextUp = others.length > 0 ? Math.min(...others) : null;
-    out.push({
-      section: "science",
-      text: `Science runs at ${n(a.researchPerMinute)}/min, and ${a.limiting} is what sets it.`,
-      because:
-        nextUp !== null
-          ? `It is the slowest pack the current research needs; the next slowest makes ${n(nextUp)}/min.`
-          : "It is the slowest pack the current research needs.",
-    });
+    // A winner named on a gap smaller than the reads differ by is noise
+    // presented as a finding: production read 18.0 against logistic 18.4 at one
+    // tick and chemical led two hours earlier. When the packs are level, the
+    // levelness IS the finding, and it points at the labs rather than at a line.
+    const spread = nextUp === null ? Infinity : nextUp - a.researchPerMinute;
+    if (spread < PACK_NOISE_PER_MINUTE) {
+      const all = [a.limiting, ...a.required.filter((p) => p !== a.limiting)];
+      out.push({
+        section: "science",
+        text: `Science runs at ${n(a.researchPerMinute)}/min and no single pack sets it.`,
+        because:
+          `${String(all.length)} packs within ${n(spread, 2)}/min of each other ` +
+          `(${all.join(", ")}). A gap that small moves between reads, so speeding one ` +
+          `line up buys nothing until they stop being level.`,
+      });
+    } else {
+      out.push({
+        section: "science",
+        text: `Science runs at ${n(a.researchPerMinute)}/min, and ${a.limiting} is what sets it.`,
+        because: `It is the slowest pack the current research needs; the next slowest makes ${n(nextUp ?? 0)}/min.`,
+      });
+    }
   }
 
   for (const m of a.missingPacks) {
+    // The pack line says WHAT is missing; the census says WHY, and saying only
+    // the first is what made this section read as stale to somebody looking at
+    // 47 battery machines standing still.
+    const chain = a.stalled.filter((x) => x.wanted).slice(0, 3);
     out.push({
       section: "science",
       text: `You have never made a ${m.pack}.`,
-      because: `${m.gatedTechs} of the technologies you could start right now need it.`,
+      because:
+        `${m.gatedTechs} of the technologies you could start right now need it.` +
+        (chain.length > 0
+          ? ` The census says the chain is stopped rather than missing: ` +
+            chain
+              .map(
+                (x) =>
+                  `${String(x.machines)} machines on ${x.recipe} producing nothing` +
+                  (x.missingInput ? `, waiting on ${x.missingInput}` : ""),
+              )
+              .join("; ") +
+            "."
+          : ""),
+    });
+  }
+
+  const wanted = a.stalled.filter((x) => x.wanted);
+  const parked = a.stalled.filter((x) => !x.wanted);
+  if (wanted.length > 0) {
+    const machines = wanted.reduce((t, x) => t + x.machines, 0);
+    const first = wanted[0]!;
+    out.push({
+      section: "production",
+      text:
+        `${String(machines)} machines across ${String(wanted.length)} stages are set to a recipe ` +
+        `and producing nothing, and something wants what they make.`,
+      because:
+        `Worst is ${first.recipe}: ${String(first.machines)} machines` +
+        (first.missingInput
+          ? `, and the first input nothing is producing is ${first.missingInput}.`
+          : `, with every input running, so the stall is downstream of the ingredients.`) +
+        ` A stage whose product nothing consumes and no researchable pack wants is not counted here: ` +
+        `${String(parked.length)} stages over ${String(parked.reduce((t, x) => t + x.machines, 0))} ` +
+        `machines read as parked rather than broken.`,
     });
   }
 
@@ -522,14 +713,21 @@ function buildAdvice(a: AdviceInput): Advice[] {
     });
   }
 
-  for (const resource of a.shortResources) {
+  for (const short of a.shortResources) {
+    const resource = short.resource;
     const working = a.fields.filter((p) => p.resource === resource && p.extractors > 0)[0];
     const free = a.fields.filter((p) => p.resource === resource && p.extractors === 0)[0];
     if (!free) continue;
     out.push({
       section: "mining",
+      // The shortfall leads, because that is why this line exists. The patch is
+      // where to put the answer, not the reason for it: ranking by how much ore
+      // is left told him to lay a stone outpost while stone ran 32.9/min spare.
       text: `Put the next ${resource} outpost at ${String(Math.round(free.x))}, ${String(Math.round(free.y))}.`,
       because:
+        `${resource} runs ${n(short.spare)}/min spare on ${n(short.used)}/min used, ` +
+        `which is ${(short.slack * 100).toFixed(2)}% slack: the line is at its ceiling now, ` +
+        `before anything new is built. ` +
         `${ore(free.amount)} there with nothing standing on it` +
         (working
           ? `, against ${ore(working.amount)} left under the ${String(working.extractors)} drills at ` +
@@ -557,10 +755,21 @@ function buildAdvice(a: AdviceInput): Advice[] {
       if (rawGaps.length > 0) {
         out.push({
           section: "mining",
-          text: `The raw end is the real work: ${rawGaps.map((r) => r.item).join(", ")}.`,
-          because: rawGaps
-            .map((r) => `${r.item} +${n(r.deficitPerMinute)}/min`)
-            .join(", "),
+          // The target is named IN the line. Without it this read "the raw end
+          // is the real work: iron-ore +1082.8/min" on a page that says
+          // elsewhere iron ore has 221.8/min spare. Both numbers were right and
+          // they answered different questions, and only one of them said which.
+          text:
+            `At ${n(a.target.spm, 0)} of each pack a minute, the raw end is the real work: ` +
+            `${rawGaps.map((r) => r.item).join(", ")}.`,
+          because:
+            rawGaps
+              .map(
+                (r) =>
+                  `${r.item} +${n(r.deficitPerMinute)}/min for that target, ` +
+                  `${n(r.headroomPerMinute)}/min spare today`,
+              )
+              .join("; ") + ".",
         });
       }
     }

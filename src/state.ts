@@ -1650,3 +1650,41 @@ export function readStateFile(save: string): GameState | null {
 }
 
 export { slugify };
+
+/**
+ * How fast each paveable item is being laid, per minute, between two reads.
+ *
+ * Production statistics do not count a tile placement as consuming its item, so
+ * a base that paves reads as a base that hoards: on 2026-09-21 refined concrete
+ * showed 181610 made, 15760 used and 165850 of pure phantom slack, while 164953
+ * of it was underfoot. Every reading built on made-minus-used inherited that,
+ * which is why this lives beside `flowOf` rather than inside one consumer.
+ *
+ * Null when it cannot be measured, which is a gap and never a zero: a previous
+ * read that predates the paved counter, the same tick twice, or a read with no
+ * map say nothing about the rate, and calling that zero would put the phantom
+ * slack back under a different name.
+ */
+export function pavingPerMinute(
+  now: GameState,
+  previous: GameState | null,
+): Record<string, number> | null {
+  const paved = (s: GameState | null): Record<string, number> | undefined =>
+    s?.map?.[0]?.paved;
+  const a = paved(previous);
+  const b = paved(now);
+  if (!a || !b || !previous) return null;
+  const ticks = now.save.tick - previous.save.tick;
+  if (ticks <= 0) return null;
+  const minutes = ticks / TICKS_PER_SECOND / 60;
+  const out: Record<string, number> = {};
+  for (const [item, count] of Object.entries(b)) {
+    const before = a[item] ?? 0;
+    // Tiles can be mined back up, and a negative rate is not a consumption.
+    // It is the player recovering material, which the statistics DO count as
+    // production, so leaving it out here is right rather than lenient.
+    const laid = count - before;
+    if (laid > 0) out[item] = laid / minutes;
+  }
+  return out;
+}
