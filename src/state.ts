@@ -1136,47 +1136,69 @@ function savesByRecency(): Array<{ name: string; path: string; mtime: Date }> {
 }
 
 /**
- * The newest save this project has actually read, for the commands that redraw
- * from a state file rather than run the engine.
+ * The newest READ this project holds, for the commands that redraw from a state
+ * file rather than run the engine.
  *
- * `newestSave` answers "what did he save last", which is the right question for
- * a command that is about to read a save. It is the wrong question for
- * `bun run report --page`, which reads no save at all: tonight the newest zip is
- * `_autosave3`, written while Soushi plays, and nothing has ever read it, so the
- * command that keeps his dashboard current died on the file that proves he is
- * still playing.
+ * The ordering key is the state file's own mtime, and that is the whole point.
+ * An earlier version ordered by the zip's mtime and used the state file only as
+ * a filter, which answers "which of the saves he has read did he save last".
+ * That is a different question, and on 2026-09-21 at 21:59 it gave a different
+ * answer: Factorio rotated its autosave into slot 1 while Soushi played, so
+ * `_autosave1.zip` became the newest zip on disk, it happened to carry a state
+ * file read on 2026-09-05, and the command redrew his live dashboard from a
+ * sixteen-day-old read of a different base. It printed no reason, because the
+ * save it chose genuinely was the newest one on disk.
  *
- * Two passes, in this order and for different reasons. First the newest save on
- * disk that has a state file, so a fresh autosave is skipped in favour of the
- * last real read while keeping the save's own name. Then, only if none of them
- * has one, the newest state file by its own mtime, whose save may have been
- * deleted or renamed since: its name comes from `save.name` inside the file
- * rather than from un-slugging a filename, which cannot be done ("game 4" and
- * "game-4" both slug to the same thing).
+ * So: one pass, over the reads. The name comes from `save.name` inside the
+ * winner rather than from un-slugging a filename, which cannot be done, since
+ * "game 4" and "game-4" slug to the same thing. `readAt` travels with it so the
+ * caller can say how old the read is, because a stale choice has to announce
+ * itself even when it is defensible.
  */
-export function newestReadSave(): { name: string; reason: "newest" | "last-read" | "state-only" } | null {
-  const saves = savesByRecency();
-  const newest = saves[0];
-  for (const save of saves) {
-    if (readStateFile(save.name) !== null) {
-      return { name: save.name, reason: save.name === newest?.name ? "newest" : "last-read" };
-    }
-  }
+export interface NewestRead {
+  name: string;
+  /** When the state file was written, which is when the save was read. */
+  readAt: Date;
+  tick: number;
+  /** True when this save is also the newest zip in the save directory. */
+  isNewestSave: boolean;
+  /** The newest zip on disk, when it is a different save. */
+  newerSave: string | null;
+}
+
+export function newestRead(): NewestRead | null {
   const dir = join(DATA_DIR, "state");
   if (!existsSync(dir)) return null;
-  let best: { name: string; mtime: Date } | null = null;
-  for (const entry of readdirSync(dir)) {
-    if (!entry.toLowerCase().endsWith(".json")) continue;
-    const mtime = statSync(join(dir, entry)).mtime;
-    if (best && mtime <= best.mtime) continue;
+  const files = readdirSync(dir)
+    .filter((f) => f.toLowerCase().endsWith(".json"))
+    // The belt survey lives in the same directory under `<save>-belts.json` and
+    // is not a state file: it carries a tick and surfaces and no save at all.
+    // Named rather than discovered by parsing, because it is 3.9 MB on this save
+    // and parsing it to learn it is the wrong shape costs a second per run.
+    .filter((f) => !f.toLowerCase().endsWith("-belts.json"))
+    .map((f) => ({ file: f, mtime: statSync(join(dir, f)).mtime }))
+    .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+
+  const newestSaveName = newestSave()?.name ?? null;
+  for (const { file, mtime } of files) {
+    let state: GameState;
     try {
-      const state = JSON.parse(readFileSync(join(dir, entry), "utf8")) as GameState;
-      if (state.save?.name) best = { name: state.save.name, mtime };
+      state = JSON.parse(readFileSync(join(dir, file), "utf8")) as GameState;
     } catch {
-      // A half-written state file is not a save this command can name.
+      // A half-written state file is not a read this command can name, and the
+      // next one down is still a real answer.
+      continue;
     }
+    if (!state.save?.name) continue;
+    return {
+      name: state.save.name,
+      readAt: mtime,
+      tick: state.save.tick,
+      isNewestSave: state.save.name === newestSaveName,
+      newerSave: state.save.name === newestSaveName ? null : newestSaveName,
+    };
   }
-  return best ? { name: best.name, reason: "state-only" } : null;
+  return null;
 }
 
 export interface ReadStateOptions {

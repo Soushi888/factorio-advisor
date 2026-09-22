@@ -1,6 +1,6 @@
 import { watch, reportOn, rerenderPage } from "./watch.ts";
 import { DEFAULT_RATE_THRESHOLD_PER_MIN } from "./report.ts";
-import { newestReadSave, newestSave } from "../src/state.ts";
+import { newestRead, newestSave } from "../src/state.ts";
 
 /**
  * The bridge's entry point, separate from the advisor's.
@@ -34,38 +34,57 @@ if (!Number.isFinite(threshold) || threshold < 0) {
   throw new Error(`--threshold must be a number of items per minute.`);
 }
 
+/**
+ * When a read was taken, in Soushi's own clock rather than in ticks.
+ *
+ * "read at 21:35 tonight" against "read on 09-05 at 22:21" is the difference
+ * between a current page and a sixteen-day-old one, and it has to be in the
+ * output rather than available on request: the failure this exists for printed
+ * a defensible choice and said nothing that would have made it look wrong.
+ */
+function readAgo(at: Date): string {
+  const now = new Date();
+  const hm = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+  const sameDay =
+    at.getFullYear() === now.getFullYear() &&
+    at.getMonth() === now.getMonth() &&
+    at.getDate() === now.getDate();
+  if (sameDay) return `read at ${hm} today`;
+  const md = `${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
+  return `read on ${md} at ${hm}`;
+}
+
 // `--page` redraws the dashboard from the state file already on disk. It runs
 // no engine and writes no report, so it is the loop for working on the page
 // itself rather than on the base.
 if (flags.has("page")) {
   const named = value("save");
-  // Not `newestSave` here. This command runs no engine, so the save it wants is
-  // the newest one that has already been READ, and an autosave written while
-  // Soushi plays has not been. Picking the newest zip made the one command that
-  // keeps his dashboard current throw on the file that proves he is still
-  // playing (pm#104).
-  const chosen = named === null ? newestReadSave() : { name: named, reason: "named" as const };
-  if (!chosen) {
+  // Ordered by the READ, never by the save. This command runs no engine, so it
+  // renders the newest state file this project holds; ordering by the zip's
+  // mtime let a rotated autosave carrying a sixteen-day-old read win over
+  // tonight's read of the base he is playing (pm#110).
+  const chosen = named === null ? newestRead() : null;
+  const save = named ?? chosen?.name;
+  if (!save) {
     throw new Error(
       newestSave() === null
         ? "No save found. Name one with --save=<name>."
         : "No save has been read yet. Run: bun run report --now",
     );
   }
-  const page = rerenderPage(chosen.name, { threshold });
+  const page = rerenderPage(save, { threshold });
   if (!page) {
-    throw new Error(`No state file read yet for ${chosen.name}. Run: bun run report --save="${chosen.name}"`);
+    throw new Error(`No state file read yet for ${save}. Run: bun run report --save="${save}"`);
   }
-  // Which save it chose, always, and why when it is not the obvious one: a
-  // command that silently redraws a different base from the one just saved is
-  // worse than one that throws.
-  const why =
-    chosen.reason === "last-read"
-      ? `  (the newest save with a state file; ${newestSave()?.name ?? "the newest save"} has not been read)`
-      : chosen.reason === "state-only"
-        ? `  (read from a state file; no save of that name is on disk any more)`
-        : "";
-  console.log(`\n  save  ${chosen.name}${why}`);
+  // The age of the read, always, because that is the fact a stale page hides.
+  // Which save it is does not say whether the page is current; when it was read
+  // does.
+  if (chosen) {
+    const newer = chosen.newerSave === null ? "" : `, and ${chosen.newerSave} is newer on disk but unread`;
+    console.log(`\n  save  ${chosen.name}  (${readAgo(chosen.readAt)}, tick ${String(chosen.tick)}${newer})`);
+  } else {
+    console.log(`\n  save  ${save}`);
+  }
   console.log(`  page  ${page}  (redrawn from the last read, no engine run)`);
   process.exit(0);
 }

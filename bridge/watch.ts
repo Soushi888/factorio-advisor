@@ -1,7 +1,11 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PROJECT_ROOT, findUserdata } from "../src/paths.ts";
-import { readState, readStateFile, type GameState } from "../src/state.ts";
+// One slug, not two. `bridge/` had its own copy, identical to `src/state.ts`
+// today, and the state-only path now depends on the two agreeing forever: a
+// state file is found by the advisor spelling and named by the bridge one
+// (pm#108).
+import { readState, readStateFile, slugify as slug, type GameState } from "../src/state.ts";
 import { buildReport, renderMarkdown, DEFAULT_RATE_THRESHOLD_PER_MIN } from "./report.ts";
 import { advise, type Advisory } from "../src/advise.ts";
 import type { SectionView } from "../src/sections.ts";
@@ -62,10 +66,6 @@ function scan(dir: string): Map<string, Seen> {
     out.set(entry.replace(/\.zip$/i, ""), { mtimeMs: st.mtimeMs, size: st.size });
   }
   return out;
-}
-
-function slug(name: string): string {
-  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
 /** Reports already written for a save, newest first, by the tick in the name. */
