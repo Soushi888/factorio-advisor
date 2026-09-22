@@ -14,7 +14,7 @@ import { audit, byRecipe, type AuditResult } from "./audit.ts";
 import { judge } from "./target.ts";
 import { beltFor, buildRow } from "./layout.ts";
 import { drawPrint, printPage, type DrawnPrint } from "./draw.ts";
-import { flowOf, newestSave, readState, readStateFile, slugify, type GameState } from "./state.ts";
+import { flowOf, newestRead, newestSave, readState, readStateFile, slugify, type GameState } from "./state.ts";
 import { busAreas, judge as judgeBus, readSurvey, surveyPath, type BusReport } from "./bus.ts";
 import { mapOf, renderMap, type Area } from "./map.ts";
 import { advise, type Advisory, type Requirement } from "./advise.ts";
@@ -1118,11 +1118,17 @@ function packCount(n: number): string {
 }
 
 /**
- * The state file to answer from: the one named, or the newest save read so far.
+ * The state file to answer from: the one named, or the newest READ.
  *
  * Naming a file by hand every time is friction that has nothing to do with the
- * question being asked, so with no flag this falls back to whatever save is
- * newest on disk, autosaves included.
+ * question being asked, so with no flag this falls back on its own. What it
+ * falls back to is the point: these commands run no engine, so the save they
+ * want is the newest one already read, not the newest zip on disk. Resolving by
+ * the zip made advise, next, power and bottleneck all fail with "your newest
+ * save is _autosave3 but no state has been read from it yet" the moment
+ * Factorio wrote an autosave, which is in the middle of every play session,
+ * while a current read sat on disk beside them. The same defect as pm#104 and
+ * pm#110 in a second file, and the same fix.
  */
 function requireState(args: Args): GameState {
   const named = valueFlag(args, "save");
@@ -1135,12 +1141,18 @@ function requireState(args: Args): GameState {
     }
     return s;
   }
+  const read = newestRead();
+  if (read) {
+    const s = readStateFile(read.name);
+    // The age of the read is printed, not just which save it was, because which
+    // save it is never says whether the answer is current and when it was read
+    // does. A stale choice has to announce itself even when it is defensible.
+    if (s) return s;
+  }
   const newest = newestSave();
   if (newest) {
-    const s = readStateFile(newest.name);
-    if (s) return s;
     throw new Error(
-      `Your newest save is "${newest.name}" but no state has been read from it yet:\n` +
+      `Your newest save is "${newest.name}" and nothing has been read yet:\n` +
         `  bun run state --save="${newest.name}"`,
     );
   }
