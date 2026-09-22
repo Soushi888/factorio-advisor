@@ -1,6 +1,6 @@
 import type { BpEntity } from "./blueprint.ts";
 import type { Data } from "./proto.ts";
-import { E, N, S, W, opposite, portsAt, step } from "./pipes.ts";
+import { E, N, S, W, opposite, step, surfaceNodes, tileKey } from "./pipes.ts";
 
 /**
  * Which of a pipe's eighteen pictures each tile needs (the way the game does it).
@@ -51,49 +51,6 @@ const PICTURE: Record<string, string> = {
   "0,4,8,12": "cross",
 };
 
-/** What stands on a tile, and which ways it can take a fluid on the surface. */
-interface Surface {
-  /** Directions this thing connects on, from its own tile, above ground. */
-  faces: number[];
-}
-
-function key(x: number, y: number): string {
-  return `${String(Math.round(x))}:${String(Math.round(y))}`;
-}
-
-/**
- * Every tile in a print that can meet a pipe, and the ways it can meet one.
- *
- * A plain pipe meets anything on all four sides. A pipe-to-ground opens only
- * toward its own facing, which is why an underground laid backwards reads as a
- * dead end here rather than as a join. A machine registers its EDGE tile rather
- * than its port tile, facing outward, because a pipe standing on the port tile
- * would otherwise overwrite the very thing it is connecting to: the same trap
- * `checkPlumbing` records, and this duplicates its node build rather than
- * sharing one, which is a seam worth closing when both are next touched.
- */
-function surfaces(data: Data, entities: BpEntity[]): Map<string, Surface> {
-  const at = new Map<string, Surface>();
-  for (const e of entities) {
-    const x = e.position?.x ?? 0;
-    const y = e.position?.y ?? 0;
-    const dir = e.direction ?? 0;
-    if (e.name === "pipe") {
-      at.set(key(x, y), { faces: [...CARDINALS] });
-    } else if (e.name === "pipe-to-ground") {
-      at.set(key(x, y), { faces: [dir] });
-    } else {
-      const proto = data.find(e.name, data.entityClasses());
-      if (!proto) continue;
-      for (const p of portsAt(proto, [x, y], dir)) {
-        const [sx, sy] = step(p.facing);
-        at.set(key(p.tile[0] - sx, p.tile[1] - sy), { faces: [p.facing] });
-      }
-    }
-  }
-  return at;
-}
-
 /**
  * The picture name each plain pipe in a print needs, by entity number.
  *
@@ -101,7 +58,10 @@ function surfaces(data: Data, entities: BpEntity[]): Map<string, Surface> {
  * of its own and the generic sprite walk already draws the right mouth for it.
  */
 export function pipeShapes(data: Data, entities: BpEntity[]): Map<number, string> {
-  const at = surfaces(data, entities);
+  selfCheck(data);
+  // The one builder, shared with `checkPlumbing`. It used to be a copy here,
+  // and the copy carried the machine-edge rule that was silently wrong once.
+  const at = surfaceNodes(data, entities);
   const out = new Map<number, string>();
   for (const e of entities) {
     if (e.name !== "pipe") continue;
@@ -110,11 +70,11 @@ export function pipeShapes(data: Data, entities: BpEntity[]): Map<number, string
     const open: number[] = [];
     for (const d of CARDINALS) {
       const [sx, sy] = step(d);
-      const other = at.get(key(x + sx, y + sy));
+      const other = at.get(tileKey(x + sx, y + sy));
       // A join is reciprocal: the neighbour has to open back this way. That is
       // what makes an underground facing away read as no connection, and it is
       // the whole difference between drawing a corner and drawing a cross.
-      if (other?.faces.includes(opposite(d))) open.push(d);
+      if (other?.surface.includes(opposite(d))) open.push(d);
     }
     const name = PICTURE[open.join(",")];
     if (name) out.set(e.entity_number, name);
@@ -126,3 +86,79 @@ export function pipeShapes(data: Data, entities: BpEntity[]): Map<number, string
 export const PIPE_PICTURE = PICTURE;
 export const PIPE_CARDINALS = CARDINALS;
 export { E, N, S, W };
+
+/**
+ * The table's own guard, run once, before anything is drawn.
+ *
+ * The original defect was not a wrong name, it was NO lookup at all: the sprite
+ * walk chose between the vertical and the horizontal from an entity direction
+ * that a plain pipe does not have, so every pipe in a print drew as the same
+ * stick. A guard that only checked names would have passed it. So this asserts
+ * the three things whose absence produced it or could produce it again.
+ *
+ * It lives in the tool rather than in a script beside the tool, because a
+ * script under `.local/` is gitignored and rots the first time somebody edits
+ * the sprite walk. It costs one pass over sixteen strings, once per process.
+ */
+let checked = false;
+function selfCheck(data: Data): void {
+  if (checked) return;
+  checked = true;
+
+  // 1. Total and injective. Sixteen sets of open cardinals, sixteen distinct
+  //    names, nothing to fall through to, so a case cannot be quietly lost.
+  const names = new Set<string>();
+  for (let mask = 0; mask < 16; mask += 1) {
+    const open = CARDINALS.filter((_, i) => (mask & (1 << i)) !== 0);
+    const name = PICTURE[open.join(",")];
+    if (!name) {
+      throw new Error(
+        `The pipe picture table has no name for the open set [${open.join(",")}].\n` +
+          "It must be total: sixteen sets, sixteen names, nothing to fall through to.",
+      );
+    }
+    names.add(name);
+  }
+  if (names.size !== 16) {
+    throw new Error(
+      `The pipe picture table names ${String(names.size)} distinct pictures for 16 sets.\n` +
+        "Two open sets sharing a picture means one of them is drawn wrong.",
+    );
+  }
+
+  // 2. Every name is a picture the prototype actually declares. A table that
+  //    agrees with itself and not with the game draws nothing at all.
+  const proto = data.find("pipe", ["pipe"]);
+  const pictures = proto?.["pictures"];
+  if (typeof pictures !== "object" || pictures === null) {
+    throw new Error("The pipe prototype declares no `pictures` in this snapshot.");
+  }
+  const have = new Set(Object.keys(pictures as Record<string, unknown>));
+  const missing = [...names].filter((n) => !have.has(n));
+  if (missing.length > 0) {
+    throw new Error(
+      `The pipe picture table names pictures the prototype does not declare: ${missing.join(", ")}.`,
+    );
+  }
+
+  // 3. The regression the old behaviour passed. Two pipes in an L: the corner
+  //    tile must resolve to a corner, never to the vertical straight. Every
+  //    check this project had passed while that L drew as two sticks, which is
+  //    why Soushi saw it and nobody here did.
+  const at = new Map<string, { surface: number[] }>();
+  at.set(tileKey(0, 0), { surface: [N, E, S, W] });
+  at.set(tileKey(1, 0), { surface: [N, E, S, W] });
+  at.set(tileKey(0, -1), { surface: [N, E, S, W] });
+  const open: number[] = [];
+  for (const d of CARDINALS) {
+    const [sx, sy] = step(d);
+    if (at.get(tileKey(sx, sy))?.surface.includes(opposite(d))) open.push(d);
+  }
+  const corner = PICTURE[open.join(",")];
+  if (corner !== "corner_up_right") {
+    throw new Error(
+      `A pipe open up and right resolves to ${String(corner)}, not corner_up_right.\n` +
+        "The picture names list the sides a pipe is OPEN on, measured off the shipped art.",
+    );
+  }
+}

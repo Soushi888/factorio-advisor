@@ -152,7 +152,7 @@ export interface PlumbingFault {
   what: string;
 }
 
-interface Node {
+export interface SurfaceNode {
   tile: [number, number];
   /** Directions this entity connects on, at the surface. */
   surface: number[];
@@ -174,24 +174,42 @@ interface Node {
  * fluids into one network. All three produce a print that pastes cleanly and
  * does nothing, which is the output class this project exists not to produce.
  */
-export function checkPlumbing(
+export function tileKey(x: number, y: number): string {
+  return `${String(Math.round(x))}:${String(Math.round(y))}`;
+}
+
+/**
+ * Every tile in a print that can meet a pipe, and the ways it can meet one.
+ *
+ * ONE builder, two callers: the plumbing checks and the drawing's shape
+ * resolution. They had a copy each, which is one idea in two files, and the
+ * duplicated half carried the rule below, which was silently wrong once and
+ * would have had a second place to be silently wrong again.
+ *
+ * A plain pipe meets anything on all four sides. A pipe-to-ground opens only
+ * toward its own facing, which is why one laid backwards reads as a dead end
+ * rather than as a join. **A machine registers its EDGE tile rather than its
+ * port tile**, facing outward: a pipe standing on the port tile would otherwise
+ * overwrite the very thing it connects to, which emptied every network of the
+ * ports that give it a fluid and made an underground facing its own machine
+ * read as opening onto empty ground. Neither was visible until a check was made
+ * to fail on purpose.
+ */
+export function surfaceNodes(
   data: Data,
   entities: BpEntity[],
-  fluidOf: (entity: BpEntity) => Map<number, string> | null,
-): PlumbingFault[] {
-  const faults: PlumbingFault[] = [];
+  fluidOf?: (entity: BpEntity) => Map<number, string> | null,
+): Map<string, SurfaceNode> {
   const reach = undergroundReach(data);
-  const at = new Map<string, Node>();
-  const key = (x: number, y: number): string => `${String(Math.round(x))}:${String(Math.round(y))}`;
-
+  const at = new Map<string, SurfaceNode>();
   for (const e of entities) {
     const x = e.position?.x ?? 0;
     const y = e.position?.y ?? 0;
     const dir = e.direction ?? 0;
     if (e.name === "pipe") {
-      at.set(key(x, y), { tile: [x, y], surface: [N, E, S, W], label: "pipe" });
+      at.set(tileKey(x, y), { tile: [x, y], surface: [N, E, S, W], label: "pipe" });
     } else if (e.name === "pipe-to-ground") {
-      at.set(key(x, y), {
+      at.set(tileKey(x, y), {
         tile: [x, y],
         surface: [dir],
         tunnel: { direction: opposite(dir), reach },
@@ -200,17 +218,12 @@ export function checkPlumbing(
     } else {
       const proto = data.find(e.name, data.entityClasses());
       if (!proto) continue;
-      const want = fluidOf(e);
+      const want = fluidOf?.(e) ?? null;
       for (const p of portsAt(proto, [x, y], dir)) {
-        // The node sits on the machine's EDGE, not on the port tile, and it
-        // connects outward. Putting it on the port tile made a pipe standing
-        // there overwrite it, which silently emptied every network of the very
-        // ports that give it a fluid, so the mixed-network check could not fire
-        // and an underground mouth facing its own machine read as empty ground.
         const [sx, sy] = step(p.facing);
         const edge: [number, number] = [p.tile[0] - sx, p.tile[1] - sy];
         const fluid = want?.get(p.box);
-        at.set(key(edge[0], edge[1]), {
+        at.set(tileKey(edge[0], edge[1]), {
           tile: edge,
           surface: [p.facing],
           label: `${e.name} box ${String(p.box)}`,
@@ -219,6 +232,18 @@ export function checkPlumbing(
       }
     }
   }
+  return at;
+}
+
+export function checkPlumbing(
+  data: Data,
+  entities: BpEntity[],
+  fluidOf: (entity: BpEntity) => Map<number, string> | null,
+): PlumbingFault[] {
+  const faults: PlumbingFault[] = [];
+  const reach = undergroundReach(data);
+  const at = surfaceNodes(data, entities, fluidOf);
+  const key = tileKey;
 
   // 1. Every machine port has something on its tile that can take a fluid.
   for (const e of entities) {
@@ -298,7 +323,7 @@ export function checkPlumbing(
   const seen = new Set<string>();
   for (const [k, node] of at) {
     if (seen.has(k)) continue;
-    const group: Node[] = [];
+    const group: SurfaceNode[] = [];
     const stack = [k];
     seen.add(k);
     while (stack.length > 0) {
