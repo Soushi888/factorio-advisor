@@ -12,11 +12,26 @@ import { newestRead, newestSave } from "../src/state.ts";
 
 const argv = process.argv.slice(2);
 const flags = new Map<string, string>();
-for (const a of argv) {
-  if (!a.startsWith("--")) continue;
+for (let i = 0; i < argv.length; i++) {
+  const a = argv[i];
+  if (a === undefined || !a.startsWith("--")) continue;
   const eq = a.indexOf("=");
-  if (eq === -1) flags.set(a.slice(2), "true");
-  else flags.set(a.slice(2, eq), a.slice(eq + 1));
+  if (eq !== -1) {
+    flags.set(a.slice(2, eq), a.slice(eq + 1));
+    continue;
+  }
+  // Both spellings, because the advisor accepts both and a person types
+  // whichever they typed last. `bun run report --save "game 4"` threw on a
+  // spelling that works for `bun run state --save "game 4"`, which is the one
+  // CLAUDE.md documents; two entry points disagreeing about their own flags is
+  // a papercut that costs a minute every time and looks like a broken command.
+  const next = argv[i + 1];
+  if (next !== undefined && !next.startsWith("--")) {
+    flags.set(a.slice(2), next);
+    i++;
+  } else {
+    flags.set(a.slice(2), "true");
+  }
 }
 
 function value(name: string): string | null {

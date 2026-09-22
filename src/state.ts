@@ -317,7 +317,7 @@ export interface EnemyCell {
  * idle case: a nil field in the collector is an absent field in the file, and
  * the two cases have to stay distinguishable at the far end.
  */
-export interface MachineSetting {
+export interface StoredMachine {
   name: string;
   x: number;
   y: number;
@@ -326,6 +326,56 @@ export interface MachineSetting {
   recipe?: string | false;
   /** Modules in the machine, by prototype name, absent when it holds none. */
   modules?: Record<string, number>;
+}
+
+/**
+ * A machine as the rest of this project reads it, with the file's `false`
+ * turned into a `null`.
+ *
+ * Two types for one thing, deliberately. `StoredMachine` describes the bytes on
+ * disk and has to carry `false`, because the collector is Lua and a nil field
+ * is an absent field. `MachineSetting` is what every consumer sees, and `null`
+ * is the word for "answered, and there is none" in a language that has one.
+ * Typing the file as though it held a null would be a lie about the file, and
+ * carrying `false` through the whole codebase would export a Lua limitation
+ * into TypeScript, so the mapping happens once, here, at the boundary.
+ */
+export interface MachineSetting extends Omit<StoredMachine, "recipe"> {
+  /** A recipe name, `null` for a machine with none, absent when unreadable. */
+  recipe?: string | null;
+}
+
+/** The machines of a surface, normalised. Empty when the read predates MAP-1. */
+export function machinesOf(surface: SurfaceMap): MachineSetting[] {
+  return (surface.machines ?? []).map((m) => {
+    if (!("recipe" in m)) return { ...m, recipe: undefined };
+    return { ...m, recipe: m.recipe === false ? null : m.recipe };
+  });
+}
+
+/**
+ * What one container or tank holds at the tick of the read (MAP-2).
+ *
+ * This is the read that answers where a bank of items physically sits, which
+ * production statistics cannot: they say 157370 refined concrete were made and
+ * 15760 used, and nothing about which chests the difference is standing in.
+ *
+ * `items` and `fluid` are both optional and an empty container carries neither,
+ * which is a real answer: a storage chest with nothing in it is a place the
+ * logistic network is free to fill. A container whose inventory could not be
+ * read at all carries `unread`, kept rather than dropped for the same reason an
+ * unreadable machine is kept.
+ */
+export interface ContainerContents {
+  name: string;
+  x: number;
+  y: number;
+  /** Item counts by prototype name, absent when the container is empty. */
+  items?: Record<string, number>;
+  /** Fluid name and amount for a tank or a fluid wagon, absent when dry. */
+  fluid?: { name: string; amount: number };
+  /** True when the engine would not answer about this one. */
+  unread?: boolean;
 }
 
 export interface SurfaceMap {
@@ -347,9 +397,26 @@ export interface SurfaceMap {
    * what answers "what is it doing", which is the question Soushi actually
    * asked. Read from the engine per entity rather than solved from rates.
    */
-  machines?: MachineSetting[];
+  machines?: StoredMachine[];
   /** Machines beyond the budget, per prototype, with what they cost. */
   machinesDropped?: Array<{ name: string; count: number }>;
+  /** What every chest, logistic chest, wagon and tank holds (MAP-2). */
+  containers?: ContainerContents[];
+  /** Containers beyond the budget, per prototype, with what they cost. */
+  containersDropped?: Array<{ name: string; count: number }>;
+  /**
+   * Tiles the player has laid, counted per placing ITEM rather than per tile.
+   *
+   * Part of MAP-2 rather than a separate unit, because MAP-2's falsifier is
+   * "where does the bank of refined concrete sit" and the containers answer
+   * "not here": 100 of 165850. A paved tile is where a paving item went, and
+   * nothing else in this project could say so.
+   *
+   * The item-to-tile mapping is read from the runtime prototypes rather than
+   * listed: an item declaring `place_as_tile_result` is a paving item, whatever
+   * it is called and whichever planet it comes from.
+   */
+  paved?: Record<string, number>;
   /**
    * Water, tile by tile, as horizontal runs `[x, y, length]` in tile
    * coordinates. Runs rather than tiles because a lake is mostly long rows of
@@ -433,6 +500,16 @@ const MAP_POINT_BUDGET = 400_000;
  * vanished from the map is worse than one the map admits it did not read.
  */
 const MACHINE_BUDGET = 50_000;
+
+/**
+ * How many containers and tanks carry their contents (MAP-2).
+ *
+ * Same shape of choice as the machine budget and for the same reason. This save
+ * holds about 1030 of them, so the budget is slack; it exists so a save with a
+ * warehouse mod or a hundred thousand chests degrades rather than hangs, and
+ * what it drops is named.
+ */
+const CONTAINER_BUDGET = 50_000;
 
 /**
  * The belt survey (C26), appended to the collector when a bus question asks for it.
@@ -899,11 +976,13 @@ script.on_nth_tick(1, function()
   local CELL = ${String(MAP_CELL_TILES)}
   local POINT_BUDGET = ${String(MAP_POINT_BUDGET)}
   local MACHINE_BUDGET = ${String(MACHINE_BUDGET)}
+  local CONTAINER_BUDGET = ${String(CONTAINER_BUDGET)}
   local player_force = game.forces["player"]
   local map = {}
   for _, surface in pairs(game.surfaces) do
     local cells, ore, points = {}, {}, {}
     local machines = {}
+    local containers = {}
     local minx, miny, maxx, maxy
 
     local function bound(x, y)
@@ -927,6 +1006,13 @@ script.on_nth_tick(1, function()
     -- the surface twice to save nothing.
     local craft_types = { ["assembling-machine"] = true, ["furnace"] = true,
                           ["rocket-silo"] = true }
+    -- What a container HOLDS (MAP-2), read in the same loop for the same
+    -- reason. The vehicle named "tank" is deliberately absent: it is type "car",
+    -- and a name filter would have swept the three of them in with the 261
+    -- storage tanks, which is why this keys on type rather than on name.
+    local hold_types = { ["container"] = true, ["logistic-container"] = true,
+                         ["cargo-wagon"] = true, ["storage-tank"] = true,
+                         ["fluid-wagon"] = true }
 
     for _, e in pairs(surface.find_entities_filtered{ force = player_force }) do
       local pos = e.position
@@ -975,29 +1061,74 @@ script.on_nth_tick(1, function()
           end
           machines[#machines + 1] = rec
         end
+
+        if hold_types[kind] then
+          local rec = { name = e.name, x = pos.x, y = pos.y }
+          local read_ok = false
+          local oki, inv = pcall(function() return e.get_output_inventory() end)
+          if oki and inv then
+            local okc, contents = pcall(function() return inv.get_contents() end)
+            if okc and type(contents) == "table" then
+              read_ok = true
+              local items, any = {}, false
+              for k, v in pairs(contents) do
+                local nm, ct
+                if type(v) == "table" then nm, ct = v.name, (v.count or 1) else nm, ct = k, v end
+                if nm then items[nm] = (items[nm] or 0) + ct; any = true end
+              end
+              -- An empty chest stays in the list with no items field. A storage
+              -- chest holding nothing is a place the network is free to fill,
+              -- which is a real answer and not an absence.
+              if any then rec.items = items end
+            end
+          end
+          -- A tank reports through its fluidbox rather than an inventory, and a
+          -- fluid wagon through both, so both are tried and neither is assumed.
+          local okf, box = pcall(function() return e.fluidbox end)
+          if okf and box then
+            local okn, n = pcall(function() return #box end)
+            if okn and type(n) == "number" then
+              read_ok = read_ok or n >= 0
+              for i = 1, n do
+                local okb, f = pcall(function() return box[i] end)
+                if okb and f and f.name and (f.amount or 0) > 0 then
+                  rec.fluid = { name = f.name, amount = f.amount }
+                  break
+                end
+              end
+            end
+          end
+          if not read_ok then rec.unread = true end
+          containers[#containers + 1] = rec
+        end
       end
     end
 
-    -- The machine budget, spent like the point budget: the commonest prototype
-    -- loses first and says what it cost.
-    local machines_dropped = {}
-    if #machines > MACHINE_BUDGET then
+    -- Both budgets, spent like the point budget: the commonest prototype loses
+    -- first and says what it cost.
+    local function trim(list, budget)
+      local dropped = {}
+      if #list <= budget then return list, dropped end
       local per = {}
-      for _, m in pairs(machines) do per[m.name] = (per[m.name] or 0) + 1 end
+      for _, m in pairs(list) do per[m.name] = (per[m.name] or 0) + 1 end
       local ranked = {}
       for name, n in pairs(per) do ranked[#ranked + 1] = { name = name, n = n } end
       table.sort(ranked, function(a, b) return a.n > b.n end)
-      local drop, total, j = {}, #machines, 1
-      while total > MACHINE_BUDGET and j <= #ranked do
+      local drop, total, j = {}, #list, 1
+      while total > budget and j <= #ranked do
         drop[ranked[j].name] = true
-        machines_dropped[#machines_dropped + 1] = ranked[j]
+        dropped[#dropped + 1] = ranked[j]
         total = total - ranked[j].n
         j = j + 1
       end
       local kept = {}
-      for _, m in pairs(machines) do if not drop[m.name] then kept[#kept + 1] = m end end
-      machines = kept
+      for _, m in pairs(list) do if not drop[m.name] then kept[#kept + 1] = m end end
+      return kept, dropped
     end
+
+    local machines_dropped, containers_dropped
+    machines, machines_dropped = trim(machines, MACHINE_BUDGET)
+    containers, containers_dropped = trim(containers, CONTAINER_BUDGET)
 
     -- The budget, spent on the rarest prototypes first.
     --
@@ -1118,6 +1249,35 @@ script.on_nth_tick(1, function()
       end
     end)
 
+    -- What has been PAVED, per placing item.
+    --
+    -- Production statistics do not count a tile placement as consuming its
+    -- item, which is why 181610 refined concrete were made, 15760 counted as
+    -- used, and only 100 are in a chest. The rest is underfoot. Counted with
+    -- the same count_tiles_filtered the water measurement uses, and the set of
+    -- paving items is derived from place_as_tile_result rather than listed, so
+    -- a planet's own paving material needs no change here.
+    local paved = {}
+    do
+      local by_tile = {}
+      local okp = pcall(function()
+        for name, proto in pairs(prototypes.item) do
+          local r = proto.place_as_tile_result
+          if r and r.result and r.result.name then by_tile[r.result.name] = name end
+        end
+      end)
+      if okp then
+        for tile_name, item_name in pairs(by_tile) do
+          local okc, n = pcall(function()
+            return surface.count_tiles_filtered{ name = tile_name }
+          end)
+          if okc and type(n) == "number" and n > 0 then
+            paved[item_name] = (paved[item_name] or 0) + n
+          end
+        end
+      end
+    end
+
     local cell_list = {}
     for _, c in pairs(cells) do
       local okp, pol = pcall(function()
@@ -1139,6 +1299,9 @@ script.on_nth_tick(1, function()
       pointsDropped = #dropped > 0 and dropped or nil,
       machines = machines,
       machinesDropped = #machines_dropped > 0 and machines_dropped or nil,
+      containers = containers,
+      containersDropped = #containers_dropped > 0 and containers_dropped or nil,
+      paved = next(paved) and paved or nil,
       oreRuns = ore_runs,
       water = ok_chart and runs_of(water_rows) or nil,
       terrain = ok_chart and terrain or nil,
