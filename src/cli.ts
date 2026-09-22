@@ -12,7 +12,7 @@ import { costOf, dependents, labsFor, researchPath, totalCost, unlocksOf } from 
 import { decode, flatten, describeKind } from "./blueprint.ts";
 import { audit, byRecipe, type AuditResult } from "./audit.ts";
 import { judge } from "./target.ts";
-import { beltFor, buildRow } from "./layout.ts";
+import { beltFor, buildRow, fluidRefusal, fluidsOf } from "./layout.ts";
 import { drawPrint, printPage, type DrawnPrint } from "./draw.ts";
 import { flowOf, newestRead, newestSave, readAtLocal, readState, readStateFile, slugify, type GameState } from "./state.ts";
 import { busAreas, judge as judgeBus, readSurvey, surveyPath, type BusReport } from "./bus.ts";
@@ -1605,6 +1605,14 @@ function cmdGen(args: Args): void {
     ...(machineFlag ? { machine: machineFlag } : {}),
   });
 
+  // Refused before any physical figure is computed, not after. Printing a belt
+  // table and an inserter ceiling for heavy oil and water and THEN refusing
+  // would still have shown him seventeen input belts for a fluid.
+  const fluids = fluidsOf(recipe);
+  if (fluids.inputs.length > 0 || fluids.outputs.length > 0) {
+    throw new Error(fluidRefusal(recipe.name, fluids));
+  }
+
   const step = solution.steps.find((st) => st.product === product);
   if (!step || !step.machine || !step.run) {
     throw new Error(`No machine in this snapshot can run ${recipe.category}, so there is nothing to lay out.`);
@@ -1657,6 +1665,7 @@ function cmdGen(args: Args): void {
     machine: step.machine,
     machineCount: count,
     recipe: recipe.name,
+    fluids,
     belt: beltProto,
     inserter,
     modules: loadout.modules.map((m) => m.name),

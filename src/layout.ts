@@ -1,3 +1,4 @@
+import type { Stack } from "./recipes.ts";
 import type { BpEntity, Blueprint, Decoded } from "./blueprint.ts";
 import { encode } from "./blueprint.ts";
 import { beltItemsPerSecond } from "./belts.ts";
@@ -166,6 +167,8 @@ export interface RowOptions {
   /** Modules to place in every machine, by name, repeated per slot. */
   modules: string[];
   label: string;
+  /** The recipe's fluids, when the caller resolved them. Refuses when non-empty. */
+  fluids?: { inputs: string[]; outputs: string[] };
 }
 
 export interface RowResult {
@@ -187,6 +190,11 @@ export interface RowResult {
  * opinion this tool has no source for.
  */
 export function buildRow(data: Data, opts: RowOptions): RowResult {
+  // The guard is here as well as in the command, so a future caller cannot
+  // reach the belt-and-inserter layout with a fluid recipe by a different road.
+  if (opts.fluids && (opts.fluids.inputs.length > 0 || opts.fluids.outputs.length > 0)) {
+    throw new Error(fluidRefusal(opts.recipe, opts.fluids));
+  }
   const gaps: string[] = [];
   const entities: BpEntity[] = [];
   let n = 1;
@@ -300,4 +308,46 @@ export function beltFor(data: Data, ratePerSecond: number, preferred?: string): 
   }
   const sorted = [...belts].sort((a, b) => beltItemsPerSecond(a) - beltItemsPerSecond(b));
   return sorted.find((b) => beltItemsPerSecond(b) >= ratePerSecond) ?? sorted[sorted.length - 1]!;
+}
+
+/**
+ * The fluids a recipe touches, ingredients and results alike.
+ *
+ * `buildRow` lays belts and inserters, and neither moves a fluid. Before this
+ * check, `bun run gen light-oil` resolved heavy-oil-cracking correctly and then
+ * emitted a blueprint containing seventeen transport belts and a stack inserter
+ * per machine for heavy oil and water: a print that pastes cleanly, looks
+ * right, and builds a row of machines with no fluid connection at all.
+ *
+ * That is the same class of defect as inventing an inserter throughput, one
+ * level up. `belts.ts` refuses to predict a number the data cannot support;
+ * this refuses to emit an entity set the data does not support. A pipe layout
+ * is buildable from `fluid_boxes.pipe_connections`, which every fluid machine
+ * declares, and it is a real unit rather than a guard: connection offsets,
+ * rotation, and the order fluid boxes follow the recipe's own fluid list in.
+ * Until somebody builds it, refusing is the honest output.
+ */
+export function fluidsOf(recipe: { ingredients: Stack[]; results: Stack[] }): {
+  inputs: string[];
+  outputs: string[];
+} {
+  return {
+    inputs: recipe.ingredients.filter((i) => i.kind === "fluid").map((i) => i.name),
+    outputs: recipe.results.filter((r) => r.kind === "fluid").map((r) => r.name),
+  };
+}
+
+/** The message both the command and `buildRow` refuse with, so they cannot drift. */
+export function fluidRefusal(recipeName: string, fluids: { inputs: string[]; outputs: string[] }): string {
+  const both = [...new Set([...fluids.inputs, ...fluids.outputs])];
+  return (
+    `${recipeName} moves fluids (${both.join(", ")}), and this generator lays belts and\n` +
+    "inserters, neither of which carries a fluid. It refuses rather than emitting a print\n" +
+    "that pastes cleanly and builds a row with no fluid connection at all.\n\n" +
+    "The data for a pipe layout is there: every fluid machine declares\n" +
+    "`fluid_boxes.pipe_connections`, and the boxes follow the recipe's own fluid order.\n" +
+    "It is a unit somebody has to build, not a flag to pass.\n\n" +
+    "What works today: `bun run ratio` sizes the chain and `bun run recipe` names every\n" +
+    "machine that can run it."
+  );
 }
