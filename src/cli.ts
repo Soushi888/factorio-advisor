@@ -254,7 +254,7 @@ function cmdRatio(args: Args): void {
   const data = load();
   const index = new RecipeIndex(data);
   const query = args.positional.join("-");
-  if (!query) throw new Error("Usage: bun run ratio <item> --rate=<n[/s|/m|/h]>");
+  if (!query) throw new Error("Usage: bun run ratio <item> --rate=<n>/min   (a bare n is per SECOND)");
   console.log(header(data.manifest));
 
   const target = resolveProduct(data, query);
@@ -1580,10 +1580,10 @@ function cmdGen(args: Args): void {
   const data = load();
   const index = new RecipeIndex(data);
   const query = args.positional.join("-");
-  if (!query) throw new Error('Usage: bun run gen <item> --rate=<n>   e.g. bun run gen electronic-circuit --rate=45');
+  if (!query) throw new Error('Usage: bun run gen <item> --rate=<n>/min   e.g. bun run gen electronic-circuit --rate=45/min\n  A bare --rate=45 is 45 per SECOND, which is 2700 a minute.');
 
   const rateFlag = valueFlag(args, "rate");
-  if (!rateFlag) throw new Error("gen needs a target: --rate=<n[/s|/m|/h]>");
+  if (!rateFlag) throw new Error("gen needs a target: --rate=<n>/min, or a bare number for per second.");
   const target = parseRate(rateFlag);
   const product = resolveProduct(data, query);
 
@@ -1773,16 +1773,16 @@ function usage(): void {
   bun run sync                            refresh the prototype snapshot
   bun run search <text>                   find prototypes by name
   bun run recipe <name>                   a recipe, its makers, its unlock
-  bun run ratio <item> --rate=<n>         full production chain
+  bun run ratio <item> --rate=<n>/min     full production chain (bare n is per second)
   bun run tech <name> [--path]            cost, prerequisites, research path
-  bun run belt [item] --rate=<n>          belt throughput and saturation
+  bun run belt [item] --rate=<n>/min      belt throughput and saturation (bare n is per second)
   bun run bp --file=<path>                decode and audit a blueprint
-  bun run bp --file=<path> --rate=45      judge that print against a target
+  bun run bp --file=<path> --rate=<n>/min judge that print against a target
   bun run state --save "game 4"           live state read from a copy of a save
   bun run next                            what you can research right now
   bun run next --for=<item>               path from here to what unlocks that item
   bun run power                           generation against draw, from your census
-  bun run gen <item> --rate=<n>           lay one recipe step out as a placeable row
+  bun run gen <item> --rate=<n>/min       lay one recipe step out as a placeable row
   bun run advise [--spm=<n>]              where the base stands and what the next step costs
   bun run bottleneck [--save=<name>]      machine classes by how busy they are, lines by what is spare
   bun run bus [--save=<name>] [--map]     the belt survey: buses, lanes, saturation, corridors

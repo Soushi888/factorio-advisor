@@ -303,14 +303,49 @@ function resolveMachine(
   return bestMachineFor(data, recipe);
 }
 
-/** Accept "45", "45/s", "90/m", "5400/h". Returns units per second. */
+/**
+ * A rate, in units per second.
+ *
+ * The suffix is what a caller should write, because a unit a caller can write
+ * is a unit a caller cannot mistake. Three sessions read a bare `--rate=45` as
+ * 45 a minute in one evening, which is the ordinary circuit target in this
+ * game, while 2700 a minute is not: the commands were already printing "45/s
+ * (2700/min)" back in their own headers and all three read past it. Echoing the
+ * unit did not prevent the mistake, so the lever that is left is making the
+ * spelling forgiving and naming the units everywhere a rate is asked for.
+ *
+ * A bare number stays per second, deliberately. Every invocation anyone has
+ * typed keeps its meaning, which is worth more than matching the intuition:
+ * a flag that silently changed what it meant would break every note, script
+ * and habit built on it, and the people it would help are the ones who are
+ * about to write a suffix anyway.
+ *
+ * The long spellings are accepted because they are what people actually type.
+ * `/min` was refused before this and it is the first thing a hand reaches for.
+ */
 export function parseRate(spec: string): number {
-  const m = /^\s*([\d.]+)\s*(?:\/\s*([smh]))?\s*$/i.exec(spec);
-  if (!m) throw new Error(`Cannot read rate: ${spec}. Try 45, 90/m or 5400/h.`);
-  const n = Number(m[1]);
-  if (!Number.isFinite(n)) throw new Error(`Cannot read rate: ${spec}`);
+  const m = /^\s*([\d.]+)\s*(?:\/\s*([a-z]+))?\s*$/i.exec(spec);
+  const n = m ? Number(m[1]) : NaN;
+  if (!m || !Number.isFinite(n)) throw new Error(rateUsage(spec));
   const unit = (m[2] ?? "s").toLowerCase();
-  if (unit === "s") return n;
-  if (unit === "m") return n / 60;
-  return n / 3600;
+  if (SECONDS.has(unit)) return n;
+  if (MINUTES.has(unit)) return n / 60;
+  if (HOURS.has(unit)) return n / 3600;
+  throw new Error(rateUsage(spec));
+}
+
+const SECONDS = new Set(["s", "sec", "secs", "second", "seconds"]);
+const MINUTES = new Set(["m", "min", "mins", "minute", "minutes"]);
+const HOURS = new Set(["h", "hr", "hrs", "hour", "hours"]);
+
+/** The one message every rate refusal uses, so no command invents its own. */
+export function rateUsage(spec: string): string {
+  return (
+    `Cannot read rate: ${spec}\n` +
+    "  per second  45   45/s   45/sec   45/second\n" +
+    "  per minute  45/m   45/min   45/minute\n" +
+    "  per hour    45/h   45/hr   45/hour\n" +
+    "A bare number is PER SECOND, which is rarely what a Factorio target means:\n" +
+    "45 circuits a minute is `--rate=45/min`, and `--rate=45` is 2700 a minute."
+  );
 }
