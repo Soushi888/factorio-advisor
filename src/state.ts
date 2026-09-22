@@ -1117,20 +1117,66 @@ async function innerDirOf(zipPath: string): Promise<string> {
  * hand every time is friction that has nothing to do with the question.
  */
 export function newestSave(): { name: string; path: string; mtime: Date } | null {
+  return savesByRecency()[0] ?? null;
+}
+
+/** Every save in the save directory, newest first. */
+function savesByRecency(): Array<{ name: string; path: string; mtime: Date }> {
   const userdata = findUserdata();
-  if (!userdata) return null;
+  if (!userdata) return [];
   const dir = join(userdata, "saves");
-  if (!existsSync(dir)) return null;
-  let best: { name: string; path: string; mtime: Date } | null = null;
+  if (!existsSync(dir)) return [];
+  const out: Array<{ name: string; path: string; mtime: Date }> = [];
   for (const entry of readdirSync(dir)) {
     if (!entry.toLowerCase().endsWith(".zip")) continue;
     const path = join(dir, entry);
-    const mtime = statSync(path).mtime;
-    if (!best || mtime > best.mtime) {
-      best = { name: entry.replace(/\.zip$/i, ""), path, mtime };
+    out.push({ name: entry.replace(/\.zip$/i, ""), path, mtime: statSync(path).mtime });
+  }
+  return out.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+}
+
+/**
+ * The newest save this project has actually read, for the commands that redraw
+ * from a state file rather than run the engine.
+ *
+ * `newestSave` answers "what did he save last", which is the right question for
+ * a command that is about to read a save. It is the wrong question for
+ * `bun run report --page`, which reads no save at all: tonight the newest zip is
+ * `_autosave3`, written while Soushi plays, and nothing has ever read it, so the
+ * command that keeps his dashboard current died on the file that proves he is
+ * still playing.
+ *
+ * Two passes, in this order and for different reasons. First the newest save on
+ * disk that has a state file, so a fresh autosave is skipped in favour of the
+ * last real read while keeping the save's own name. Then, only if none of them
+ * has one, the newest state file by its own mtime, whose save may have been
+ * deleted or renamed since: its name comes from `save.name` inside the file
+ * rather than from un-slugging a filename, which cannot be done ("game 4" and
+ * "game-4" both slug to the same thing).
+ */
+export function newestReadSave(): { name: string; reason: "newest" | "last-read" | "state-only" } | null {
+  const saves = savesByRecency();
+  const newest = saves[0];
+  for (const save of saves) {
+    if (readStateFile(save.name) !== null) {
+      return { name: save.name, reason: save.name === newest?.name ? "newest" : "last-read" };
     }
   }
-  return best;
+  const dir = join(DATA_DIR, "state");
+  if (!existsSync(dir)) return null;
+  let best: { name: string; mtime: Date } | null = null;
+  for (const entry of readdirSync(dir)) {
+    if (!entry.toLowerCase().endsWith(".json")) continue;
+    const mtime = statSync(join(dir, entry)).mtime;
+    if (best && mtime <= best.mtime) continue;
+    try {
+      const state = JSON.parse(readFileSync(join(dir, entry), "utf8")) as GameState;
+      if (state.save?.name) best = { name: state.save.name, mtime };
+    } catch {
+      // A half-written state file is not a save this command can name.
+    }
+  }
+  return best ? { name: best.name, reason: "state-only" } : null;
 }
 
 export interface ReadStateOptions {
