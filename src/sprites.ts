@@ -341,6 +341,8 @@ export interface SpriteSubject {
   kind?: string;
   /** Which of a belt sheet's twenty rows this tile needs, when the caller knows. */
   beltRow?: number;
+  /** Which of a pipe's named pictures this tile needs, when the caller knows. */
+  pipePicture?: string;
 }
 
 /** The four cardinal names, in the order a direction index counts them. */
@@ -373,6 +375,17 @@ export function spritesFor(data: Data, entity: SpriteSubject): SpriteCut[] {
     const row = entity.beltRow ?? BELT_ROW[COMPASS_NAME[directionIndex(direction, 4)] ?? "north"] ?? 0;
     const set = rec(rec(proto["belt_animation_set"])?.["animation_set"]);
     const cut = set ? cutOf(set, 0, row) : null;
+    if (cut) return [cut];
+  }
+
+  // A pipe's picture is named by the sides it is open on, which only its
+  // neighbours in the print can say, so the caller works it out and hands the
+  // name over. Without one the walk below falls back to the straight run, which
+  // is what drew every pipe in a print as a vertical stick.
+  if (entity.pipePicture) {
+    const pictures = rec(proto["pictures"]);
+    const named = pictures ? rec(pictures[entity.pipePicture]) : null;
+    const cut = named ? cutOf(named, 0) : null;
     if (cut) return [cut];
   }
 

@@ -18,6 +18,7 @@ export function place(data: Data, entity: BpEntity): Placed {
   return { ...geometry, family: familyOf(geometry.type) };
 }
 import { PIXELS_PER_TILE, beltCut, dataUri, iconCut, spritesFor, type SpriteCut } from "./sprites.ts";
+import { pipeShapes } from "./pipe-shape.ts";
 import { beltShapes } from "./belt-shape.ts";
 
 /**
@@ -309,6 +310,9 @@ export function drawPrint(data: Data, bp: Blueprint, result: AuditResult): Drawn
   // Every belt's picture comes from what its neighbours do, which is the whole
   // print, so it is worked out once before anything is drawn.
   const shapes = beltShapes(entities, (name) => placedType.get(name) ?? "");
+  // A pipe's picture is the same kind of fact and comes from the same place:
+  // what its neighbours do, over the whole print, worked out once.
+  const pipes = pipeShapes(data, entities);
 
   for (const p of painter) {
     const shape = shapes.get(p.entity.entity_number);
@@ -317,6 +321,7 @@ export function drawPrint(data: Data, bp: Blueprint, result: AuditResult): Drawn
       direction: p.direction,
       kind: String(p.entity["type"] ?? ""),
       beltRow: shape?.row,
+      pipePicture: pipes.get(p.entity.entity_number),
     });
     if (cuts.length === 0) {
       spriteless.set(p.entity.name, (spriteless.get(p.entity.name) ?? 0) + 1);
@@ -529,8 +534,10 @@ export function printPage(input: PageInput): string {
             `declares. Belts are shaped the way the engine shapes them: a belt fed from the side is ` +
             `drawn as the curve, one nothing feeds gets its start cap, one whose output goes nowhere ` +
             `gets its end cap, and only a belt fed from behind is the plain straight, so a corner ` +
-            `reads as a corner and a dead end as a dead end. Two things the drawing still does not ` +
-            `do: a pipe is drawn as a straight run rather than a junction, and an inserter is drawn ` +
+            `reads as a corner and a dead end as a dead end. Pipes are shaped the same way and for ` +
+            `the same reason: a plain pipe carries no direction at all, so its picture is chosen ` +
+            `from the sides it is open on, and a junction reads as a junction rather than as a run ` +
+            `of disconnected sticks. One thing the drawing still does not do: an inserter is drawn ` +
             `as its base without its hand, because the string says which way it faces and not which ` +
             `of its two ends that names.` +
             (d.tinted > 0
@@ -597,8 +604,11 @@ inset for movement. Direction 4 is East and 12 is West, measured from undergroun
 the shipped prints rather than recalled, and both swap width against height. A belt's own picture
 carries its direction, because a belt sheet holds four straights, eight curves and eight end caps
 and the right one is chosen from what the tile's neighbours do, which is how the engine chooses
-it. Inserters carry a direction and no marker, because the print does not say which of an
-inserter's two ends that direction names.</p>
+it. A pipe's picture is chosen the same way from the sides it is open on, and the game's names
+list the open sides: <code>corner_up_left</code> is open up and left, <code>t_up</code> is open
+up, left and right, and <code>ending_up</code> is open upward, each read off the shipped art
+rather than assumed. Inserters carry a direction and no marker, because the print does not say
+which of an inserter's two ends that direction names.</p>
 </main></body></html>
 `;
 }
