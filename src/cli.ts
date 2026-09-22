@@ -14,7 +14,7 @@ import { audit, byRecipe, type AuditResult } from "./audit.ts";
 import { judge } from "./target.ts";
 import { beltFor, buildRow } from "./layout.ts";
 import { drawPrint, printPage, type DrawnPrint } from "./draw.ts";
-import { flowOf, newestRead, newestSave, readState, readStateFile, slugify, type GameState } from "./state.ts";
+import { flowOf, newestRead, newestSave, readAtLocal, readState, readStateFile, slugify, type GameState } from "./state.ts";
 import { busAreas, judge as judgeBus, readSurvey, surveyPath, type BusReport } from "./bus.ts";
 import { mapOf, renderMap, type Area } from "./map.ts";
 import { advise, type Advisory, type Requirement } from "./advise.ts";
@@ -1160,7 +1160,7 @@ function requireState(args: Args): GameState {
 }
 
 function stateHeader(state: GameState): string {
-  const when = state.save.readAt.slice(0, 16).replace("T", " ");
+  const when = readAtLocal(state.save.readAt);
   return (
     `state: save "${state.save.name}" at tick ${String(state.save.tick)} ` +
     `(${state.save.hoursPlayed.toFixed(1)} h played), read ${when}`
@@ -1954,7 +1954,7 @@ function cmdAdvise(args: Args): void {
   }
   console.log(
     `\n  Every line above is derived from the save read at ` +
-      `${a.readAt.slice(0, 16).replace("T", " ")} and the snapshot in the header.\n` +
+      `${readAtLocal(a.readAt)} and the snapshot in the header.\n` +
       `  The save has no map in it that this tool can read, so there is no advice\n` +
       `  here about layout, placement or where to put anything.`,
   );
@@ -2332,7 +2332,7 @@ function busPage(svg: string, areas: Area[], state: GameState, surface: string):
 <body><main>
 <h1>Bus corridors on ${escapeHtml(surface)}</h1>
 <p class="meta">Save "${escapeHtml(state.save.name)}" at tick ${String(state.save.tick)},
-${state.save.hoursPlayed.toFixed(1)} hours played, read ${escapeHtml(state.save.readAt.slice(0, 16).replace("T", " "))}.
+${state.save.hoursPlayed.toFixed(1)} hours played, read ${escapeHtml(readAtLocal(state.save.readAt))}.
 Every rectangle is a cluster of parallel belt runs the survey found; nothing here is drawn from a guess,
 and no position on this page is advice about where to build.</p>
 ${svg}

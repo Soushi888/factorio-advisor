@@ -1688,3 +1688,22 @@ export function pavingPerMinute(
   }
   return out;
 }
+
+/**
+ * When a read was taken, in the reader's own clock.
+ *
+ * `readAt` is stored as ISO UTC, which is right for a stored fact and wrong for
+ * a printed one: the state line read "read 2026-09-22 02:39" to a person whose
+ * clock said 22:39, four hours in the future on a page that is about what his
+ * base is doing right now. Storage keeps UTC because a state file may be read
+ * anywhere; every surface a human looks at converts.
+ */
+export function readAtLocal(readAt: string): string {
+  const at = new Date(readAt);
+  if (Number.isNaN(at.getTime())) return readAt.slice(0, 16).replace("T", " ");
+  const p = (n: number): string => String(n).padStart(2, "0");
+  return (
+    `${String(at.getFullYear())}-${p(at.getMonth() + 1)}-${p(at.getDate())} ` +
+    `${p(at.getHours())}:${p(at.getMinutes())}`
+  );
+}

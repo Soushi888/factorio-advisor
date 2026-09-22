@@ -4,6 +4,7 @@ import type { SectionView } from "../src/sections.ts";
 import type { Advice } from "../src/advise.ts";
 import type { MapModel, MapLayer, LayerGroup } from "../src/layers.ts";
 import type { PlanView, StepView } from "../src/plan.ts";
+import { readAtLocal } from "../src/state.ts";
 import type { Icons } from "../src/icons.ts";
 import type { BottleneckReport } from "../src/bottlenecks.ts";
 
@@ -1319,7 +1320,7 @@ export function renderPage(input: PageInput): string {
 <div class="wrap">
 <header>
   <h1>${esc(r.save)}</h1>
-  <span class="meta">tick ${r.tick}${r.previousTick !== null ? ` (was ${r.previousTick})` : ""} &middot; ${r.hoursPlayed.toFixed(1)} h played &middot; read ${esc(state.save.readAt.slice(0, 16).replace("T", " "))}</span>
+  <span class="meta">tick ${r.tick}${r.previousTick !== null ? ` (was ${r.previousTick})` : ""} &middot; ${r.hoursPlayed.toFixed(1)} h played &middot; read ${esc(readAtLocal(state.save.readAt))}</span>
   <span class="meta">Factorio ${esc(state.snapshot.gameVersion)} build ${esc(state.snapshot.build)}</span>
   ${input.plan ? `<a class="planlink" href="#plan">the plan, step by step &darr;</a>` : ""}
 </header>
