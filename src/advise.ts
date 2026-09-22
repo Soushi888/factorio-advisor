@@ -249,6 +249,17 @@ const OUTPOST_SLACK = 0.02;
  */
 const PACK_NOISE_PER_MINUTE = 1;
 
+/**
+ * How much of the shortfall must already exist elsewhere before the advice says
+ * move rather than build.
+ *
+ * Nine tenths, named here. Below that the move only covers part of the gap and
+ * the honest instruction is still to build, with the spare capacity mentioned
+ * so he can do both. A base with 166 engines' worth of idle boiler and 163
+ * engines starving does not need to be told to build anything.
+ */
+const MOVE_RATHER_THAN_BUILD = 0.9;
+
 /** A recipe a census of machines is set to, and what those machines are doing. */
 export interface StalledStage {
   recipe: string;
@@ -545,6 +556,7 @@ export function advise(
       target,
       missingPacks,
       blocks,
+      enginesPerBoiler: steam?.ratio ?? null,
       fields,
       shortResources,
       stalled,
@@ -564,6 +576,8 @@ interface AdviceInput {
   target: TargetReport | null;
   missingPacks: Array<{ pack: string; gatedTechs: number }>;
   blocks: PowerBlock[];
+  /** Engines one boiler feeds, from power.ts's own derivation. Null when unknown. */
+  enginesPerBoiler: number | null;
   fields: Patch[];
   shortResources: Array<{ resource: string; spare: number; used: number; slack: number; wanted: number }>;
   stalled: StalledStage[];
@@ -703,14 +717,52 @@ function buildAdvice(a: AdviceInput): Advice[] {
   // cannot.
   const worstBlock = a.blocks.filter((b) => b.fed < b.engines)[0];
   if (worstBlock) {
-    out.push({
-      section: "energy",
-      text: `Start with the power block at ${String(Math.round(worstBlock.x))}, ${String(Math.round(worstBlock.y))}.`,
-      because:
-        `${String(worstBlock.engines)} engines there against ${String(worstBlock.boilers)} boilers, ` +
-        `which feed ${String(Math.floor(worstBlock.fed))} of them. It is the biggest single shortfall on the map.`,
-      focus: { x: worstBlock.x, y: worstBlock.y, w: worstBlock.w, h: worstBlock.h, layer: "power" },
-    });
+    // Build against move, decided by the census rather than by default.
+    //
+    // The old line said "start with the block at 128, 736", which was the right
+    // place and the wrong verb: it recommended building boilers while 122 of
+    // them sat in another block feeding 78 engines. A base that already owns
+    // the capacity does not need to be told to buy it, and only the census can
+    // tell those two situations apart.
+    const short = a.blocks
+      .map((b) => ({ b, gap: b.engines - b.fed }))
+      .filter((x) => x.gap > 0);
+    const surplus = a.enginesPerBoiler === null
+      ? []
+      : a.blocks
+          .map((b) => ({ b, over: b.boilers * a.enginesPerBoiler! - b.engines }))
+          .filter((x) => x.over > 0)
+          .sort((x, y) => y.over - x.over);
+    const totalShort = short.reduce((n, x) => n + x.gap, 0);
+    const spare = surplus.reduce((n, x) => n + x.over, 0);
+    const donor = surplus[0];
+    if (donor && spare >= totalShort * MOVE_RATHER_THAN_BUILD) {
+      out.push({
+        section: "energy",
+        text:
+          `Move boilers to ${String(Math.round(worstBlock.x))}, ${String(Math.round(worstBlock.y))} ` +
+          `rather than building them.`,
+        because:
+          `${String(donor.b.boilers)} boilers at ${String(Math.round(donor.b.x))}, ` +
+          `${String(Math.round(donor.b.y))} can feed ${n(donor.b.boilers * a.enginesPerBoiler!, 0)} engines ` +
+          `and only ${String(donor.b.engines)} stand there, so ${n(donor.over, 0)} engines' worth is doing ` +
+          `nothing. Across the map ${n(totalShort, 0)} engines have no boiler behind them, ` +
+          `worst at ${String(Math.round(worstBlock.x))}, ${String(Math.round(worstBlock.y))} where ` +
+          `${String(worstBlock.engines)} engines have ${String(worstBlock.boilers)} boilers. ` +
+          `The capacity is already built and it is in the wrong place.`,
+        focus: { x: donor.b.x, y: donor.b.y, w: donor.b.w, h: donor.b.h, layer: "power" },
+      });
+    } else {
+      out.push({
+        section: "energy",
+        text: `Start with the power block at ${String(Math.round(worstBlock.x))}, ${String(Math.round(worstBlock.y))}.`,
+        because:
+          `${String(worstBlock.engines)} engines there against ${String(worstBlock.boilers)} boilers, ` +
+          `which feed ${String(Math.floor(worstBlock.fed))} of them. It is the biggest single shortfall on the map` +
+          (spare > 0 ? `, and only ${n(spare, 0)} engines' worth of boiler sits spare elsewhere.` : "."),
+        focus: { x: worstBlock.x, y: worstBlock.y, w: worstBlock.w, h: worstBlock.h, layer: "power" },
+      });
+    }
   }
 
   for (const short of a.shortResources) {
