@@ -444,6 +444,17 @@ export interface ModelInput {
   data?: Data | null;
   /** The bus corridors, when a belt survey has been read for this save. */
   busAreas?: Area[];
+  /**
+   * Why the corridors are absent, when they are (MAP-3).
+   *
+   * Three different facts that the page used to render as one sentence. `none`
+   * is no survey at all, which is the one the old text described. `stale` is a
+   * survey that exists and describes a DIFFERENT tick, which is the dangerous
+   * one: the layer is refused on purpose and a legend saying "none read" sends
+   * the reader to run a command that will not help. `ok` is a survey at this
+   * tick, whether or not it found any corridors.
+   */
+  busSurvey?: { state: "ok" | "none" | "stale"; tick?: number; stateTick?: number };
   /** The places the advice points at. */
   adviceAreas?: Area[];
   /** Power blocks and ore fields, already derived by `advise.ts`. */
@@ -489,6 +500,23 @@ export interface MapFacts {
       buffer?: number;
     }
   >;
+}
+
+/** What the belt layer says about itself when it has nothing to draw. */
+function beltNote(
+  drawn: number,
+  survey: { state: "ok" | "none" | "stale"; tick?: number; stateTick?: number } | undefined,
+): string {
+  if (survey?.state === "stale") {
+    const behind =
+      survey.tick !== undefined && survey.stateTick !== undefined
+        ? ` (${String(Math.round((survey.stateTick - survey.tick) / 3600))} minutes of play apart)`
+        : "";
+    return `refused: the belt survey is from another tick${behind}, so it would be drawn over a base it no longer matches`;
+  }
+  if (drawn > 0) return `${String(drawn)} clusters of parallel belt runs`;
+  if (survey?.state === "ok") return "the survey found no bus corridors on this surface";
+  return "no belt survey in this read: bun run report, which now collects one";
 }
 
 export function mapModel(input: ModelInput): MapModel {
@@ -825,10 +853,10 @@ export function mapModel(input: ModelInput): MapModel {
     drawn: bus.length,
     census: bus.length,
     missing: [],
-    note:
-      bus.length > 0
-        ? `${String(bus.length)} clusters of parallel belt runs`
-        : "no belt survey read for this save yet: bun run bus",
+    // A refused layer says it was refused and why. An empty layer and a layer
+    // that could not be trusted are not the same answer, and the reader has to
+    // be able to tell them apart without reading this file.
+    note: beltNote(bus.length, input.busSurvey),
     body: areaShapes(bus),
   });
 

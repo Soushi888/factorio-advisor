@@ -437,6 +437,22 @@ export interface SurfaceMap {
   enemy?: EnemyCell[];
 }
 
+/**
+ * One belt-like entity as the survey records it, in the shape the file holds.
+ *
+ * Short keys because there are 30944 of them on this save and the names would
+ * be most of the bytes. `src/bus.ts` is the one reader and it expands them.
+ */
+export interface RawBeltRecord {
+  n: string;
+  t: string;
+  x: number;
+  y: number;
+  d: number;
+  u?: string | null;
+  l?: Array<[string, number, number, number?]>;
+}
+
 export interface GameState {
   snapshot: {
     gameVersion: string;
@@ -459,6 +475,15 @@ export interface GameState {
     surfaceState?: SurfaceState[];
   };
   forces: Record<string, ForceState>;
+  /**
+   * The belt survey, in the same file and therefore at the same tick (MAP-3).
+   *
+   * Absent when the read did not ask for it, and absent in every state file
+   * written before this: those saves carry their survey in a `<slug>-belts.json`
+   * sidecar, which `readSurvey` still reads so an old state file keeps working.
+   * Nothing writes a new sidecar.
+   */
+  belts?: Array<{ name: string; belts: RawBeltRecord[] }>;
   /** Present from U8 onward; absent in older state files. */
   map?: SurfaceMap[];
 }
@@ -576,9 +601,6 @@ const BELT_SURVEY_LUA = `
     belt_surfaces[#belt_surfaces + 1] = { name = surface.name, belts = recs }
   end
 
-  helpers.write_file("factorio-advisor/belts.json", helpers.table_to_json({
-    tick = game.tick, surfaces = belt_surfaces,
-  }), false)
 `;
 
 /**
@@ -1322,6 +1344,12 @@ ${opts.belts ? BELT_SURVEY_LUA : ""}
     surfaceState = surface_state,
     forces = forces,
     map = map,
+    -- The belts travel INSIDE the state file (MAP-3). They used to be written
+    -- beside it as belts.json, and a sidecar has its own tick the moment
+    -- anything reads one without the other: the map spent an evening drawing
+    -- corridors from 19224635 over a census from 19384953. One file cannot
+    -- disagree with itself.
+    belts = ${opts.belts ? "belt_surfaces" : "nil"},
   }), false)
 end)
 `;
@@ -1516,9 +1544,12 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
 
   const configPath = writeRuntimeConfig(core);
   const outPath = join(RUNTIME_DIR, "script-output", "factorio-advisor", "state.json");
-  const beltsPath = join(RUNTIME_DIR, "script-output", "factorio-advisor", "belts.json");
+  // A belts.json left by an older build of this collector. Nothing writes one
+  // any more (MAP-3), and it is removed so a stale sidecar in the runtime
+  // directory can never be picked up by anything looking for one.
+  const staleBelts = join(RUNTIME_DIR, "script-output", "factorio-advisor", "belts.json");
   rmSync(outPath, { force: true });
-  rmSync(beltsPath, { force: true });
+  rmSync(staleBelts, { force: true });
 
   say(`  engine  ${binary} --benchmark, write-data redirected into this project`);
   const proc = Bun.spawn(
@@ -1549,6 +1580,7 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
     surfaceState?: SurfaceState[];
     forces: Record<string, ForceState>;
     map?: SurfaceMap[];
+    belts?: Array<{ name: string; belts: RawBeltRecord[] }>;
   };
 
   const manifest: Manifest | null = readManifest();
@@ -1572,6 +1604,7 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
     },
     forces: raw.forces,
     ...(raw.map ? { map: raw.map } : {}),
+    ...(raw.belts ? { belts: raw.belts } : {}),
   };
 
   // Electric network figures arrive as joules per tick. Watts is what a reader
@@ -1590,15 +1623,17 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
   say(`  wrote   ${dest}`);
 
   if (opts.belts) {
-    if (!existsSync(beltsPath)) {
+    // No sidecar any more: the survey is inside the state file, so the check is
+    // that the state file actually carries it rather than that a second file
+    // appeared. Reported rather than worked around, as before.
+    if (!Array.isArray(state.belts)) {
       throw new Error(
-        `The belt survey did not write ${beltsPath}, although the state read succeeded.\n` +
-          `Reported rather than worked around: without the file there are no belts to judge.`,
+        `The belt survey was asked for and the state file carries no belts.\n` +
+          `Reported rather than worked around: without them there are no belts to judge.`,
       );
     }
-    const beltDest = join(stateDir, `${slug}-belts.json`);
-    copyFileSync(beltsPath, beltDest);
-    say(`  wrote   ${beltDest}`);
+    const n = state.belts.reduce((t, s) => t + (s.belts?.length ?? 0), 0);
+    say(`  belts   ${String(n)} entities, in the state file at tick ${String(state.save.tick)}`);
   }
 
   return state;

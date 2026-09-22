@@ -158,34 +158,45 @@ export async function reportOn(
     derived?.advisory ?? null,
   );
   const stateFile = `data/state/${slug(save)}.json`;
+  const jsonPath = join(REPORTS_DIR, `${base}.json`);
+  const pagePath = join(REPORTS_DIR, "index.html");
 
-  writeFileSync(mdPath, renderMarkdown(report, stateFile));
+  // Everything is rendered before anything is written (pm#119).
+  //
+  // The md used to be written first, and the tick guard above refuses any retry
+  // once it exists. So a throw anywhere in renderPage burned that tick
+  // permanently: every later run saw the md, returned null, and said "nothing
+  // new to say" while no page had ever been written. The failure was a missing
+  // prototype snapshot, which `protoData` and `bottlenecksFor` both swallow and
+  // `modelFor` does not, and the shape of it is what matters rather than the
+  // cause: the guard treats the md as proof the report exists, so the md must
+  // not exist until it does.
+  //
+  // The markers move once per report and the page renders from the copy that
+  // keeps the previous report's anchor, so the plan write waits here too: a run
+  // that throws must not leave the markers advanced for a report nobody has.
+  const planned = planForReport(save, state);
+  const markdown = renderMarkdown(report, stateFile);
+  const page = renderPage({
+    report,
+    state,
+    stateFile,
+    sections: derived?.views ?? [],
+    history: historyFor(save).filter((f) => f !== `${base}.md`),
+    plan: planned.view,
+    icons: new Icons(protoData()),
+    bottlenecks: bottlenecksFor(state),
+    model: modelFor(state, derived?.advisory ?? null),
+  });
+
   // The archived state drops the map. A report is kept forever and the map is
   // 800 KB of coordinates that the diff never reads; the live state file under
   // `data/state/` keeps it, and that is the one the dashboard renders from.
-  const jsonPath = join(REPORTS_DIR, `${base}.json`);
   const { map: _map, ...archived } = state;
+  writeFileSync(pagePath, page);
   writeFileSync(jsonPath, JSON.stringify(archived, null, 2) + "\n");
-
-  // The markers move once per report, and the page is rendered from the copy
-  // that keeps the previous report's anchor: see advanceMarkers.
-  const planned = planForReport(save, state);
-
-  const pagePath = join(REPORTS_DIR, "index.html");
-  writeFileSync(
-    pagePath,
-    renderPage({
-      report,
-      state,
-      stateFile,
-      sections: derived?.views ?? [],
-      history: historyFor(save).filter((f) => f !== `${base}.md`),
-      plan: planned.view,
-      icons: new Icons(protoData()),
-      bottlenecks: bottlenecksFor(state),
-      model: modelFor(state, derived?.advisory ?? null),
-    }),
-  );
+  writeFileSync(mdPath, markdown);
+  planned.commit();
 
   return {
     save,
@@ -299,14 +310,24 @@ export type MarkerOutcome = "written" | "unchanged" | "absent" | "refused";
 export function planForReport(
   save: string,
   state: GameState,
-): { view: PlanView | null; markers: MarkerOutcome } {
+): { view: PlanView | null; markers: MarkerOutcome; commit: () => void } {
+  const noop = (): void => {};
   const before = readPlan(save);
-  if (!before) return { view: null, markers: "absent" };
+  if (!before) return { view: null, markers: "absent", commit: noop };
   const { persist, render, changed } = advanceMarkers(before, state);
-  if (!changed) return { view: planView(before, state), markers: "unchanged" };
-  if (authoredChanged(before, persist)) return { view: planView(before, state), markers: "refused" };
-  writeFileSync(planPath(save), JSON.stringify(persist, null, 2) + "\n");
-  return { view: planView(render, state), markers: "written" };
+  if (!changed) return { view: planView(before, state), markers: "unchanged", commit: noop };
+  if (authoredChanged(before, persist)) {
+    return { view: planView(before, state), markers: "refused", commit: noop };
+  }
+  // Computed here, written by the caller once the report has actually been
+  // rendered. A run that throws while rendering must not leave the markers
+  // advanced for a report that does not exist, which is the same reason the
+  // report files are written last (pm#119).
+  return {
+    view: planView(render, state),
+    markers: "written",
+    commit: () => writeFileSync(planPath(save), JSON.stringify(persist, null, 2) + "\n"),
+  };
 }
 
 /**
@@ -340,7 +361,17 @@ function modelFor(state: GameState, advisory: Advisory | null): ReturnType<typeo
   let corridors: Area[] = [];
   const surveys = readSurvey(state.save.name);
   const survey = surveys?.find((s) => s.surface === surfaceMap.name) ?? surveys?.[0];
-  if (survey && survey.tick === state.save.tick) {
+  // Three outcomes, and the page is told which one rather than being handed an
+  // empty array for all three (MAP-3). From MAP-3 on the survey travels inside
+  // the state file and stale is unreachable for a fresh read; it stays because
+  // a state file written before tonight still has its sidecar, and a layer
+  // drawn from another tick is exactly the failure this unit exists to stop.
+  const busSurvey: { state: "ok" | "none" | "stale"; tick?: number; stateTick?: number } = !survey
+    ? { state: "none" }
+    : survey.tick === state.save.tick
+      ? { state: "ok", tick: survey.tick, stateTick: state.save.tick }
+      : { state: "stale", tick: survey.tick, stateTick: state.save.tick };
+  if (busSurvey.state === "ok" && survey) {
     corridors = busAreas(judgeBus(survey, state, load()));
   }
 
@@ -363,6 +394,7 @@ function modelFor(state: GameState, advisory: Advisory | null): ReturnType<typeo
     data: protoData(),
     icons: new Icons(protoData()),
     busAreas: corridors,
+    busSurvey,
     adviceAreas,
     powerAreas: advisory?.blocks ?? [],
     oreAreas: advisory?.fields?.slice(0, 12) ?? [],

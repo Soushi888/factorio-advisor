@@ -27,7 +27,7 @@ import { beltItemsPerSecond, beltItemsPerTile } from "./belts.ts";
 import { EAST, NORTH, SOUTH, WEST } from "./layout.ts";
 import type { Area } from "./map.ts";
 import type { Data, Proto } from "./proto.ts";
-import { flowOf, slugify, type GameState } from "./state.ts";
+import { flowOf, readStateFile, slugify, type GameState } from "./state.ts";
 
 /**
  * The longest hole a run may carry and still be one run, in tiles.
@@ -98,13 +98,43 @@ export function surveyPath(save: string): string {
   return join(DATA_DIR, "state", `${slugify(save.replace(/\.zip$/i, ""))}-belts.json`);
 }
 
+/**
+ * The survey carried by a state file, which is the normal case from MAP-3 on.
+ *
+ * Its tick is the state's tick and cannot be anything else, which is the whole
+ * reason the survey moved inside: a sidecar has its own tick the moment anyone
+ * reads one file without the other, and the map spent an evening drawing
+ * corridors from 19224635 over a census from 19384953.
+ */
+export function surveyIn(state: GameState): Survey[] | null {
+  if (!Array.isArray(state.belts)) return null;
+  return expand(state.save.tick, state.belts);
+}
+
+/**
+ * The survey for a save: from its state file, or from a sidecar if that state
+ * file predates MAP-3.
+ *
+ * The fallback keeps every state file written before tonight readable, and it
+ * carries the sidecar's OWN tick rather than the state's, because that is the
+ * fact: they are two files and they may describe two moments. The caller
+ * compares the two ticks and says so. Nothing writes a new sidecar.
+ */
 export function readSurvey(save: string): Survey[] | null {
+  const state = readStateFile(save);
+  const inside = state ? surveyIn(state) : null;
+  if (inside) return inside;
   const path = surveyPath(save);
   if (!existsSync(path)) return null;
   const raw = JSON.parse(readFileSync(path, "utf8")) as {
     tick: number;
     surfaces: Array<{ name: string; belts: RawBelt[] }>;
   };
+  return expand(raw.tick, raw.surfaces);
+}
+
+function expand(tick: number, surfaces: Array<{ name: string; belts: RawBelt[] }>): Survey[] {
+  const raw = { tick, surfaces };
   return raw.surfaces.map((s) => ({
     tick: raw.tick,
     surface: s.name,
