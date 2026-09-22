@@ -300,6 +300,34 @@ export interface EnemyCell {
   worms: number;
 }
 
+/**
+ * One crafting machine as the engine describes it at the tick of the read.
+ *
+ * `recipe` has three states and they are three different facts, which is why it
+ * is not a plain optional string. A name is a machine set to that recipe.
+ * `false` is a machine the engine answered about that has no recipe, which on
+ * this save is mostly a furnace between smelts: a furnace answers `get_recipe()`
+ * with what it is currently smelting and with nothing when idle, and 513
+ * electric furnaces plus 17 steel furnaces are in that class. Absent is a
+ * machine whose recipe could not be read at all. The machine is kept in every
+ * case, because a smelter block that disappears from the map is a worse answer
+ * than one the map admits it could not read.
+ *
+ * JSON has a null and Lua does not, so `false` rather than `null` carries the
+ * idle case: a nil field in the collector is an absent field in the file, and
+ * the two cases have to stay distinguishable at the far end.
+ */
+export interface MachineSetting {
+  name: string;
+  x: number;
+  y: number;
+  /** The engine's own direction, in the sixteen-direction compass of 2.0. */
+  direction: number;
+  recipe?: string | false;
+  /** Modules in the machine, by prototype name, absent when it holds none. */
+  modules?: Record<string, number>;
+}
+
 export interface SurfaceMap {
   name: string;
   cellTiles: number;
@@ -311,6 +339,17 @@ export interface SurfaceMap {
   points: Record<string, Array<[number, number]>>;
   /** Prototypes whose positions did not fit the budget, with what they cost. */
   pointsDropped?: Array<{ name: string; count: number }>;
+  /**
+   * What each crafting machine is set to (MAP-1), beside `points` rather than
+   * inside it, so everything that reads positions is untouched.
+   *
+   * A map that shows where a machine stands answers "what is there"; this is
+   * what answers "what is it doing", which is the question Soushi actually
+   * asked. Read from the engine per entity rather than solved from rates.
+   */
+  machines?: MachineSetting[];
+  /** Machines beyond the budget, per prototype, with what they cost. */
+  machinesDropped?: Array<{ name: string; count: number }>;
   /**
    * Water, tile by tile, as horizontal runs `[x, y, length]` in tile
    * coordinates. Runs rather than tiles because a lake is mostly long rows of
@@ -382,6 +421,18 @@ const MAP_CELL_TILES = 32;
  * drawing three quarters of a base. A choice, not a game fact.
  */
 const MAP_POINT_BUDGET = 400_000;
+
+/**
+ * How many crafting machines carry their settings (MAP-1).
+ *
+ * A choice about what is worth writing, not a game fact. This save holds about
+ * 2200 crafting machines against 66467 mapped points, so the budget is slack by
+ * two orders of magnitude and exists for the same reason the point budget does:
+ * a pathological save degrades rather than hangs. What overflows is reported in
+ * `machinesDropped` rather than silently trimmed, because a smelter block that
+ * vanished from the map is worse than one the map admits it did not read.
+ */
+const MACHINE_BUDGET = 50_000;
 
 /**
  * The belt survey (C26), appended to the collector when a bus question asks for it.
@@ -847,10 +898,12 @@ script.on_nth_tick(1, function()
   -- belongs to. Chunks are the bucket because the engine already uses them.
   local CELL = ${String(MAP_CELL_TILES)}
   local POINT_BUDGET = ${String(MAP_POINT_BUDGET)}
+  local MACHINE_BUDGET = ${String(MACHINE_BUDGET)}
   local player_force = game.forces["player"]
   local map = {}
   for _, surface in pairs(game.surfaces) do
     local cells, ore, points = {}, {}, {}
+    local machines = {}
     local minx, miny, maxx, maxy
 
     local function bound(x, y)
@@ -867,6 +920,13 @@ script.on_nth_tick(1, function()
       if not c then c = { cx = cx, cy = cy }; store[key] = c end
       return c
     end
+
+    -- What a crafting machine is SET TO (MAP-1), read here rather than in a
+    -- second pass, because this loop already visits every entity the force
+    -- owns and a second find_entities_filtered over 2200 machines would walk
+    -- the surface twice to save nothing.
+    local craft_types = { ["assembling-machine"] = true, ["furnace"] = true,
+                          ["rocket-silo"] = true }
 
     for _, e in pairs(surface.find_entities_filtered{ force = player_force }) do
       local pos = e.position
@@ -887,7 +947,56 @@ script.on_nth_tick(1, function()
         local p = points[e.name]
         if not p then p = {}; points[e.name] = p end
         p[#p + 1] = { pos.x, pos.y }
+
+        if craft_types[kind] then
+          local rec = { name = e.name, x = pos.x, y = pos.y, direction = e.direction }
+          -- Three outcomes kept apart: a recipe name, false for a machine the
+          -- engine answered about with none, and the field left off entirely
+          -- when the call itself failed. An idle furnace is a real answer about
+          -- the moment of the read and dropping it would make an idle smelter
+          -- block invisible.
+          local okr, recipe = pcall(function() return e.get_recipe() end)
+          if okr then rec.recipe = (recipe and recipe.name) or false end
+          local okm, inv = pcall(function() return e.get_module_inventory() end)
+          if okm and inv then
+            local okc, contents = pcall(function() return inv.get_contents() end)
+            if okc and type(contents) == "table" then
+              local mods, any = {}, false
+              -- get_contents returned a dictionary in 1.1 and an array of
+              -- records in 2.0; both shapes are handled the way the belt survey
+              -- handles them, rather than assuming this build's.
+              for k, v in pairs(contents) do
+                local nm, ct
+                if type(v) == "table" then nm, ct = v.name, (v.count or 1) else nm, ct = k, v end
+                if nm then mods[nm] = (mods[nm] or 0) + ct; any = true end
+              end
+              if any then rec.modules = mods end
+            end
+          end
+          machines[#machines + 1] = rec
+        end
       end
+    end
+
+    -- The machine budget, spent like the point budget: the commonest prototype
+    -- loses first and says what it cost.
+    local machines_dropped = {}
+    if #machines > MACHINE_BUDGET then
+      local per = {}
+      for _, m in pairs(machines) do per[m.name] = (per[m.name] or 0) + 1 end
+      local ranked = {}
+      for name, n in pairs(per) do ranked[#ranked + 1] = { name = name, n = n } end
+      table.sort(ranked, function(a, b) return a.n > b.n end)
+      local drop, total, j = {}, #machines, 1
+      while total > MACHINE_BUDGET and j <= #ranked do
+        drop[ranked[j].name] = true
+        machines_dropped[#machines_dropped + 1] = ranked[j]
+        total = total - ranked[j].n
+        j = j + 1
+      end
+      local kept = {}
+      for _, m in pairs(machines) do if not drop[m.name] then kept[#kept + 1] = m end end
+      machines = kept
     end
 
     -- The budget, spent on the rarest prototypes first.
@@ -1028,6 +1137,8 @@ script.on_nth_tick(1, function()
       ore = ore_list,
       points = points,
       pointsDropped = #dropped > 0 and dropped or nil,
+      machines = machines,
+      machinesDropped = #machines_dropped > 0 and machines_dropped or nil,
       oreRuns = ore_runs,
       water = ok_chart and runs_of(water_rows) or nil,
       terrain = ok_chart and terrain or nil,

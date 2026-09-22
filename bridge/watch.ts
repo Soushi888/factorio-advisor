@@ -133,7 +133,12 @@ export async function reportOn(
   save: string,
   opts: { threshold?: number; quiet?: boolean } = {},
 ): Promise<ReportWritten | null> {
-  const state = await readState({ save, quiet: opts.quiet ?? true });
+  // The belt survey rides the same pass, which is MAP-3's one-read-one-tick
+  // property bought for 1.66 s on this save (6.43 s against 8.09 s, measured
+  // 22:06). It was never a redesign: readState has always written both files
+  // from one collector run at one tick, and the 160318 tick gap the map was
+  // drawing from was two separate invocations of two different commands.
+  const state = await readState({ save, belts: true, quiet: opts.quiet ?? true });
   const tick = state.save.tick;
   mkdirSync(REPORTS_DIR, { recursive: true });
 
