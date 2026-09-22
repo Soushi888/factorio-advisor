@@ -18,7 +18,7 @@ import { mapModel } from "../src/layers.ts";
 import { advanceMarkers, authoredChanged, planView, type Plan, type PlanView } from "../src/plan.ts";
 import { Icons } from "../src/icons.ts";
 import { bottlenecks, type BottleneckReport } from "../src/bottlenecks.ts";
-import { mapOf, type Area } from "../src/map.ts";
+import { mapOf, recipeBlocks, type Area } from "../src/map.ts";
 import { busAreas, judge as judgeBus, readSurvey } from "../src/bus.ts";
 
 /**
@@ -395,6 +395,14 @@ function modelFor(state: GameState, advisory: Advisory | null): ReturnType<typeo
     icons: new Icons(protoData()),
     busAreas: corridors,
     busSurvey,
+    // MAP-4. The blocks are clustered in map.ts beside the power blocks and the
+    // ore fields, because grouping by proximity is geometry; the renderer draws
+    // what it is handed. The belts come from the same survey the corridors do,
+    // so they inherit the tick check rather than needing their own.
+    recipeBlocks: recipeBlocks(surfaceMap),
+    ...(busSurvey.state === "ok" && survey
+      ? { belts: survey.belts.map((b) => ({ x: b.x, y: b.y, lanes: b.lanes })) }
+      : {}),
     adviceAreas,
     powerAreas: advisory?.blocks ?? [],
     oreAreas: advisory?.fields?.slice(0, 12) ?? [],

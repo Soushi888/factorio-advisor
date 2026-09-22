@@ -325,3 +325,122 @@ function esc(s: string): string {
     c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;",
   );
 }
+
+/**
+ * A run of adjacent machines all set to the same recipe (MAP-4).
+ *
+ * A player does not read a smelting district as 513 furnaces; they read it as
+ * "the iron smelter". Fifteen assembling machines in a row all making concrete
+ * are one thing to point at, one thing to reason about and one thing to draw,
+ * and drawing them as fifteen squares is drawing the pixels rather than the
+ * base. The recipe is what makes the grouping possible at all: before MAP-1 a
+ * save reported no recipe per machine, so nothing could tell a concrete row
+ * from the iron stick row beside it.
+ */
+export interface RecipeBlock extends Area {
+  recipe: string;
+  machines: number;
+  /** Machine prototypes in the block, by count, commonest first. */
+  by: Array<{ name: string; count: number }>;
+}
+
+/**
+ * How far apart two machines on the same recipe can sit and still be one block.
+ *
+ * Nine tiles, and it is a reading choice rather than a game fact, so it is
+ * named here. A row of assemblers is three tiles of machine plus an inserter
+ * plus a belt on each side, so neighbours in a double row sit about eight tiles
+ * apart; anything past that is a different part of the base even when it makes
+ * the same thing. Too small and a double row splits in two, too large and the
+ * whole factory becomes one block per recipe.
+ */
+const BLOCK_GAP_TILES = 9;
+
+/** Machines grouped into blocks by recipe and proximity, largest block first. */
+export function recipeBlocks(map: SurfaceMap): RecipeBlock[] {
+  const byRecipe = new Map<string, Array<{ x: number; y: number; name: string }>>();
+  for (const m of map.machines ?? []) {
+    // A machine with no recipe belongs to no block: an idle furnace is not
+    // evidence of what the block around it makes, and guessing from its
+    // neighbours would put a recipe on the map that the save never reported.
+    if (typeof m.recipe !== "string") continue;
+    const list = byRecipe.get(m.recipe) ?? [];
+    list.push({ x: m.x, y: m.y, name: m.name });
+    byRecipe.set(m.recipe, list);
+  }
+
+  const out: RecipeBlock[] = [];
+  for (const [recipe, machines] of byRecipe) {
+    for (const group of near(machines, BLOCK_GAP_TILES)) {
+      const xs = group.map((m) => m.x);
+      const ys = group.map((m) => m.y);
+      const counts = new Map<string, number>();
+      for (const m of group) counts.set(m.name, (counts.get(m.name) ?? 0) + 1);
+      // Padded by a tile and a half on each side: a machine's position is its
+      // centre and its footprint reaches past it, so a box drawn to the extreme
+      // centres cuts the outer machines in half.
+      const pad = 1.5;
+      const x = Math.min(...xs) - pad;
+      const y = Math.min(...ys) - pad;
+      out.push({
+        x,
+        y,
+        w: Math.max(...xs) + pad - x,
+        h: Math.max(...ys) + pad - y,
+        label: recipe,
+        tone: "info",
+        recipe,
+        machines: group.length,
+        by: [...counts]
+          .map(([name, count]) => ({ name, count }))
+          .sort((a, b) => b.count - a.count),
+      });
+    }
+  }
+  return out.sort((a, b) => b.machines - a.machines);
+}
+
+/**
+ * Single-link clustering over points, by a gap in tiles.
+ *
+ * Bucketed into cells of the gap size so each point only looks at its own cell
+ * and the eight around it: 2152 machines against a naive pass over every pair
+ * is four and a half million comparisons for a number that has to be recomputed
+ * on every read.
+ */
+function near<T extends { x: number; y: number }>(points: T[], gap: number): T[][] {
+  const cell = (n: number): number => Math.floor(n / gap);
+  const buckets = new Map<string, T[]>();
+  for (const p of points) {
+    const k = `${String(cell(p.x))}:${String(cell(p.y))}`;
+    const b = buckets.get(k);
+    if (b) b.push(p);
+    else buckets.set(k, [p]);
+  }
+  const seen = new Set<T>();
+  const out: T[][] = [];
+  for (const start of points) {
+    if (seen.has(start)) continue;
+    const group: T[] = [];
+    const stack = [start];
+    seen.add(start);
+    while (stack.length > 0) {
+      const p = stack.pop()!;
+      group.push(p);
+      const cx = cell(p.x);
+      const cy = cell(p.y);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (const q of buckets.get(`${String(cx + dx)}:${String(cy + dy)}`) ?? []) {
+            if (seen.has(q)) continue;
+            if (Math.abs(q.x - p.x) > gap || Math.abs(q.y - p.y) > gap) continue;
+            seen.add(q);
+            stack.push(q);
+          }
+        }
+      }
+    }
+    out.push(group);
+  }
+  return out;
+}

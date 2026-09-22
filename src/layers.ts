@@ -34,6 +34,7 @@
 
 import type { GameState, SurfaceMap } from "./state.ts";
 import { type Area } from "./map.ts";
+import type { RecipeBlock } from "./map.ts";
 import type { Data, Proto } from "./proto.ts";
 import { footprintOf } from "./layout.ts";
 import { cutterAvailable, dataUri, spritesFor, PIXELS_PER_TILE } from "./sprites.ts";
@@ -455,6 +456,10 @@ export interface ModelInput {
    * tick, whether or not it found any corridors.
    */
   busSurvey?: { state: "ok" | "none" | "stale"; tick?: number; stateTick?: number };
+  /** Machine blocks, already clustered by recipe (MAP-4). */
+  recipeBlocks?: RecipeBlock[];
+  /** The belt survey for this surface, when it came back at this tick. */
+  belts?: Array<{ x: number; y: number; lanes: Array<{ item: string; count: number }> }>;
   /** The places the advice points at. */
   adviceAreas?: Area[];
   /** Power blocks and ore fields, already derived by `advise.ts`. */
@@ -500,6 +505,41 @@ export interface MapFacts {
       buffer?: number;
     }
   >;
+}
+
+/**
+ * How many machines a block needs before its name is drawn on the map.
+ *
+ * A reading choice, named here rather than buried. Three is where a row starts
+ * looking like a line rather than a stray machine, and it leaves 56 one-machine
+ * blocks on this save drawn but unlabelled, which the click panel still names.
+ */
+const NAMED_BLOCK_MACHINES = 3;
+
+/**
+ * A colour for an item, derived from its own name.
+ *
+ * Deliberately not a table of hand-picked colours: this project refuses to type
+ * in game facts, and "iron plate is grey" is a game fact somebody would have to
+ * keep. A hash to a hue is stable across reads, distinct enough to tell twenty
+ * items apart, and says nothing the data does not.
+ */
+function hueOf(item: string): string {
+  let h = 0;
+  for (let i = 0; i < item.length; i += 1) h = (h * 31 + item.charCodeAt(i)) % 360;
+  return `hsl(${String(h)} 62% 56%)`;
+}
+
+/** Points merged into runs and emitted as one path, filled and titled by item. */
+function runsOf(points: Array<[number, number]>, item: string): string {
+  const parts = merged(points).map(
+    ([x, y, w, h]) => `M${round(x)} ${round(y)}h${round(w)}v${round(h)}h${round(-w)}z`,
+  );
+  if (parts.length === 0) return "";
+  return (
+    `<path vector-effect="non-scaling-stroke" fill="${hueOf(item)}" ` +
+    `d="${parts.join("")}"><title>${esc(item)}</title></path>`
+  );
 }
 
 /** What the belt layer says about itself when it has nothing to draw. */
@@ -859,6 +899,107 @@ export function mapModel(input: ModelInput): MapModel {
     note: beltNote(bus.length, input.busSurvey),
     body: areaShapes(bus),
   });
+
+  // MAP-4, the three layers that say what a thing IS and what it HOLDS rather
+  // than only where it stands. Each one merges before it draws, because the
+  // point of the map is that 2152 machines, 30847 belts and 1030 containers
+  // arrive as about a hundred paths rather than as thirty thousand nodes.
+  const blocks = input.recipeBlocks ?? [];
+  if (blocks.length > 0) {
+    // Labels only on blocks worth naming. A one-machine block is a real block
+    // and gets drawn; labelling all 56 of them would bury the districts under
+    // their own text, and the click panel names every one of them anyway.
+    const named = blocks.filter((b) => b.machines >= NAMED_BLOCK_MACHINES);
+    layers.push({
+      id: "blocks",
+      label: "What each block makes",
+      colour: "#7fd18a",
+      mark: "box",
+      group: "places",
+      on: true,
+      drawn: blocks.length,
+      census: blocks.reduce((n, b) => n + b.machines, 0),
+      missing: [],
+      note:
+        `${String(blocks.length)} blocks over ${String(blocks.reduce((n, b) => n + b.machines, 0))} ` +
+        `machines, ${String(named.length)} named on the map and all of them on a click`,
+      body:
+        areaShapes(blocks.filter((b) => b.machines < NAMED_BLOCK_MACHINES)) +
+        areaShapes(named, true),
+    });
+  }
+
+  const beltRuns = input.belts ?? [];
+  if (beltRuns.length > 0) {
+    const byItem = new Map<string, Array<[number, number]>>();
+    let carrying = 0;
+    for (const b of beltRuns) {
+      // The dominant lane, because a belt with iron on one side and copper on
+      // the other is an iron belt to a player deciding where to tap it, and a
+      // two-colour tile is unreadable at any zoom the whole base fits in.
+      let top = "";
+      let n = 0;
+      for (const lane of b.lanes) if (lane.count > n) [top, n] = [lane.item, lane.count];
+      if (top === "") continue;
+      carrying += 1;
+      const list = byItem.get(top);
+      if (list) list.push([b.x, b.y]);
+      else byItem.set(top, [[b.x, b.y]]);
+    }
+    const ranked = [...byItem].sort((a, b) => b[1].length - a[1].length);
+    layers.push({
+      id: "payload",
+      label: "What rides the belts",
+      colour: "#d8b64a",
+      mark: "square",
+      group: "base",
+      on: false,
+      drawn: carrying,
+      census: beltRuns.length,
+      missing: [],
+      note:
+        `${String(carrying)} of ${String(beltRuns.length)} belt pieces carrying something, ` +
+        `${String(ranked.length)} items: ` +
+        ranked.slice(0, 5).map(([item, ps]) => `${item} ${String(ps.length)}`).join(", "),
+      body: ranked.map(([item, ps]) => runsOf(ps, item)).join(""),
+    });
+  }
+
+  const held = ctx.map.containers ?? [];
+  if (held.length > 0) {
+    const byItem = new Map<string, Array<[number, number]>>();
+    let empty = 0;
+    for (const c of held) {
+      const items = Object.entries(c.items ?? {});
+      if (items.length === 0) {
+        empty += 1;
+        continue;
+      }
+      let top = "";
+      let n = 0;
+      for (const [name, count] of items) if (count > n) [top, n] = [name, count];
+      const list = byItem.get(top);
+      if (list) list.push([c.x, c.y]);
+      else byItem.set(top, [[c.x, c.y]]);
+    }
+    const ranked = [...byItem].sort((a, b) => b[1].length - a[1].length);
+    layers.push({
+      id: "held",
+      label: "What the chests hold",
+      colour: "#5fb0f0",
+      mark: "square",
+      group: "base",
+      on: false,
+      drawn: held.length - empty,
+      census: held.length,
+      missing: [],
+      note:
+        `${String(held.length - empty)} holding something, ${String(empty)} empty, ` +
+        `${String(ranked.length)} different top items: ` +
+        ranked.slice(0, 5).map(([item, ps]) => `${item} ${String(ps.length)}`).join(", "),
+      body: ranked.map(([item, ps]) => runsOf(ps, item)).join(""),
+    });
+  }
 
   const advice = input.adviceAreas ?? [];
   layers.push({
