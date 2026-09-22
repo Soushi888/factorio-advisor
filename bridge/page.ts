@@ -166,6 +166,9 @@ td .named{max-width:100%}
 .step .more{font:inherit;font-size:.68rem;background:none;border:0;color:var(--accent);cursor:pointer;
   padding:.1rem .3rem;margin-left:.45rem;border-radius:.2rem}
 .plan .stale{font-size:.72rem;color:var(--down);margin:.3rem 0 0}
+.step .closed{margin:.2rem 0 0;font-size:.74rem;color:var(--up);font-weight:600}
+.bar .moved{margin-left:.4rem;font-size:.66rem;font-weight:600}
+.bar .moved.up{color:var(--up)}.bar .moved.down{color:var(--down)}
 .planlink{font-size:.8rem;color:var(--accent);text-decoration:none;border:1px solid var(--accent);
   border-radius:.3rem;padding:.1rem .5rem;margin-left:auto}
 .planlink:hover{background:color-mix(in srgb,var(--accent) 14%,transparent)}
@@ -946,14 +949,42 @@ function barOf(p: StepView["progress"][number]): string {
   }
   const pct = p.fraction === null ? 0 : Math.round(p.fraction * 100);
   const shown = `${p.value.toFixed(p.value % 1 === 0 ? 0 : 1)} of ${String(p.target)}`;
+  // Movement since the previous report, which is the number a player who saved
+  // ten minutes ago actually wants: the bar says how far along the whole step
+  // is, this says whether tonight moved it. Rounded to the same precision as
+  // the value, and absent when nothing moved, because "+0" is noise.
+  const moved =
+    p.sinceLastReport !== null && Math.abs(p.sinceLastReport) >= 0.05
+      ? `<span class="moved ${p.sinceLastReport > 0 ? "up" : "down"}">` +
+        `${esc(signed(p.sinceLastReport))} since last save</span>`
+      : "";
   return (
     `<div class="bar${p.done ? " done" : ""}"><span>${esc(p.label)}</span>` +
     `<span class="track"><span class="fill" style="width:${String(pct)}%"></span></span>` +
-    `<span class="val">${esc(shown)}</span></div>`
+    `<span class="val">${esc(shown)}${moved}</span></div>`
   );
 }
 
-function stepOf(step: StepView, i: number): string {
+/**
+ * How long ago something happened, in minutes of play rather than in ticks.
+ *
+ * A player reads "eleven minutes ago" and knows whether he did it this session.
+ * A tick number is the right thing to store and the wrong thing to show.
+ */
+function agoOf(ticks: number): string {
+  const minutes = Math.round(ticks / 3600);
+  if (minutes <= 0) return "just now";
+  if (minutes < 60) return `${String(minutes)} min of play ago`;
+  return `${(minutes / 60).toFixed(1)} h of play ago`;
+}
+
+function stepOf(step: StepView, atTick: number, i: number): string {
+  // The earliest tick among the checks that are currently met, so a step whose
+  // last check closed tonight reads as closed tonight rather than as closed
+  // whenever its first check happened to cross. Null unless every readable
+  // check is met, which is the same condition `done` already carries.
+  const closed = step.progress.filter((p) => p.closedAtTick !== null).map((p) => p.closedAtTick!);
+  const doneSince = step.done && closed.length > 0 ? Math.max(...closed) : null;
   const fx = step.where
     ? ` data-fx="${step.where.x.toFixed(0)} ${step.where.y.toFixed(0)} ${step.where.w.toFixed(0)} ` +
       `${step.where.h.toFixed(0)} ${esc(step.where.layer ?? "")}" tabindex="0" role="button"` +
@@ -963,6 +994,9 @@ function stepOf(step: StepView, i: number): string {
     `<li class="step${step.done ? " done" : ""}${step.started ? " started" : ""}"${fx}>` +
     `<span class="n">${String(i + 1)}</span>` +
     `<h3>${esc(step.title)}<button type="button" class="more" data-open>why &amp; how</button></h3>` +
+    (doneSince === null
+      ? ""
+      : `<p class="closed">Done, and it has held since ${esc(agoOf(atTick - doneSince))}.</p>`) +
     `<div class="chips"><span>costs <b>${esc(step.cost)}</b></span>` +
     `<span>buys <b>${esc(step.buys)}</b></span>` +
     `<span>undo: ${esc(step.reversible)}</span>` +
@@ -1050,16 +1084,23 @@ function holdingSection(b: BottleneckReport): string {
 }
 
 function planSection(plan: PlanView): string {
+  // Two ages, never one. The prose is as old as the day it was written and the
+  // markers are as old as the last report, and a page that reported a single
+  // freshness would be claiming the words are current or that the numbers are
+  // stale, and both are wrong.
   const stale =
     plan.ticksBehind > 0
-      ? `<p class="stale">Written ${String(Math.round(plan.ticksBehind / 3600))} minutes of play ago. ` +
-        `The bars are from this read; the words are from then.</p>`
+      ? `<p class="stale">Words written ${esc(agoOf(plan.ticksBehind))}. ` +
+        (plan.markersBehind === null
+          ? `The markers have not been re-derived yet; the bars are from this read.`
+          : `Markers re-derived ${esc(agoOf(plan.markersBehind))}, and the bars are from this read.`) +
+        `</p>`
       : "";
   return (
     `<section class="plan" id="plan"><h2>The plan</h2>` +
     `<p class="lead">${esc(plan.lead)}</p>` +
     `<p class="carry">${plan.corrections.map(esc).join("</p><p class=\"carry\">")}</p>` +
-    `<ol class="steps">${plan.steps.map(stepOf).join("")}</ol>` +
+    `<ol class="steps">${plan.steps.map((s, i) => stepOf(s, plan.atTick, i)).join("")}</ol>` +
     stale +
     (plan.source ? `<p class="hist"><a href="${esc(plan.source)}">the long form, with every number and its command</a></p>` : "") +
     `</section>`

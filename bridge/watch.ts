@@ -11,7 +11,7 @@ import { researchable } from "../src/next.ts";
 import { sections } from "../src/sections.ts";
 import { renderPage } from "./page.ts";
 import { mapModel } from "../src/layers.ts";
-import { planView, type Plan, type PlanView } from "../src/plan.ts";
+import { advanceMarkers, authoredChanged, planView, type Plan, type PlanView } from "../src/plan.ts";
 import { Icons } from "../src/icons.ts";
 import { bottlenecks, type BottleneckReport } from "../src/bottlenecks.ts";
 import { mapOf, type Area } from "../src/map.ts";
@@ -99,6 +99,14 @@ export interface ReportWritten {
   page: string;
   quiet: boolean;
   firstForSave: boolean;
+  /**
+   * What happened to the plan's completion markers on this report.
+   *
+   * `refused` is the interesting one and it is surfaced rather than swallowed:
+   * it means the marker pass would have changed something a human wrote, which
+   * is a defect in this code and not a condition to retry.
+   */
+  markers: MarkerOutcome;
 }
 
 /**
@@ -154,6 +162,10 @@ export async function reportOn(
   const { map: _map, ...archived } = state;
   writeFileSync(jsonPath, JSON.stringify(archived, null, 2) + "\n");
 
+  // The markers move once per report, and the page is rendered from the copy
+  // that keeps the previous report's anchor: see advanceMarkers.
+  const planned = planForReport(save, state);
+
   const pagePath = join(REPORTS_DIR, "index.html");
   writeFileSync(
     pagePath,
@@ -163,7 +175,7 @@ export async function reportOn(
       stateFile,
       sections: derived?.views ?? [],
       history: historyFor(save).filter((f) => f !== `${base}.md`),
-      plan: planFor(save, state),
+      plan: planned.view,
       icons: new Icons(protoData()),
       bottlenecks: bottlenecksFor(state),
       model: modelFor(state, derived?.advisory ?? null),
@@ -178,6 +190,7 @@ export async function reportOn(
     page: pagePath,
     quiet: report.quiet,
     firstForSave: previous === null,
+    markers: planned.markers,
   };
 }
 
@@ -238,15 +251,57 @@ export function rerenderPage(save: string, opts: { threshold?: number } = {}): s
  * half parses would put half a step on the page.
  */
 function planFor(save: string, state: GameState): PlanView | null {
-  const path = join(PROJECT_ROOT, "data", "plans", `${slug(save)}.json`);
+  const plan = readPlan(save);
+  return plan ? planView(plan, state) : null;
+}
+
+/** The plan file for a save, or null when there is none or it does not parse. */
+function planPath(save: string): string {
+  return join(PROJECT_ROOT, "data", "plans", `${slug(save)}.json`);
+}
+
+function readPlan(save: string): Plan | null {
+  const path = planPath(save);
   if (!existsSync(path)) return null;
   try {
     const plan = JSON.parse(readFileSync(path, "utf8")) as Plan;
     if (!Array.isArray(plan.steps) || plan.steps.length === 0) return null;
-    return planView(plan, state);
+    return plan;
   } catch {
     return null;
   }
+}
+
+/**
+ * Re-derive the plan's completion markers against this report and write them back.
+ *
+ * Called once per report, AFTER the page has been rendered from the markers the
+ * previous report left. That order is the whole design: the page shows movement
+ * since the last report, and this call sets the anchor the next one will measure
+ * against. Rendering first also means a crash here leaves a correct page and a
+ * plan one report behind, which is the safe direction to fail in.
+ *
+ * The guard is not a formality. `data/plans/` is authored by hand and the one
+ * property that makes an authored plan safe inside a measured page is that code
+ * never touches the prose. So the write re-serialises the plan parsed off disk,
+ * changes only the declared derived fields, and refuses outright if anything a
+ * human wrote differs. A refusal is reported and the report still stands: a
+ * stale marker is a small wrong number, a rewritten sentence is a lie about what
+ * Soushi decided.
+ */
+export type MarkerOutcome = "written" | "unchanged" | "absent" | "refused";
+
+export function planForReport(
+  save: string,
+  state: GameState,
+): { view: PlanView | null; markers: MarkerOutcome } {
+  const before = readPlan(save);
+  if (!before) return { view: null, markers: "absent" };
+  const { persist, render, changed } = advanceMarkers(before, state);
+  if (!changed) return { view: planView(before, state), markers: "unchanged" };
+  if (authoredChanged(before, persist)) return { view: planView(before, state), markers: "refused" };
+  writeFileSync(planPath(save), JSON.stringify(persist, null, 2) + "\n");
+  return { view: planView(render, state), markers: "written" };
 }
 
 /**

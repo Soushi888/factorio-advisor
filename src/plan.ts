@@ -48,6 +48,26 @@ export interface PlanCheck {
   from?: number;
   /** Fewer is better: a deficit being closed rather than a count being raised. */
   down?: boolean;
+  /**
+   * Derived, rewritten at every report: this check's value at the PREVIOUS
+   * report, so the page can show movement since the last save rather than only
+   * movement since the plan was written.
+   *
+   * `from` is the authored anchor and never moves; this one moves every time,
+   * and the two answer different questions. A step that has been running for
+   * six reports shows the whole climb against `from` and tonight's step against
+   * this.
+   */
+  atLastReport?: number;
+  /**
+   * Derived: the tick at which this check first met its target, cleared if it
+   * stops meeting it.
+   *
+   * It means "met since this tick", not "was met once". A base can lose
+   * boilers, and a marker that remembered a target met an hour ago would
+   * describe a factory that no longer exists. State follows the artifact.
+   */
+  closedAtTick?: number;
 }
 
 /** Where on the map a step happens, in the shape the map's focus already takes. */
@@ -90,6 +110,16 @@ export interface Plan {
   /** What the save says that the player's own plan does not. */
   corrections: string[];
   steps: PlanStep[];
+  /**
+   * Derived: the tick the markers were last rewritten at.
+   *
+   * Separate from `writtenAtTick` because the age of authored prose and the age
+   * of derived numbers are two different facts. A plan written two hours ago
+   * whose markers were rewritten on the last save is current in the only sense
+   * that matters to a player, and a page that reported one age for both would
+   * be lying about its own freshness.
+   */
+  markersAtTick?: number;
   /** The long form, when one exists beside it. */
   source?: string;
 }
@@ -104,6 +134,12 @@ export interface StepProgress {
   /** 0 to 1, or null when it cannot be computed. */
   fraction: number | null;
   done: boolean;
+  /** This check's value at the previous report, or null on the first one. */
+  atLastReport: number | null;
+  /** Movement since the previous report, signed, or null when there was none. */
+  sinceLastReport: number | null;
+  /** The tick this check has been meeting its target since, when it is. */
+  closedAtTick: number | null;
 }
 
 export interface StepView extends PlanStep {
@@ -118,6 +154,10 @@ export interface PlanView extends Omit<Plan, "steps"> {
   steps: StepView[];
   /** How old the plan is against the state it is being shown with. */
   ticksBehind: number;
+  /** The tick of the state this view was rendered against. */
+  atTick: number;
+  /** How old the derived markers are against that state, in ticks. */
+  markersBehind: number | null;
 }
 
 /**
@@ -146,7 +186,18 @@ function progressOf(state: GameState, check: PlanCheck): StepProgress {
     fraction = Math.max(0, Math.min(1, value / check.target));
   }
   const done = value !== null && (check.down ? value <= check.target : value >= check.target);
-  return { label: check.label, value, from, target: check.target, fraction, done };
+  const atLastReport = check.atLastReport ?? null;
+  return {
+    label: check.label,
+    value,
+    from,
+    target: check.target,
+    fraction,
+    done,
+    atLastReport,
+    sinceLastReport: value !== null && atLastReport !== null ? value - atLastReport : null,
+    closedAtTick: check.closedAtTick ?? null,
+  };
 }
 
 export function planView(plan: Plan, state: GameState): PlanView {
@@ -170,5 +221,113 @@ export function planView(plan: Plan, state: GameState): PlanView {
     ...plan,
     steps,
     ticksBehind: Math.max(0, state.save.tick - plan.writtenAtTick),
+    atTick: state.save.tick,
+    // Null rather than zero when no report has ever rewritten them: never
+    // marked and marked at this very tick are different facts, and a page that
+    // showed the second for the first would claim a freshness it does not have.
+    markersBehind:
+      plan.markersAtTick === undefined ? null : Math.max(0, state.save.tick - plan.markersAtTick),
   };
+}
+
+/**
+ * The fields code is allowed to write into a plan file.
+ *
+ * Named here rather than inline because the guard below is the whole reason
+ * PLAN-1 is safe: an authored plan sitting inside a measured page works only
+ * while the measuring half cannot touch the written half. Adding a field to
+ * this list is the moment to ask whether it is a number or a sentence.
+ */
+export const DERIVED_CHECK_FIELDS = ["atLastReport", "closedAtTick"] as const;
+export const DERIVED_PLAN_FIELDS = ["markersAtTick"] as const;
+
+/** A plan with every derived marker removed, for comparing what was authored. */
+function authoredOnly(plan: Plan): unknown {
+  const strip = (o: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(o)) if (!keys.includes(k)) out[k] = v;
+    return out;
+  };
+  const steps = plan.steps.map((step) => ({
+    ...step,
+    checks: (step.checks ?? []).map((c) => strip(c as unknown as Record<string, unknown>, DERIVED_CHECK_FIELDS)),
+  }));
+  return { ...strip(plan as unknown as Record<string, unknown>, DERIVED_PLAN_FIELDS), steps };
+}
+
+/**
+ * True when two plans differ anywhere a human wrote.
+ *
+ * The comparison is over the whole authored surface rather than over a list of
+ * prose fields, because a list would have to be kept in step with the interface
+ * and would silently stop covering a field somebody added. Everything that is
+ * not a declared derived marker is authored, which is the right default: a new
+ * field is a sentence until someone says otherwise.
+ */
+export function authoredChanged(before: Plan, after: Plan): boolean {
+  return JSON.stringify(authoredOnly(before)) !== JSON.stringify(authoredOnly(after));
+}
+
+/**
+ * Re-derive a plan's completion markers against the state of a new report.
+ *
+ * Pure: it returns a new plan and touches no disk, so the caller decides whether
+ * this read deserves a rewrite. `bun run report` does; `bun run report --page`
+ * does not, because that is a redraw of a tick already read and moving the
+ * previous-report anchor without a save between two reports would make the
+ * marker measure from a moment that is not a report.
+ *
+ * What moves, and why each one moves when it does:
+ *
+ * - `closedAtTick` is stamped the first time a check meets its target and
+ *   cleared the moment it stops meeting it. The page can then say "done since"
+ *   with a tick rather than rendering a finished step as a step, which is the
+ *   defect this unit exists for: on 2026-09-21 the boiler step reached 205 of
+ *   204 and only said so because its title was rewritten by hand.
+ * - `atLastReport` is set to this report's value, for the NEXT report to
+ *   measure against. The page renders against the value the previous report
+ *   left, which is what "movement since the last report" means, so this call
+ *   returns two copies: `render` keeps the old anchor, `persist` carries the new
+ *   one. An earlier version returned one plan and advanced it after rendering,
+ *   and the falsifier caught it: the page then rendered a step that was closed
+ *   with no tick beside it, because the stamp had not landed yet.
+ * - `markersAtTick` records the tick all of the above were taken at.
+ *
+ * A check whose path resolves to nothing is left alone entirely: a missing
+ * reading is a gap, and stamping a marker from a gap would invent a fact.
+ */
+export function advanceMarkers(
+  plan: Plan,
+  state: GameState,
+): { persist: Plan; render: Plan; changed: boolean } {
+  const tick = state.save.tick;
+  let changed = false;
+
+  const advance = (keepAnchor: boolean) =>
+    plan.steps.map((step) => {
+      if (!step.checks) return step;
+      const checks = step.checks.map((check) => {
+        const value = valueAt(state, check.path);
+        if (value === null) return check;
+        const done = check.down ? value <= check.target : value >= check.target;
+        const closedAtTick = done ? (check.closedAtTick ?? tick) : undefined;
+        if (closedAtTick !== check.closedAtTick || value !== check.atLastReport) changed = true;
+        const next: PlanCheck = { ...check };
+        // The two markers move at different moments, which is the whole trick.
+        // `closedAtTick` describes THIS report and the page must show it now, so
+        // it is stamped in both copies. `atLastReport` is the anchor the NEXT
+        // report measures from, so the copy the page renders keeps the value the
+        // previous report left and only the persisted copy moves it forward.
+        if (!keepAnchor) next.atLastReport = value;
+        if (closedAtTick === undefined) delete next.closedAtTick;
+        else next.closedAtTick = closedAtTick;
+        return next;
+      });
+      return { ...step, checks };
+    });
+
+  const render: Plan = { ...plan, markersAtTick: tick, steps: advance(true) };
+  const persist: Plan = { ...plan, markersAtTick: tick, steps: advance(false) };
+  if (plan.markersAtTick !== tick) changed = true;
+  return { persist, render, changed };
 }
