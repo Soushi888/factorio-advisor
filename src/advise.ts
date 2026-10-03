@@ -2,6 +2,7 @@ import type { Data, TechProto } from "./proto.ts";
 import type { RecipeIndex } from "./recipes.ts";
 import { mapOf, patches, powerBlocks, type Patch, type PowerBlock } from "./map.ts";
 import { effectiveGeneration, powerReport } from "./power.ts";
+import { isBackedUp, occupancy, occupancyOf, occupancyPhrase, type Occupancy } from "./saturation.ts";
 import { solve } from "./solve.ts";
 import { flowOf, isLegacyFlows, machinesOf, pavingPerMinute, type GameState, type Rates } from "./state.ts";
 
@@ -65,6 +66,16 @@ export interface Requirement {
   machines: number;
   /** True when the item is an ore, a fluid from a tile, or otherwise unmade. */
   raw: boolean;
+  /**
+   * How full the belts and chests carrying it are (C43).
+   *
+   * `deficitPerMinute` above is required minus spare, and spare on a backed-up
+   * line is what its consumers take rather than what it could make, so the
+   * deficit overstates the build by however idle the existing machines are.
+   * Crude oil on game 4 reads 19.0/min spare and a 2986.9/min deficit while
+   * 95% of it sits banked in its own tanks and its 43 refineries are 10% busy.
+   */
+  sinks: Occupancy;
 }
 
 export interface TargetReport {
@@ -383,6 +394,8 @@ export function advise(
   // active line makes now, which is the smallest target that is a real change.
   const spm = opts.spm ?? Math.max(1, Math.round(best * 2));
 
+  const sinks = occupancy(state, data);
+
   let target: TargetReport | null = null;
   if (active.length > 0 && spm > 0) {
     const need = new Map<string, { perMinute: number; machines: number; raw: boolean }>();
@@ -428,6 +441,7 @@ export function advise(
         consumedPerMinute: r.consumedPerMinute,
         headroomPerMinute: headroom,
         deficitPerMinute: Math.max(0, e.perMinute - Math.max(0, headroom)),
+        sinks: occupancyOf(sinks, item),
         machines: e.machines,
         raw: e.raw,
       });
@@ -512,6 +526,13 @@ export function advise(
   // Ranked by what the base is short of, never by what the patches look like.
   // Ranking by depletion recommended a stone outpost while stone ran 32.9/min
   // spare and copper ran 1.6, and copper was listed third.
+  // Slack alone cannot say a resource is short (C43). On a base whose sinks are
+  // full every line reads at zero slack, because a stopped line produces
+  // exactly what is taken from it: copper ore read 0.02% slack here while 99%
+  // of the lanes and chests carrying it were full, and the advice was to go lay
+  // a copper outpost. A resource with nowhere to put what it already mines is
+  // not short of ore, whatever its slack says, so it is dropped rather than
+  // ranked, and `wanted` keeps a genuine target requirement in the list.
   const shortResources = ["iron-ore", "copper-ore", "coal", "stone"]
     .map((r) => {
       const rates = rateOf(r);
@@ -522,9 +543,16 @@ export function advise(
         used,
         slack: used > 0 ? rates.headroomPerMinute / used : Infinity,
         wanted: target?.requirements.find((x) => x.item === r)?.deficitPerMinute ?? 0,
+        sinks: occupancyOf(sinks, r),
       };
     })
     .filter((r) => r.slack < OUTPOST_SLACK)
+    // No escape hatch for a target's own deficit, and that was the first thing
+    // tried. A deficit is `required minus spare`, so on a backed-up base every
+    // resource has one and the hatch let all four through unchanged. If a
+    // target wants more of something whose sinks are full, the work is drawing
+    // it, not mining it, and the raw-end line below still names the gap.
+    .filter((r) => !isBackedUp(r.sinks))
     .sort((a, b) => a.slack - b.slack);
 
   return {
@@ -579,7 +607,15 @@ interface AdviceInput {
   /** Engines one boiler feeds, from power.ts's own derivation. Null when unknown. */
   enginesPerBoiler: number | null;
   fields: Patch[];
-  shortResources: Array<{ resource: string; spare: number; used: number; slack: number; wanted: number }>;
+  shortResources: Array<{
+    resource: string;
+    spare: number;
+    used: number;
+    slack: number;
+    wanted: number;
+    /** How full the belts and chests carrying it are (C43). */
+    sinks: Occupancy;
+  }>;
   stalled: StalledStage[];
   /** False when no previous read was available, so paving could not be measured. */
   pavingMeasured: boolean;
@@ -594,6 +630,25 @@ interface AdviceInput {
  * does not report position, so the advisor has nothing to say about it and says
  * nothing rather than repeating what every guide already says.
  */
+/**
+ * A rectangle as tiles a player can find, never as a bare point.
+ *
+ * "x -286.5 is not precise enough, what area/tiles are you talking about?"
+ * (Soushi, 2026-09-21, mid-game). Every rectangle this module points at already
+ * carries its extent, and printing only its corner threw that away: a patch is
+ * hundreds of tiles across and its top-left corner is usually ore-free ground.
+ * Corner to corner, with the size, is what a player can put on the map.
+ */
+function areaPhrase(area: { x: number; y: number; w: number; h: number }): string {
+  const x1 = Math.round(area.x);
+  const y1 = Math.round(area.y);
+  return (
+    `the ${String(Math.round(area.w))} by ${String(Math.round(area.h))} tile area from ` +
+    `${String(x1)}, ${String(y1)} to ${String(x1 + Math.round(area.w))}, ` +
+    `${String(y1 + Math.round(area.h))}`
+  );
+}
+
 function buildAdvice(a: AdviceInput): Advice[] {
   const out: Advice[] = [];
   const mw = (w: number): string => `${(w / 1e6).toFixed(1)} MW`;
@@ -739,9 +794,7 @@ function buildAdvice(a: AdviceInput): Advice[] {
     if (donor && spare >= totalShort * MOVE_RATHER_THAN_BUILD) {
       out.push({
         section: "energy",
-        text:
-          `Move boilers to ${String(Math.round(worstBlock.x))}, ${String(Math.round(worstBlock.y))} ` +
-          `rather than building them.`,
+        text: `Move boilers into ${areaPhrase(worstBlock)} rather than building them.`,
         because:
           `${String(donor.b.boilers)} boilers at ${String(Math.round(donor.b.x))}, ` +
           `${String(Math.round(donor.b.y))} can feed ${n(donor.b.boilers * a.enginesPerBoiler!, 0)} engines ` +
@@ -775,11 +828,15 @@ function buildAdvice(a: AdviceInput): Advice[] {
       // The shortfall leads, because that is why this line exists. The patch is
       // where to put the answer, not the reason for it: ranking by how much ore
       // is left told him to lay a stone outpost while stone ran 32.9/min spare.
-      text: `Put the next ${resource} outpost at ${String(Math.round(free.x))}, ${String(Math.round(free.y))}.`,
+      text: `Put the next ${resource} outpost in ${areaPhrase(free)}.`,
       because:
         `${resource} runs ${n(short.spare)}/min spare on ${n(short.used)}/min used, ` +
         `which is ${(short.slack * 100).toFixed(2)}% slack: the line is at its ceiling now, ` +
         `before anything new is built. ` +
+        (short.sinks.fullShare === null
+          ? ""
+          : `${occupancyPhrase(short.sinks)}, which is short of backed up, so what it mines ` +
+            `still has somewhere to go. `) +
         `${ore(free.amount)} there with nothing standing on it` +
         (working
           ? `, against ${ore(working.amount)} left under the ${String(working.extractors)} drills at ` +
@@ -801,7 +858,15 @@ function buildAdvice(a: AdviceInput): Advice[] {
         because:
           `The chain wants ${n(worst.requiredPerMinute)}/min of it and the base has ` +
           `${n(worst.headroomPerMinute)}/min spare ` +
-          `(${n(worst.producedPerMinute)} made, ${n(worst.consumedPerMinute)} used).`,
+          `(${n(worst.producedPerMinute)} made, ${n(worst.consumedPerMinute)} used).` +
+          // The deficit is required minus spare, and on a backed-up line spare
+          // is demand rather than capacity, so the figure is an upper bound and
+          // says so rather than being quietly trusted (C43).
+          (isBackedUp(worst.sinks)
+            ? ` That spare is not a capacity: ${occupancyPhrase(worst.sinks)}, so the line is ` +
+              `throttled to what is drawn from it and would give more the moment something ` +
+              `drew more. Treat the figure as an upper bound and drain it before building it.`
+            : ""),
       });
       const rawGaps = top.filter((r) => r.raw);
       if (rawGaps.length > 0) {

@@ -1,6 +1,7 @@
 import { EMPTY_LOADOUT, machinesFor, multipliers, runOne } from "./machines.ts";
 import type { CraftingMachine, Data } from "./proto.ts";
 import type { Recipe, RecipeIndex } from "./recipes.ts";
+import { occupancy, occupancyOf, occupancyPhrase, type Occupancy } from "./saturation.ts";
 import { flowOf, pavingPerMinute, isLegacyFlows, type GameState } from "./state.ts";
 
 /**
@@ -99,6 +100,14 @@ export interface ItemTightness {
   sparePerMinute: number;
   /** Spare against demand. 0 means the line eats exactly what it makes. */
   headroomRatio: number;
+  /**
+   * Whether this product's sinks had room for more of it (C43).
+   *
+   * Without it the row above cannot be read at all: made equal to used is what
+   * a line at its ceiling looks like AND what a line idling behind a full belt
+   * looks like, and they want opposite advice.
+   */
+  sinks: Occupancy;
 }
 
 /** A product with an output rate that could not be charged to any class. */
@@ -637,6 +646,7 @@ export function bottlenecks(
 
   // ---- Reading 2: item tightness ------------------------------------------
 
+  const sinks = occupancy(state, data);
   const ranked: ItemTightness[] = [];
   let considered = 0;
   for (const [name, r] of flows) {
@@ -651,6 +661,7 @@ export function bottlenecks(
       usedPerMinute: r.used,
       sparePerMinute: spare,
       headroomRatio: spare / r.used,
+      sinks: occupancyOf(sinks, name),
     });
   }
   // Order by the size of the hole, describe by the shape of it. A line short by
@@ -705,8 +716,39 @@ export function bottlenecks(
   for (const t of ranked.slice(0, TIGHTNESS_FINDINGS)) {
     const evidence =
       `${t.madePerMinute.toFixed(1)}/min made against ${t.usedPerMinute.toFixed(1)}/min ` +
-      `used, over the last hour.`;
-    if (t.sparePerMinute < 0) {
+      `used, over the last hour.` +
+      (t.sinks.fullShare === null ? "" : ` ${occupancyPhrase(t.sinks)}.`);
+    // Backed up is asked FIRST, and it overrides the sign of spare rather than
+    // deferring to it (C43). A product whose sinks are full is at an
+    // equilibrium, not at a capacity, and the sign of a small imbalance across
+    // it is noise: petroleum gas reads 4.3/min behind demand on 2953.7/min used
+    // while all 108 of its tanks sit at their declared volume, and the sentence
+    // this replaces called that "drawing down what it stored".
+    if (t.sinks.verdict === "backed-up" && t.madePerMinute <= 0) {
+      // Full sinks and nothing being made is a third thing, and reading it as
+      // either of the other two is wrong: the base is coasting on a bank it
+      // built earlier. Piercing rounds on this save sit on 772 full lanes with
+      // no production at all, drawn 3.4/min by the turrets.
+      tightnessFindings.push({
+        kind: "tightness",
+        subject: t.name,
+        text:
+          `${t.name} is made by nothing at all, and the base is living off a full belt of it ` +
+          `at ${t.usedPerMinute.toFixed(1)}/min. That stock is finite: when it runs out the ` +
+          `line that used to make it has to exist again.`,
+        because: evidence,
+      });
+    } else if (t.sinks.verdict === "backed-up") {
+      tightnessFindings.push({
+        kind: "tightness",
+        subject: t.name,
+        text:
+          `${t.name} moves ${t.madePerMinute.toFixed(1)}/min with its sinks full, so that is ` +
+          `what its consumers take rather than what it could make: more of the line would ` +
+          `change no number. Drain it or feed something new from it.`,
+        because: evidence,
+      });
+    } else if (t.sparePerMinute < 0) {
       tightnessFindings.push({
         kind: "tightness",
         subject: t.name,
@@ -796,6 +838,9 @@ export function bottlenecks(
     "A machine placed but unpowered, unfed or idle still counts in the denominator. That is the point: it is what makes a starved class read low.",
     "Mining drills, labs, boilers and turrets are not crafting machines and are charged nothing here. `bun run advise` reports lab utilisation; the mining end shows up in the tightness table as an ore rate.",
     "Both readings are the engine's one-hour rolling averages as of the tick in the header, not what the base is doing right now.",
+    "The occupancy reading treats a product's belts and chests as one pool, and a base is not one pool. A product backed up on one side of the base and starved on the other reads as backed up, because the share is over every sink carrying it. The verdict answers `could more of this go anywhere`, never `is it in the right place`, and nothing in a save says which consumer a given belt feeds.",
+    "Only plain transport belts are read for occupancy. A splitter's lines and an underground pair's span do not divide into a per-tile density the same way and are excluded, so a product moved mostly through undergrounds is read from fewer lanes than it has.",
+    "A fluid that lives only in pipes has no occupancy reading. The collector records storage tanks and fluid wagons, not the 100 units a pipe segment declares, so heavy oil and light oil on this save read as having no sink rather than as having a full one. Absence of a reading, never a zero.",
   ];
 
   return {

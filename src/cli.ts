@@ -2061,6 +2061,8 @@ function cmdBottleneck(args: Args): void {
         { header: "used/min", align: "right" },
         { header: "spare/min", align: "right" },
         { header: "spare/used", align: "right" },
+        { header: "sinks", align: "right" },
+        { header: "reading" },
       ],
       shown.map((t) => [
         t.name,
@@ -2069,6 +2071,8 @@ function cmdBottleneck(args: Args): void {
         num(t.usedPerMinute, 1),
         num(t.sparePerMinute, 1),
         `${num(t.headroomRatio * 100, 1)}%`,
+        t.sinks.fullShare === null ? "-" : `${num(t.sinks.fullShare * 100, 0)}%`,
+        t.sinks.verdict === "unknown" ? "no sink read" : t.sinks.verdict,
       ]),
     ),
   );
@@ -2076,6 +2080,9 @@ function cmdBottleneck(args: Args): void {
     `\n  spare is made minus used over the last hour; spare/used is that against\n` +
       `  the line's own demand, so 0% means it eats exactly what it makes and a\n` +
       `  negative figure means the base is drawing down stock.\n` +
+      `  sinks is how full the belts and chests carrying it are, and it is what\n` +
+      `  says whether the spare figure is a capacity or a demand: a backed-up line\n` +
+      `  makes exactly what its consumers take, so more of it changes no number.\n` +
       `  Lines that are behind come first, biggest hole first, because that is what\n` +
       `  holds the factory back; the rest follow by how little they have spare.\n` +
       `  ${r.tightnessConsidered} items and fluids have demand at all; those under ` +
