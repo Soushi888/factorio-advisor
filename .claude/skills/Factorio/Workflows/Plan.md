@@ -21,7 +21,7 @@ Soushi reads it and knows what to do when he alt-tabs back into the game, in wha
 
 The contract, from `src/plan.ts`: a step's prose is authored and a step's numbers are not. Anything a step wants to show as a figure is declared as a `check` with a path into the state file, a `from` baseline and a `target`, and it is read at render time. That is what lets a step know it is half done without anyone ticking a box, and it is why a number typed into the prose is a defect rather than a shortcut. A step's `where` is `{x, y, w, h, layer}`, the same shape the advisor's own focus takes.
 
-A long form under `.local/` is optional and secondary: link it from the plan's `source` if the reasoning is worth keeping at length. The dashboard is where the plan lives.
+A long form under `.local/<domain>/` (the domain folder your housekeeping tooling assigns to the file; none assigned: ask Soushi, never an ad-hoc folder) is optional and secondary: link it from the plan's `source` if the reasoning is worth keeping at length. The dashboard is where the plan lives.
 
 ## Do
 
