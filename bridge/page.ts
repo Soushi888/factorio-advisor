@@ -159,10 +159,18 @@ td .named{max-width:100%}
 .step.open .body{display:block}
 .step .body p{margin:0 0 .4rem}
 .step .bars{margin:.35rem 0 0 .75rem;display:grid;gap:.25rem}
-.bar{display:grid;grid-template-columns:9.5rem 1fr auto;gap:.5rem;align-items:center;font-size:.7rem;color:var(--dim)}
-.bar .track{height:.35rem;border-radius:.2rem;background:color-mix(in srgb,var(--fg) 12%,transparent);overflow:hidden}
-.bar .fill{height:100%;background:var(--accent)}
-.bar.done .fill{background:var(--up)}
+.bar{display:grid;grid-template-columns:12rem 1fr 9.5rem;gap:.6rem;align-items:center;font-size:.72rem;color:var(--dim)}
+.bar>span:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar .track{position:relative;display:block;height:.7rem;border-radius:.35rem;overflow:hidden;
+  background:color-mix(in srgb,var(--fg) 10%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--fg) 14%,transparent)}
+.bar .fill{position:absolute;top:0;bottom:0;left:0;background:color-mix(in srgb,var(--accent) 55%,transparent)}
+.bar .gain{position:absolute;top:0;bottom:0;background:var(--accent)}
+.bar .loss{position:absolute;top:0;bottom:0;background:color-mix(in srgb,var(--down) 70%,transparent)}
+.bar .base{position:absolute;top:-1px;bottom:-1px;width:2px;margin-left:-1px;background:var(--fg);opacity:.7}
+.bar.done .fill,.bar.done .gain{background:var(--up)}
+.bar .val{text-align:right;white-space:nowrap}
+.bar .pct{display:inline-block;min-width:2.6rem;margin-left:.4rem;font-weight:700;color:var(--fg)}
+.bar.done .pct{color:var(--up)}
 .bar .val{font-variant-numeric:tabular-nums;color:var(--fg)}
 .step .more{font:inherit;font-size:.68rem;background:none;border:0;color:var(--accent);cursor:pointer;
   padding:.1rem .3rem;margin-left:.45rem;border-radius:.2rem}
@@ -171,7 +179,13 @@ td .named{max-width:100%}
 .bar .moved{margin-left:.4rem;font-size:.66rem;font-weight:600}
 .bar .moved.up{color:var(--up)}.bar .moved.down{color:var(--down)}
 .planlink{font-size:.8rem;color:var(--accent);text-decoration:none;border:1px solid var(--accent);
-  border-radius:.3rem;padding:.1rem .5rem;margin-left:auto}
+  border-radius:.3rem;padding:.1rem .5rem}
+.refresh{display:flex;align-items:center;gap:.5rem;margin-left:auto}
+.refresh button{font:inherit;font-size:.8rem;font-weight:600;color:var(--card);background:var(--accent);border:0;
+  border-radius:.3rem;padding:.25rem .7rem;cursor:pointer}
+.refresh button:disabled{opacity:.55;cursor:progress}
+.refresh .msg{font-size:.72rem;color:var(--dim)}
+.refresh .msg.bad{color:var(--down)}
 .planlink:hover{background:color-mix(in srgb,var(--accent) 14%,transparent)}
 .hist{font-size:.78rem;color:var(--dim)}
 .hist a{color:var(--accent);text-decoration:none}
@@ -933,6 +947,44 @@ function mapPane(model: MapModel): string {
 }
 
 /**
+ * The "Read latest save" button, and the page reloading itself.
+ *
+ * The page is a file and cannot run anything, so both talk to the endpoint the
+ * watch loop serves on loopback. The button asks for a read and reloads when it
+ * lands; the poll reloads when the loop has read a newer tick than the one this
+ * page was drawn from, so saving in game is enough while watch runs. Nobody
+ * listening is said plainly, never retried in silence.
+ */
+/** Loopback port of the watch loop's refresh endpoint; FACTORIO_ADVISOR_PORT overrides it. */
+export const REFRESH_PORT = Number(process.env.FACTORIO_ADVISOR_PORT ?? 8737);
+
+const REFRESH_SCRIPT = `(function(){
+  var box = document.querySelector(".refresh"); if (!box) return;
+  var btn = box.querySelector("button"), msg = box.querySelector(".msg");
+  var save = box.getAttribute("data-save"), tick = Number(box.getAttribute("data-tick"));
+  var base = "http://127.0.0.1:${String(REFRESH_PORT)}";
+  var q = "?save=" + encodeURIComponent(save);
+  var hold = 0;
+  function say(t, bad, keep){ msg.textContent = t; msg.className = "msg" + (bad ? " bad" : ""); if (keep) hold = Date.now() + 20000; }
+  var down = function(){ say("not running: start bun run watch in the repo", true); };
+  btn.addEventListener("click", function(){
+    btn.disabled = true; say("reading the save…");
+    fetch(base + "/refresh" + q, { method: "POST" }).then(function(r){ return r.json(); }).then(function(j){
+      if (!j.ok) { btn.disabled = false; say(j.error || "read failed", true, true); return; }
+      if (j.tick === tick) { btn.disabled = false; say("no newer save: press Ctrl+S in game first", false, true); return; }
+      location.reload();
+    }).catch(function(){ btn.disabled = false; down(); });
+  });
+  function poll(){
+    fetch(base + "/status" + q).then(function(r){ return r.json(); }).then(function(j){
+      if (j.tick !== null && j.tick !== tick) { location.reload(); return; }
+      if (!btn.disabled && Date.now() > hold) say(j.busy ? "watch is reading a save" : "watch running, saves update this page");
+    }).catch(function(){ if (!btn.disabled) down(); });
+  }
+  poll(); setInterval(poll, 5000);
+})();`;
+
+/**
  * The plan, rendered as part of the dashboard rather than beside it.
  *
  * A step is a card that knows where it happens, so `data-fx` sends the one map
@@ -948,7 +1000,28 @@ function barOf(p: StepView["progress"][number]): string {
       `<span class="val">not in this save</span></div>`
     );
   }
-  const pct = p.fraction === null ? 0 : Math.round(p.fraction * 100);
+  // The bar is the level against the target, not the distance travelled from
+  // the plan's baseline: a baseline written at tonight's value would draw every
+  // bar empty, which says nothing about how close a line already is. The
+  // baseline stays visible as a tick, and what moved since it is the bright
+  // segment (or a red one when the line fell back).
+  const clamp = (n: number): number => Math.max(0, Math.min(100, n));
+  const levelOf = (v: number): number =>
+    p.down ? (v <= 0 ? 100 : clamp((p.target / v) * 100)) : p.target === 0 ? 100 : clamp((v / p.target) * 100);
+  const now = levelOf(p.value);
+  const base = p.from === null ? null : levelOf(p.from);
+  const lo = base === null ? now : Math.min(base, now);
+  const segs =
+    `<span class="fill" style="width:${lo.toFixed(1)}%"></span>` +
+    (base !== null && now > base
+      ? `<span class="gain" style="left:${base.toFixed(1)}%;width:${(now - base).toFixed(1)}%"></span>`
+      : "") +
+    (base !== null && now < base
+      ? `<span class="loss" style="left:${now.toFixed(1)}%;width:${(base - now).toFixed(1)}%"></span>`
+      : "") +
+    (base !== null && base > 0 && base < 100
+      ? `<span class="base" style="left:${base.toFixed(1)}%" title="where this stood when the plan was written: ${esc(String(p.from))}"></span>`
+      : "");
   const shown = `${p.value.toFixed(p.value % 1 === 0 ? 0 : 1)} of ${String(p.target)}`;
   // Movement since the previous report, which is the number a player who saved
   // ten minutes ago actually wants: the bar says how far along the whole step
@@ -961,8 +1034,8 @@ function barOf(p: StepView["progress"][number]): string {
       : "";
   return (
     `<div class="bar${p.done ? " done" : ""}"><span>${esc(p.label)}</span>` +
-    `<span class="track"><span class="fill" style="width:${String(pct)}%"></span></span>` +
-    `<span class="val">${esc(shown)}${moved}</span></div>`
+    `<span class="track">${segs}</span>` +
+    `<span class="val">${esc(shown)}<span class="pct">${String(Math.round(now))}%</span>${moved}</span></div>`
   );
 }
 
@@ -1322,6 +1395,7 @@ export function renderPage(input: PageInput): string {
   <h1>${esc(r.save)}</h1>
   <span class="meta">tick ${r.tick}${r.previousTick !== null ? ` (was ${r.previousTick})` : ""} &middot; ${r.hoursPlayed.toFixed(1)} h played &middot; read ${esc(readAtLocal(state.save.readAt))}</span>
   <span class="meta">Factorio ${esc(state.snapshot.gameVersion)} build ${esc(state.snapshot.build)}</span>
+  <span class="refresh" data-save="${esc(state.save.name)}" data-tick="${String(r.tick)}"><span class="msg" aria-live="polite"></span><button type="button">Read latest save</button></span>
   ${input.plan ? `<a class="planlink" href="#plan">the plan, step by step &darr;</a>` : ""}
 </header>
 ${
@@ -1334,5 +1408,6 @@ Every figure carries <code>data-source</code> and <code>data-field</code> naming
 </footer>
 </div>
 ${model ? `<script>${SCRIPT}</script>` : ""}
+<script>${REFRESH_SCRIPT}</script>
 `;
 }

@@ -131,6 +131,8 @@ export interface StepProgress {
   value: number | null;
   from: number | null;
   target: number;
+  /** True when the target is a ceiling to get under rather than a level to reach. */
+  down: boolean;
   /** 0 to 1, or null when it cannot be computed. */
   fraction: number | null;
   done: boolean;
@@ -192,6 +194,7 @@ function progressOf(state: GameState, check: PlanCheck): StepProgress {
     value,
     from,
     target: check.target,
+    down: check.down ?? false,
     fraction,
     done,
     atLastReport,

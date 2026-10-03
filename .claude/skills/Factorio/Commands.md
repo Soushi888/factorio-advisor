@@ -11,7 +11,7 @@ Run them from `~/Projets/factorio-advisor`. **bun always, never npm.**
 | `bun run sync` | Refresh the prototype snapshot from the installed game. | yes, ~3 s |
 | `bun run state --save="game 4"` | Research, production and consumption rates, machine census, power delivered, evolution, pollution, logistic contents, and the map geometry, from a **copy** of the save. | yes |
 | `bun run report --save="game 4"` | The same read, plus a diff against the previous report of that save, plus `reports/index.html`. | yes |
-| `bun run watch` | Leave it running. A save in game becomes a report and refreshes the page. **Main tree only.** | on each save |
+| `bun run watch` | Leave it running. A save in game becomes a report and refreshes the page, and the open page reloads itself. Also serves the page's "Read latest save" button on `127.0.0.1:8737` (`FACTORIO_ADVISOR_PORT` overrides). **Main tree only.** | on each save |
 
 The save is copied into `.factorio-runtime/saves/` and read there; his own save is never opened in place. A modded save still loads, because the collector is appended to the copy's own `control.lua` rather than shipped as a mod.
 

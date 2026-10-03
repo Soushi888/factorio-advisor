@@ -5,7 +5,7 @@ import { PROJECT_ROOT, findUserdata } from "../src/paths.ts";
 // today, and the state-only path now depends on the two agreeing forever: a
 // state file is found by the advisor spelling and named by the bridge one
 // (pm#108).
-import { readState, readStateFile, slugify as slug, type GameState } from "../src/state.ts";
+import { newestSave, readState, readStateFile, slugify as slug, type GameState } from "../src/state.ts";
 import { buildReport, renderMarkdown, DEFAULT_RATE_THRESHOLD_PER_MIN } from "./report.ts";
 import { advise, type Advisory } from "../src/advise.ts";
 import type { SectionView } from "../src/sections.ts";
@@ -13,7 +13,7 @@ import { load } from "../src/proto.ts";
 import { RecipeIndex } from "../src/recipes.ts";
 import { researchable } from "../src/next.ts";
 import { sections } from "../src/sections.ts";
-import { renderPage } from "./page.ts";
+import { renderPage, REFRESH_PORT } from "./page.ts";
 import { mapModel } from "../src/layers.ts";
 import { advanceMarkers, authoredChanged, planView, type Plan, type PlanView } from "../src/plan.ts";
 import { Icons } from "../src/icons.ts";
@@ -423,6 +423,86 @@ function modelFor(state: GameState, advisory: Advisory | null): ReturnType<typeo
   });
 }
 
+/**
+ * The port the page's "Read latest save" button calls, on loopback only.
+ *
+ * The page is opened as a file, so a button on it cannot run a command; it can
+ * call this. It is served by the watch loop and nothing else, so a button that
+ * finds nobody listening says to start `bun run watch` rather than pretending.
+ */
+export { REFRESH_PORT };
+
+/** One read at a time: the loop and the button share the engine and the runtime dir. */
+let reading: Promise<unknown> = Promise.resolve();
+function serialised<T>(job: () => Promise<T>): Promise<T> {
+  const next = reading.then(job, job);
+  reading = next.catch(() => undefined);
+  return next;
+}
+
+/** The tick the page for a save was last drawn from, or null before any read. */
+// Keyed on the state file's mtime, because the page polls every few seconds and
+// the file is tens of megabytes: parse it once per read, not once per poll.
+const tickCache = new Map<string, { mtimeMs: number; tick: number | null }>();
+function lastReadTick(save: string): number | null {
+  const path = join(PROJECT_ROOT, "data", "state", `${slug(save.replace(/\.zip$/i, ""))}.json`);
+  try {
+    const mtimeMs = statSync(path).mtimeMs;
+    const hit = tickCache.get(path);
+    if (hit && hit.mtimeMs === mtimeMs) return hit.tick;
+    const st = readStateFile(save);
+    const tick = st ? st.save.tick : null;
+    tickCache.set(path, { mtimeMs, tick });
+    return tick;
+  } catch {
+    return null;
+  }
+}
+
+function serveRefresh(threshold: number | undefined, say: (s: string) => void): void {
+  const cors = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Private-Network": "true",
+    "Content-Type": "application/json",
+  };
+  const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: cors });
+  let busy = false;
+  try {
+    Bun.serve({
+      hostname: "127.0.0.1",
+      port: REFRESH_PORT,
+      // An engine read takes longer than Bun's default idle timeout.
+      idleTimeout: 255,
+      async fetch(req) {
+        const url = new URL(req.url);
+        if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+        const save = url.searchParams.get("save") ?? newestSave()?.name ?? null;
+        if (url.pathname === "/status") {
+          return json({ busy, save, tick: save ? lastReadTick(save) : null });
+        }
+        if (url.pathname === "/refresh" && req.method === "POST") {
+          if (!save) return json({ ok: false, error: "No save found on disk." }, 404);
+          busy = true;
+          say(`[${new Date().toLocaleTimeString()}] page asked for a read of ${save}`);
+          try {
+            const written = await serialised(() => reportOn(save, { threshold }));
+            return json({ ok: true, save, fresh: written !== null, tick: lastReadTick(save) });
+          } catch (err) {
+            return json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+          } finally {
+            busy = false;
+          }
+        }
+        return json({ ok: false, error: "unknown path" }, 404);
+      },
+    });
+    say(`  button   the page's "Read latest save" calls http://127.0.0.1:${String(REFRESH_PORT)}`);
+  } catch (err) {
+    say(`  button   could not listen on ${String(REFRESH_PORT)}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export async function watch(opts: { threshold?: number; once?: boolean } = {}): Promise<void> {
   const dir = savesDir();
   const say = (s: string): void => console.log(s);
@@ -432,6 +512,7 @@ export async function watch(opts: { threshold?: number; once?: boolean } = {}): 
   say(`  rule     a save is read once it has stopped changing for ${SETTLE_MS / 1000}s`);
   say(`  threshold ${opts.threshold ?? DEFAULT_RATE_THRESHOLD_PER_MIN}/min for a production change`);
   say(`  Your saves are never opened in place: each is copied into this project first.`);
+  if (!opts.once) serveRefresh(opts.threshold, say);
   say("");
 
   let seen = scan(dir);
@@ -461,7 +542,7 @@ export async function watch(opts: { threshold?: number; once?: boolean } = {}): 
       const at = new Date().toLocaleTimeString();
       say(`[${at}] ${save} changed, reading it`);
       try {
-        const written = await reportOn(save, { threshold: opts.threshold ?? undefined });
+        const written = await serialised(() => reportOn(save, { threshold: opts.threshold ?? undefined }));
         if (!written) {
           say(`         same tick as the last report, nothing new to say`);
         } else {
