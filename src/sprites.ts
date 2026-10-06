@@ -333,6 +333,46 @@ function walk(node: unknown, direction: number, kind: string, depth = 0): Sprite
 }
 
 
+/**
+ * The biggest picture a prototype declares, for when the ordered walk lands on a fragment.
+ *
+ * The walk takes the first field that yields a picture, which is right for a
+ * machine and wrong for a prototype whose body is not where the list looks
+ * first. A rocket silo keeps its body in `base_day_sprite` and the walk reached
+ * `shadow_sprite` before it, so the silo had no art at all; a cargo landing pad
+ * keeps its body in `graphics_set.picture` and the walk took the turbine in
+ * `graphics_set.animation`. Every candidate field, one level into a graphics
+ * container as well, is walked and the one whose non-shadow layers cover the
+ * most ground wins. Area is measured in tiles at the declared scale, so it is a
+ * property of the art and not of the sheet's resolution.
+ */
+export function largestPicture(data: Data, name: string): SpriteCut[] {
+  const proto = entityProto(data, name);
+  if (!proto) return [];
+  const picture = (k: string): boolean =>
+    PICTURE_WORDS.some((w) => k.includes(w)) || (GRAPHICS_FIELDS as readonly string[]).includes(k);
+  const candidates: unknown[] = [];
+  for (const [k, v] of Object.entries(proto)) {
+    if (!picture(k)) continue;
+    candidates.push(v);
+    const inner = rec(v);
+    if (inner && !Array.isArray(v)) for (const [c, w] of Object.entries(inner)) if (picture(c)) candidates.push(w);
+  }
+  let best: SpriteCut[] = [];
+  let bestArea = 0;
+  for (const node of candidates) {
+    const cuts = walk(node, 0, "input").filter((c) => !c.shadow);
+    const area = cutArea(cuts);
+    if (area > bestArea) [best, bestArea] = [cuts, area];
+  }
+  return best;
+}
+
+/** Ground a stack of layers covers, in square tiles at their declared scale: the largest layer, since they overlap. */
+export function cutArea(cuts: SpriteCut[]): number {
+  return cuts.reduce((m, c) => Math.max(m, (c.w * c.scale * c.h * c.scale) / (PIXELS_PER_TILE * PIXELS_PER_TILE)), 0);
+}
+
 /** What the drawing knows about one placed thing: enough to pick its picture. */
 export interface SpriteSubject {
   name: string;
@@ -544,6 +584,31 @@ export function cutFile(cut: SpriteCut): string | null {
   ]);
   if (proc.exitCode !== 0 || !existsSync(out)) return null;
   return out;
+}
+
+/**
+ * A cut as a data URI, resampled so a tile is at most `pxPerTile` pixels.
+ *
+ * The game ships high-resolution art at 64 sheet pixels a tile, and a page
+ * that never shows a tile wider than a few dozen screen pixels carries three
+ * quarters of those bytes for nothing: the silo alone was 938 KB of a 5.7 MB
+ * page. Art already at or below the target is returned as cut.
+ */
+export function dataUriAt(cut: SpriteCut, pxPerTile: number): string | null {
+  const sheetPerTile = PIXELS_PER_TILE / cut.scale;
+  if (sheetPerTile <= pxPerTile) return dataUri(cut);
+  const key = `${cut.file}|${String(cut.x)}|${String(cut.y)}|${String(cut.w)}|${String(cut.h)}|@${String(pxPerTile)}`;
+  const hit = dataUris.get(key);
+  if (hit !== undefined) return hit || null;
+  const file = cutFile(cut);
+  const out = file ? file.replace(/\.png$/, `@${String(pxPerTile)}.png`) : null;
+  if (out && !existsSync(out)) {
+    const pct = ((pxPerTile / sheetPerTile) * 100).toFixed(3);
+    Bun.spawnSync(["convert", file!, "-resize", `${pct}%`, out]);
+  }
+  const uri = out && existsSync(out) ? `data:image/png;base64,${readFileSync(out).toString("base64")}` : "";
+  dataUris.set(key, uri);
+  return uri || null;
 }
 
 /** True when the cutter is available at all, so a missing one is a stated gap. */

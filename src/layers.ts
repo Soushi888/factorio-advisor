@@ -37,7 +37,8 @@ import { type Area } from "./map.ts";
 import type { RecipeBlock } from "./map.ts";
 import type { Data, Proto } from "./proto.ts";
 import { footprintOf } from "./layout.ts";
-import { cutterAvailable, dataUri, spritesFor, PIXELS_PER_TILE } from "./sprites.ts";
+import { cutArea, cutterAvailable, dataUriAt, iconCut, largestPicture, spritesFor, PIXELS_PER_TILE } from "./sprites.ts";
+import type { SpriteCut } from "./sprites.ts";
 
 /** A mark for the legend key, so no layer is told apart by colour alone. */
 export type Mark = "dot" | "square" | "fill" | "box";
@@ -134,7 +135,7 @@ const DOMAINS = {
     "fusion-reactor",
     "fusion-generator",
   ],
-  production: ["assembling-machine", "furnace", "rocket-silo"],
+  production: ["assembling-machine", "furnace", "rocket-silo", "cargo-landing-pad", "beacon"],
   mining: ["mining-drill"],
   defence: ["ammo-turret", "electric-turret", "fluid-turret", "artillery-turret", "turret", "radar"],
   logistics: ["roboport", "container", "logistic-container", "linked-container", "car", "spider-vehicle"],
@@ -159,9 +160,16 @@ function round(n: number): string {
  * which is a gap rather than a number to invent: those fall back to a single
  * tile and the layer's note says how many did.
  */
-function footprints(groups: Array<{ points: Array<[number, number]>; w: number; h: number }>, cls = "fp"): string {
-  const d: string[] = [];
+/**
+ * One path per prototype rather than one per layer, carrying the prototype's
+ * name, so a click on any outline can say what it is. The art layer used to be
+ * the only thing a click could name, which left every prototype without art,
+ * the silo first among them, answering with nothing but its chunk.
+ */
+function footprints(groups: Array<{ name: string; points: Array<[number, number]>; w: number; h: number }>, cls = "fp"): string {
+  const out: string[] = [];
   for (const g of groups) {
+    const d: string[] = [];
     if (g.w === 1 && g.h === 1) {
       // Single-tile entities are merged into runs first. A belt line is 1x1
       // repeated fifty times, and fifty rectangles cost fifty times what one
@@ -172,16 +180,16 @@ function footprints(groups: Array<{ points: Array<[number, number]>; w: number; 
       for (const [x, y, w, h] of merged(g.points)) {
         d.push(`M${round(x)} ${round(y)}h${round(w)}v${round(h)}h${round(-w)}z`);
       }
-      continue;
+    } else {
+      const hw = g.w / 2;
+      const hh = g.h / 2;
+      for (const [x, y] of g.points) {
+        d.push(`M${round(x - hw)} ${round(y - hh)}h${round(g.w)}v${round(g.h)}h${round(-g.w)}z`);
+      }
     }
-    const hw = g.w / 2;
-    const hh = g.h / 2;
-    for (const [x, y] of g.points) {
-      d.push(`M${round(x - hw)} ${round(y - hh)}h${round(g.w)}v${round(g.h)}h${round(-g.h === 0 ? g.w : g.w)}z`);
-    }
+    if (d.length > 0) out.push(`<path class="${cls}" data-n="${esc(g.name)}" d="${d.join("")}"/>`);
   }
-  if (d.length === 0) return "";
-  return `<path class="${cls}" d="${d.join("")}"/>`;
+  return out.join("");
 }
 
 /**
@@ -379,6 +387,21 @@ function shapesOf(data: Data | null, names: string[]): Map<string, Shape> {
  */
 const THIN_TYPES = new Set<string>(["electric-pole"]);
 
+/** Track pieces, whose art depends on a direction the save does not record. */
+const RAIL_TRACK = new Set<string>([
+  "straight-rail",
+  "curved-rail-a",
+  "curved-rail-b",
+  "half-diagonal-rail",
+  "elevated-straight-rail",
+  "elevated-curved-rail-a",
+  "elevated-curved-rail-b",
+  "elevated-half-diagonal-rail",
+]);
+
+/** Placed things that are not parts of the base: they move, or they are not built yet. */
+const NOT_BUILDINGS = ["construction-robot", "logistic-robot", "combat-robot", "entity-ghost", "tile-ghost", "character", "character-corpse", "item-entity", "item-request-proxy", "corpse", "fish", "tree", "simple-entity", "resource", "unit", "unit-spawner", "turret", "spider-unit", "segmented-unit", "asteroid", "plant", "cliff", "projectile", "explosion", "fire", "sticker"];
+
 interface BuildContext {
   map: SurfaceMap;
   shapes: Map<string, Shape>;
@@ -407,8 +430,8 @@ function entityLayer(
   on: boolean,
 ): MapLayer {
   const want = new Set<string>(types);
-  const groups: Array<{ points: Array<[number, number]>; w: number; h: number }> = [];
-  const thin: Array<{ points: Array<[number, number]>; w: number; h: number }> = [];
+  const groups: Array<{ name: string; points: Array<[number, number]>; w: number; h: number }> = [];
+  const thin: typeof groups = [];
   const missing: Array<{ name: string; count: number }> = [];
   let drawn = 0;
   let census = 0;
@@ -417,7 +440,7 @@ function entityLayer(
   for (const [name, points] of Object.entries(ctx.map.points)) {
     const shape = ctx.shapes.get(name);
     if (!shape || !want.has(shape.type)) continue;
-    (THIN_TYPES.has(shape.type) ? thin : groups).push({ points, w: shape.w, h: shape.h });
+    (THIN_TYPES.has(shape.type) ? thin : groups).push({ name, points, w: shape.w, h: shape.h });
     drawn += points.length;
     if (shape.guessed) guessed += points.length;
     census += Math.max(points.length, ctx.census[name] ?? 0);
@@ -768,6 +791,21 @@ export function mapModel(input: ModelInput): MapModel {
   layers.push(entityLayer("defence", "Turrets and radar", "#e8615a", "dot", "base", DOMAINS.defence, ctx, true));
   layers.push(entityLayer("science", "Labs", "#b88ae8", "square", "base", DOMAINS.science, ctx, true));
 
+  // Everything placed that no family above claims, so the map never drops a
+  // building silently: lamps, combinators, speakers, whatever a later version
+  // adds. Robots, ghosts and the character are left out on purpose, being
+  // things that move or are not yet built rather than parts of the base.
+  const claimed = new Set<string>([...Object.values(DOMAINS).flat(), ...NOT_BUILDINGS]);
+  const rest = [...new Set([...ctx.shapes.values()].map((sh) => sh.type))].filter((t) => t !== "" && !claimed.has(t));
+  const other = entityLayer("other", "Everything else", "#ff7fbf", "square", "base", rest, ctx, true);
+  if (other.drawn + other.census > 0) {
+    const present = rest.filter((t) =>
+      Object.keys(ctx.map.points).some((n) => ctx.shapes.get(n)?.type === t),
+    );
+    other.note = present.join(", ") + (other.note ? ` · ${other.note}` : "");
+    layers.push(other);
+  }
+
   // Roboport coverage, from each roboport's own declared radius.
   //
   // The one layer here that draws something you cannot see standing in the
@@ -839,8 +877,14 @@ export function mapModel(input: ModelInput): MapModel {
   // frame, which is right for a machine and wrong for a belt; the belt layer's
   // rectangles remain the truthful drawing of a belt. And only prototypes with
   // fewer placed instances than the cap get art, because 30000 images is not a
-  // map, it is a stall.
-  const ART_CAP = 1200;
+  // map, it is a stall. 1500 rather than 1200 so a solar field (1396 panels on
+  // game 4) draws as panels: each one is a reference to a single definition,
+  // and the cap is about references, which the belts at thirty thousand blow
+  // and a solar field does not.
+  const ART_CAP = 1500;
+  // The closest the page zooms is one chunk across the pane, about 25 screen
+  // pixels a tile on a 800 pixel pane, so 32 is enough at any zoom it allows.
+  const ART_PX_PER_TILE = 32;
   if (input.data && cutterAvailable()) {
     const defs: string[] = [];
     const pieces: string[] = [];
@@ -854,35 +898,62 @@ export function mapModel(input: ModelInput): MapModel {
       // tiles on a side is recognisable and worth the weight. The rule is the
       // prototype's own selection box rather than a list of names.
       const shape = ctx.shapes.get(name);
-      if (points.length > ART_CAP || !shape || shape.w * shape.h < 4) {
+      // Rails are left as their rectangles: a rail's picture IS its direction,
+      // a save records none, and every curve drawn the north way round is a
+      // track that is not there.
+      if (points.length > ART_CAP || !shape || shape.w * shape.h < 4 || RAIL_TRACK.has(shape.type)) {
         skipped += points.length;
         continue;
       }
-      const cuts = spritesFor(input.data, { name });
-      const cut = cuts.filter((c) => !c.shadow).pop() ?? null;
-      if (!cut) continue;
+      // Every layer the game stacks, back to front, not the last one alone: a
+      // lab's last layer is its floor patch and drawing only that drew a lab as
+      // a grey slab. Shadows are left out, being drawn flat and dark under the
+      // map's own marks, and so are tint masks, which this tool does not colour
+      // and which read as a white ghost over the body. When the walk lands on a
+      // fragment, under a quarter of the footprint, the prototype's largest
+      // picture is used instead, which is how a silo gets its body rather than
+      // its shadow; and with no picture at all, its icon at the footprint's size.
+      const usable = (cs: SpriteCut[]): SpriteCut[] => {
+        const body = cs.filter((c) => !c.shadow);
+        const plain = body.filter((c) => !c.tint);
+        return plain.length > 0 ? plain : body;
+      };
+      const walked = usable(spritesFor(input.data, { name }));
+      const quarter = (shape.w * shape.h) / 4;
+      let cuts = cutArea(walked) >= quarter ? walked : usable(largestPicture(input.data, name));
+      if (cutArea(cuts) < quarter) {
+        const icon = iconCut(input.data, name);
+        const side = Math.min(shape.w, shape.h) * 0.8 * PIXELS_PER_TILE;
+        // An icon declares no world scale, so it is set to fill most of the footprint.
+        if (icon) cuts = [{ ...icon, scale: side / icon.w }];
+      }
+      if (cuts.length === 0) continue;
       // Embedded rather than linked, and this is not a preference. A page
       // opened from a file URL is its own opaque origin, so an SVG `image`
       // pointing at another file is cross-origin and the browser refuses it,
       // while an HTML `img` beside it loads the same file happily. Verified in
       // the browser rather than reasoned about: the icons rendered and the
       // sprites came back as broken-image glyphs until they were inlined.
-      const uri = dataUri(cut);
-      if (!uri) continue;
       // The cell is in sheet pixels at a declared scale; a tile is 32 of them.
-      const w = (cut.w * cut.scale) / PIXELS_PER_TILE;
-      const h = (cut.h * cut.scale) / PIXELS_PER_TILE;
+      // Each layer sits at its own declared shift from the entity's centre, so
+      // the definition is drawn about the origin and each placement is the
+      // entity's position alone.
+      const images = cuts
+        .map((cut) => {
+          const uri = dataUriAt(cut, ART_PX_PER_TILE);
+          if (!uri) return "";
+          const w = (cut.w * cut.scale) / PIXELS_PER_TILE;
+          const h = (cut.h * cut.scale) / PIXELS_PER_TILE;
+          return `<image x="${round(cut.shiftX - w / 2)}" y="${round(cut.shiftY - h / 2)}" width="${round(w)}" height="${round(h)}" href="${uri}"/>`;
+        })
+        .join("");
+      if (!images) continue;
       const id = `s-${name}`;
       // One definition per prototype and one reference per entity, so the art
       // is carried once however many of the machine are placed.
-      defs.push(
-        `<image id="${esc(id)}" width="${round(w)}" height="${round(h)}" href="${uri}"/>`,
-      );
+      defs.push(`<g id="${esc(id)}">${images}</g>`);
       for (const [x, y] of points) {
-        pieces.push(
-          `<use href="#${esc(id)}" x="${round(x + cut.shiftX - w / 2)}" ` +
-            `y="${round(y + cut.shiftY - h / 2)}"/>`,
-        );
+        pieces.push(`<use href="#${esc(id)}" x="${round(x)}" y="${round(y)}"/>`);
         drawn += 1;
       }
     }

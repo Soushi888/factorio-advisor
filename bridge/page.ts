@@ -320,6 +320,7 @@ footer{margin-top:1.1rem;color:var(--faint);font-size:.75rem;padding:.6rem .2rem
 /* The real art is free while it is hidden and costly while it is not, so it is revealed only at the zoom where a machine is big enough to recognise, and hidden again while the view is moving. */
 #map g[data-layer=art]{display:none}
 #map.close:not(.moving) g[data-layer=art].on{display:block}
+#map.close:not(.moving):has(g[data-layer=art].on) .fp.drawn{fill-opacity:0;stroke-opacity:0}
 #map.moving .lbl,#map.moving .area{display:none}
 /* Water is ground, so it sits back: at full strength it is a blue field with a base somewhere underneath it rather than a coastline the base sits on. */
 #map .tile.water{opacity:.5}
@@ -484,6 +485,12 @@ const SCRIPT = `
     var src = document.getElementById(g.getAttribute("data-lazy"));
     g.removeAttribute("data-lazy");
     if (src) { g.innerHTML = src.textContent; src.remove(); }
+    // A prototype drawn as itself no longer needs its rectangle painted under
+    // it: through a silo's open middle the rectangle showed as a green square.
+    // It stays in place, unpainted, so a click still lands on it.
+    [].slice.call(svg.querySelectorAll("path[data-n]")).forEach(function (p) {
+      if (g.querySelector('[id="s-' + p.getAttribute("data-n") + '"]')) p.classList.add("drawn");
+    });
   }
 
   // One repaint per animation frame, whatever the input device says.
@@ -557,10 +564,10 @@ const SCRIPT = `
       if (!hit) placed.push(a);
     });
   }
-  var tidy = null;
+  var labelTimer = null;
   function tidySoon() {
-    if (tidy !== null) clearTimeout(tidy);
-    tidy = setTimeout(function () { tidy = null; declutter(); }, 170);
+    if (labelTimer !== null) clearTimeout(labelTimer);
+    labelTimer = setTimeout(function () { labelTimer = null; declutter(); }, 170);
   }
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(function () { measure = null; labelList().forEach(function (l) { l.w = 0; }); declutter(); });
@@ -909,6 +916,8 @@ const SCRIPT = `
         var href = e.getAttribute("href") || "";
         if (href.indexOf("#s-") === 0) return href.slice(3);
       }
+      // Any outline names its own prototype, so what has no art still answers.
+      if (e.tagName === "path" && e.getAttribute("data-n")) return e.getAttribute("data-n");
     }
     return null;
   }
