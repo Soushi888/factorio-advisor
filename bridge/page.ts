@@ -547,7 +547,7 @@ const SCRIPT = `
       // A drag that has carried the picture most of the way through its margin
       // is redrawn now rather than at the end, or the pane shows its empty edge.
       var reach = Math.max(Math.abs(b.ox - a.ox) / r.width, Math.abs(b.oy - a.oy) / r.height);
-      if (k > 0.97 && k < 1.03 && reach > MARGIN * 0.8) { commit(); return; }
+      if (k > 0.97 && k < 1.03 && reach > MARGIN * 0.98) { commit(); return; }
       svg.style.transform = "translate(" + tx.toFixed(2) + "px," + ty.toFixed(2) + "px) scale(" + k.toFixed(5) + ")";
       drawScale();
       if (settle !== null) clearTimeout(settle);
@@ -603,7 +603,10 @@ const SCRIPT = `
       alt.appendChild(beltLayer);
     }
     if (!show) { if (beltLayer && beltKey) { beltLayer.innerHTML = ""; beltKey = ""; } return; }
-    var x0 = Math.floor(vb.x), y0 = Math.floor(vb.y), x1 = Math.ceil(vb.x + vb.w), y1 = Math.ceil(vb.y + vb.h);
+    // The whole drawn extent, margin included, so a pan uncovers belts that
+    // already carry their icons instead of bare belts that fill in on settle.
+    var x0 = Math.floor(vb.x - vb.w * MARGIN), y0 = Math.floor(vb.y - vb.h * MARGIN);
+    var x1 = Math.ceil(vb.x + vb.w * (1 + MARGIN)), y1 = Math.ceil(vb.y + vb.h * (1 + MARGIN));
     var key = [x0, y0, x1, y1].join(",");
     if (key === beltKey) return;
     beltKey = key;
@@ -737,7 +740,10 @@ const SCRIPT = `
     var d = drawn();
     var ux = vb.x + (cx - d.left) / d.s;
     var uy = vb.y + (cy - d.top) / d.s;
-    var w = Math.max(chunk, Math.min(fit[2] * 4, vb.w * factor));
+    // Half a chunk across at the closest, so a short pane still reaches the zoom
+    // where belt contents draw (BELT_MIN_PX): a 374 pixel pane floored at a
+    // whole chunk gave 11.85 pixels a tile and never showed a belt's items.
+    var w = Math.max(chunk / 2, Math.min(fit[2] * 4, vb.w * factor));
     var f = w / vb.w;
     vb.x = ux - (ux - vb.x) * f;
     vb.y = uy - (uy - vb.y) * f;

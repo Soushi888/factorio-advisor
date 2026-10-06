@@ -388,9 +388,11 @@ function shapesOf(data: Data | null, names: string[]): Map<string, Shape> {
 const THIN_TYPES = new Set<string>(["electric-pole"]);
 
 /**
- * Pixels a tile carries in embedded art. The closest the page zooms is one
- * chunk across the pane, about 25 screen pixels a tile on an 800 pixel pane, so
- * 32 is enough at any zoom it allows.
+ * Pixels a tile carries in embedded art. A chunk across an 800 pixel pane is
+ * about 25 screen pixels a tile, where 32 is lossless; the page zooms to half a
+ * chunk, about 50, where the art is drawn half again its size and softens a
+ * little. Carrying 48 would cost the page more than twice the art's bytes for
+ * the closest zoom alone.
  */
 const ART_PX_PER_TILE = 32;
 
