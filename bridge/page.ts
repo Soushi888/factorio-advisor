@@ -86,7 +86,7 @@ function fontFaces(): string {
       const path = join(core!, "data", "core", "fonts", file);
       if (!existsSync(path)) return "";
       const url = pathToFileURL(path).href.replace(/["\\]/g, "");
-      return `@font-face{font-family:"Titillium Factorio";src:url("${url}") format("truetype");font-weight:${String(weight)};font-display:swap}`;
+      return `@font-face{font-family:"Titillium Factorio";src:url("${url}") format("truetype");font-weight:${String(weight)};font-display:block}`;
     })
     .join("");
 }
@@ -1077,7 +1077,15 @@ const REFRESH_SCRIPT = `(function(){
   });
   function poll(){
     fetch(base + "/status" + q).then(function(r){ return r.json(); }).then(function(j){
-      if (j.tick !== null && j.tick !== tick) { location.reload(); return; }
+      // Reload once per newer tick. A copy of the page that watch does not rewrite (a worktree, a saved file) would otherwise come back with the same old tick and reload every five seconds for ever.
+      if (j.tick !== null && j.tick !== tick) {
+        // Without session storage there is no way to know a reload already happened, so none is made rather than risking the loop.
+        var key = "advisor-reloaded:" + save + ":" + j.tick, tried = "1";
+        try { tried = sessionStorage.getItem(key); if (!tried) sessionStorage.setItem(key, "1"); } catch (e) { tried = "1"; }
+        if (!tried) { location.reload(); return; }
+        if (!btn.disabled && Date.now() > hold) say("watch has read tick " + j.tick + ", but this copy of the page is not the one it rewrites", true);
+        return;
+      }
       if (!btn.disabled && Date.now() > hold) { say(j.busy ? "watch is reading a save" : "watch running, saves update this page"); msg.classList.add("live"); }
     }).catch(function(){ if (!btn.disabled) down(); });
   }
