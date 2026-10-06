@@ -7,6 +7,9 @@ import type { PlanView, StepView } from "../src/plan.ts";
 import { readAtLocal } from "../src/state.ts";
 import type { Icons } from "../src/icons.ts";
 import type { BottleneckReport } from "../src/bottlenecks.ts";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { findCore } from "../src/paths.ts";
 
 /**
  * The dashboard.
@@ -60,6 +63,32 @@ function withIcon(name: string, label?: string): string {
   return `<span class="named"><img class="ico" src="${esc(url)}" alt="" decoding="sync">${text}</span>`;
 }
 
+/**
+ * The game's own typeface, read from the install the way the icons are, by `file://` URL.
+ *
+ * Titillium Web ships with Factorio under `data/core/fonts`; nothing is copied into this repo and nothing is fetched from the network. Without an install the declaration is empty and the stack falls back to the system sans.
+ */
+function fontFaces(): string {
+  let core: string | null = null;
+  try {
+    core = findCore();
+  } catch {
+    return "";
+  }
+  const faces: Array<[string, number]> = [
+    ["TitilliumWeb-Regular.ttf", 400],
+    ["TitilliumWeb-SemiBold.ttf", 600],
+    ["TitilliumWeb-Bold.ttf", 700],
+  ];
+  return faces
+    .map(([file, weight]) => {
+      const path = join(core!, "data", "core", "fonts", file);
+      if (!existsSync(path)) return "";
+      return `@font-face{font-family:"Titillium Factorio";src:url("file://${esc(path)}") format("truetype");font-weight:${String(weight)};font-display:swap}`;
+    })
+    .join("");
+}
+
 function fig(value: string, source: string, field: string, label: string, tone = ""): string {
   return (
     `<div class="fig${tone ? ` ${tone}` : ""}" data-source="${esc(source)}" data-field="${esc(field)}">` +
@@ -72,180 +101,229 @@ function signed(v: number, places = 1): string {
 }
 
 const CSS = `
-:root{--bg:#f6f5f2;--fg:#1b1a18;--dim:#6b6862;--line:#ddd9d2;--card:#fff;--up:#1f7a3d;--down:#a3341f;--accent:#b3541e;--void:#e8e4dc}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#161513;--fg:#eceae5;--dim:#959087;--line:#2e2b27;--card:#1f1d1a;--up:#5fbf80;--down:#e0745a;--accent:#e08a3c;--void:#0e0d0c}}
+/* The game's own GUI, approximated in CSS: gunmetal windows with a bevelled edge, darker "deep" frames inset into them for anything that holds data, cream headings, and orange for what can be clicked. Factorio has no light GUI, so neither does this page. */
+:root{color-scheme:dark;
+  --bg:#1b1a1b;--panel:#313031;--panel-hi:#3d3c3d;--deep:#242324;--deeper:#1c1b1c;
+  --fg:#e6e6e6;--head:#ffe6c0;--dim:#a39f99;--faint:#6f6b66;--line:#454345;--edge:#0d0c0d;
+  --card:var(--panel);--up:#8ed16a;--down:#ff6a4d;--warn:#ffcc4a;--accent:#ff9f1c;--accent-hi:#ffb84d;
+  --go:#5eb663;--go-hi:#77cc7b;--void:#0f0f10;
+  --bevel:inset 1px 1px 0 rgba(255,255,255,.09),inset -1px -1px 0 rgba(0,0,0,.55);
+  --sunk:inset 0 1px 3px rgba(0,0,0,.75),inset 0 0 0 1px rgba(0,0,0,.6);
+  --lift:0 2px 0 var(--edge),0 4px 14px rgba(0,0,0,.45);
+  --font:"Titillium Factorio","Titillium Web",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-.wrap{max-width:104rem;margin:0 auto;padding:1.25rem 1.5rem 3rem}
-header{display:flex;flex-wrap:wrap;gap:.75rem 1.5rem;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:.6rem;margin-bottom:1.1rem}
-h1{font-size:1.05rem;margin:0;font-weight:650;letter-spacing:-.01em}
-.meta{color:var(--dim);font-size:.8rem;font-variant-numeric:tabular-nums}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(32rem,1fr));gap:1rem;align-items:start}
-/* Defensive, not a fix for anything observed. A grid item defaults to
-   min-width:auto, so a long enough unbreakable token would widen its track past
-   its minimum and overflow the page, which the dashboard rule forbids. N6 reported
-   exactly that symptom and it did not reproduce: scrollWidth equals clientWidth
-   at every width tested, with and without these rules, on a probe certified to
-   fire. The card the report called clipped fits exactly inside the content edge;
-   what was cropped was the screenshot, which is narrower than the page. */
-section{background:var(--card);border:1px solid var(--line);border-radius:.5rem;padding:.85rem .95rem;min-width:0}
+html{scroll-behavior:smooth;scroll-padding-top:3.4rem}
+body{margin:0;color:var(--fg);font:14.5px/1.45 var(--font);
+  background:radial-gradient(ellipse at 50% -10%,#2a2829 0,var(--bg) 60%) fixed,var(--bg)}
+code{font-family:ui-monospace,"DejaVu Sans Mono",monospace;font-size:.9em;color:var(--head)}
+a{color:var(--accent)}
+.wrap{max-width:120rem;margin:0 auto;padding:.9rem 1.25rem 3rem}
+
+/* A window is the panel, its bevel, and a title set the way the game sets one. */
+
+header,section,.mappane,.overview{background:var(--panel);border:1px solid var(--edge);border-radius:.25rem;
+  box-shadow:var(--bevel),var(--lift)}
+header{display:flex;flex-wrap:wrap;gap:.5rem 1rem;align-items:center;padding:.5rem .8rem;margin-bottom:.75rem}
+h1{font-size:1.25rem;margin:0;font-weight:700;color:var(--head);letter-spacing:.01em;display:flex;align-items:center;gap:.5rem}
+h1 .ico{width:1.6rem;height:1.6rem;min-width:1.6rem;margin:0}
+.meta{color:var(--dim);font-size:.82rem;font-variant-numeric:tabular-nums;display:flex;flex-wrap:wrap;gap:.35rem}
+.meta .chip{background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem;padding:.08rem .5rem;white-space:nowrap}
+.meta .chip b{color:var(--fg);font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(30rem,1fr));gap:.9rem;align-items:start}
+section{padding:.7rem .85rem .85rem;min-width:0}
 section>*{min-width:0}
-h2{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:0 0 .6rem;font-weight:600}
-.lead{font-size:.88rem;margin:0 0 .45rem;font-weight:500}
-.tcap{font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:.7rem 0 -.35rem;font-weight:600}
-.carry{font-size:.82rem;margin:0 0 .7rem;color:var(--dim);border-left:2px solid var(--accent);padding-left:.55rem}
-.figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(8rem,1fr));gap:.55rem}
-.fig{display:flex;flex-direction:column;gap:.1rem}
-.fig .v{font-size:1.15rem;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em;overflow-wrap:anywhere}
-.fig .l{font-size:.7rem;color:var(--dim)}
+/* Below the fold the browser may skip a card's layout and paint until it is near the viewport; the intrinsic size keeps the scrollbar honest meanwhile. */
+.readpane>section{content-visibility:auto;contain-intrinsic-size:auto 32rem}
+h2{font-size:1rem;color:var(--head);margin:-.7rem -.85rem .65rem;padding:.42rem .85rem;font-weight:700;letter-spacing:.01em;
+  display:flex;align-items:center;gap:.45rem;border-bottom:1px solid var(--edge);
+  background:linear-gradient(var(--panel-hi),var(--panel));border-radius:.25rem .25rem 0 0;box-shadow:inset 0 -1px 0 rgba(255,255,255,.05)}
+h2 .ico{width:1.3rem;height:1.3rem;min-width:1.3rem;min-height:1.3rem;margin:0}
+h2 .count{margin-left:auto;font-size:.72rem;font-weight:600;color:var(--dim)}
+.lead{font-size:.95rem;margin:0 0 .45rem;font-weight:600}
+.tcap{font-size:.7rem;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:.8rem 0 .3rem;font-weight:700}
+.carry{font-size:.84rem;margin:0 0 .7rem;color:var(--dim);border-left:3px solid var(--accent);padding:.15rem 0 .15rem .6rem;
+  background:linear-gradient(90deg,color-mix(in srgb,var(--accent) 9%,transparent),transparent 70%)}
+/* Figures sit in the game's slot frames: sunk, dark, the value large. */
+.figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr));gap:.4rem;margin:.2rem 0 .1rem}
+.fig{display:flex;flex-direction:column;gap:.05rem;background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem;padding:.4rem .55rem .45rem;min-width:0}
+.fig .v{font-size:1.3rem;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.15;overflow-wrap:anywhere}
+.fig .l{font-size:.72rem;color:var(--dim);line-height:1.25}
+.fig.warn{box-shadow:var(--sunk),inset 3px 0 0 var(--down)}
 .fig.warn .v{color:var(--down)}
+.fig.good{box-shadow:var(--sunk),inset 3px 0 0 var(--up)}
 .fig.good .v{color:var(--up)}
-/* Numbers hug the right edge and their headings sit over them, which is the
-   whole of table alignment: a heading left-aligned above a right-aligned column
-   is a label pointing at nothing. The name column absorbs the slack so the
-   figures stay together rather than drifting apart as a card widens, and auto
-   layout lets each numeric column be exactly as wide as its widest number. */
-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;table-layout:auto;margin-top:.6rem}
-td,th{text-align:left;padding:.2rem 0 .2rem 0;border-bottom:1px solid var(--line);font-size:.82rem;overflow-wrap:anywhere;vertical-align:baseline}
-th{color:var(--dim);font-weight:500;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+/* Tables live in a deep frame. Numbers hug the right edge with their headings over them; the name column absorbs the slack so figures stay together. */
+.tframe{background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem;padding:.15rem .55rem;margin-top:.35rem;overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;table-layout:auto}
+td,th{text-align:left;padding:.24rem 0;border-bottom:1px solid rgba(255,255,255,.055);font-size:.86rem;overflow-wrap:anywhere;vertical-align:middle}
+th{color:var(--dim);font-weight:700;font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;border-bottom-color:var(--line)}
 td:first-child,th:first-child{width:100%;padding-right:.9rem}
 td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;padding-left:1.1rem}
 tr:last-child td{border-bottom:0}
+tr:hover td{background:rgba(255,255,255,.035)}
+
+/* A share is drawn as well as written: the number is the cell and the bar sits under it. */
+
+td.n .meter{display:block;height:3px;margin-top:2px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden;min-width:3.2rem}
+td.n .meter i{display:block;height:100%;background:var(--accent)}
+td.n .meter.low i{background:var(--faint)}
 .up{color:var(--up)}.down{color:var(--down)}
 .cols{columns:17.5rem;column-gap:1.25rem}
 .cols li{break-inside:avoid}
 ul{margin:0;padding-left:1.1rem}
-li{font-size:.82rem;margin:.1rem 0;overflow-wrap:anywhere}
-.quiet{color:var(--dim);font-style:italic;font-size:.85rem}
-/* The plan sits at the top of the reading pane and looks like a plan: numbered,
-   ordered, each step carrying what it costs and how far along it is. It is the
-   one authored thing on a measured page, so every number inside it is read from
-   the state file at render time rather than typed into the prose. */
-/* The game's own icons, at the size a row can carry. Pixel art scaled down
-   smooths badly, so they are handed to the browser at a size close to a factor
-   of the 64 pixel source and left alone. */
-.ico{width:1.15rem;height:1.15rem;min-width:1.15rem;min-height:1.15rem;vertical-align:-.28em;
-  margin-right:.3rem;flex:0 0 auto;object-fit:contain}
+li{font-size:.86rem;margin:.1rem 0;overflow-wrap:anywhere}
+.quiet{color:var(--dim);font-style:italic;font-size:.88rem}
+/* Factorio icons are mipmap strips: the 64 px picture with its 32, 16 and 8 px reductions beside it, 120 by 64 in all. Covering a square from the left shows the first picture alone; containing it showed all four, squeezed. */
+img.ico,#pin h4 img{object-fit:cover;object-position:0 50%}
+.ico{width:1.2rem;height:1.2rem;min-width:1.2rem;min-height:1.2rem;vertical-align:-.3em;margin-right:.35rem;flex:0 0 auto}
 .named{display:inline-flex;align-items:center;min-width:0}
-.named .ico{margin-right:.35rem}
+.named .ico{margin-right:.4rem}
 td .named{max-width:100%}
-.fig .l .ico{width:.95rem;height:.95rem;vertical-align:-.2em;margin-right:.2rem}
-/* The bottleneck card. Two tables that must never be blended: what the machines
-   did with their time, and what the lines have left. The finding above them is
-   the sentence; the tables are the evidence for it. */
+.fig .l .ico{width:.95rem;height:.95rem;min-width:.95rem;min-height:.95rem;vertical-align:-.2em;margin-right:.2rem}
+
+/* The overview: one slot per section, its headline figure, how much advice it carries, and a click that goes there. Every figure is the section's own. */
+.overview{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:.4rem;padding:.45rem;margin-bottom:.75rem}
+.ov{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto;column-gap:.55rem;align-items:center;text-decoration:none;color:inherit;
+  background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem;padding:.4rem .6rem;border-left:3px solid var(--faint);min-width:0}
+.ov:hover,.ov:focus-visible{background:var(--deeper);outline:1px solid var(--accent);outline-offset:-1px}
+.ov.warn{border-left-color:var(--down)}.ov.good{border-left-color:var(--up)}
+.ov .ico{grid-row:1/3;width:2rem;height:2rem;min-width:2rem;min-height:2rem;margin:0}
+.ov .t{font-size:.7rem;text-transform:uppercase;letter-spacing:.07em;color:var(--head);font-weight:700;display:flex;gap:.4rem;align-items:center;min-width:0}
+.ov .t .nadv{margin-left:auto;font-size:.66rem;color:#1b1a1b;background:var(--accent);border-radius:.6rem;padding:0 .38rem;letter-spacing:0}
+.ov .x{font-size:1.15rem;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ov.warn .x{color:var(--down)}.ov.good .x{color:var(--up)}
+.ov .x small{font-size:.7rem;font-weight:400;color:var(--dim);margin-left:.35rem}
+
+/* Tabs along the top of the reading pane, as the game draws them: a dark rail, the current one raised and lit. They stay put while the cards scroll. */
+.tabs{position:sticky;top:0;z-index:5;grid-column:1/-1;display:flex;gap:.2rem;overflow-x:auto;scrollbar-width:thin;
+  padding:.3rem;background:var(--deeper);border:1px solid var(--edge);border-radius:.25rem;box-shadow:var(--sunk),0 6px 12px rgba(0,0,0,.4)}
+.tabs a{flex:0 0 auto;font-size:.82rem;font-weight:600;color:var(--dim);text-decoration:none;padding:.22rem .7rem;border-radius:.2rem;
+  background:var(--panel);box-shadow:var(--bevel);white-space:nowrap;display:flex;align-items:center;gap:.35rem}
+.tabs a:hover,.tabs a:focus-visible{color:var(--fg);background:var(--panel-hi)}
+.tabs a[aria-current=true]{color:#1b1a1b;background:linear-gradient(var(--accent-hi),var(--accent))}
+.tabs a .dot{width:.45rem;height:.45rem;border-radius:50%;background:var(--faint)}
+.tabs a .dot.warn{background:var(--down)}.tabs a .dot.good{background:var(--up)}
+.tabs a[aria-current=true] .dot{box-shadow:0 0 0 1px #1b1a1b}
+
+/* The bottleneck card. Two tables that must never be blended: what the machines did with their time, and what the lines have left. */
 .holding{grid-column:1/-1}
-.holding .find{margin:.2rem 0 .5rem;font-size:.86rem;font-weight:500}
-.holding .find .because{display:block;font-weight:400;color:var(--dim);font-size:.78rem;margin-top:.1rem}
-.holding .pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(23rem,1fr));gap:0 1.5rem}
-.holding .limits{font-size:.72rem;color:var(--dim);margin:.6rem 0 0}
+.holding .find{margin:.25rem 0 .45rem;font-size:.9rem;font-weight:600;padding:.35rem .55rem;background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem}
+.holding .find .because{display:block;font-weight:400;color:var(--dim);font-size:.8rem;margin-top:.1rem}
+.holding .pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(22rem,1fr));gap:0 1rem}
+/* The caveats are the fine print the readings rest on: every word kept, folded away until asked for, one per line instead of one paragraph. */
+details.limits{margin:.7rem 0 0;font-size:.78rem;color:var(--dim)}
+details.limits summary{cursor:pointer;font-weight:600;color:var(--dim);list-style:none;display:inline-flex;gap:.35rem;align-items:center}
+details.limits summary::-webkit-details-marker{display:none}
+details.limits summary::before{content:"\\25B8";color:var(--accent);transition:transform .15s}
+details.limits[open] summary::before{transform:rotate(90deg)}
+details.limits summary:hover{color:var(--fg)}
+details.limits ul{margin:.4rem 0 0;padding:.45rem .6rem .45rem 1.5rem;background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem}
+details.limits li{font-size:.8rem;margin:.2rem 0;color:var(--dim)}
 .holding .bar{grid-template-columns:8rem 1fr auto}
 .plan{grid-column:1/-1}
-.plan .why{color:var(--dim);font-size:.78rem;margin:.15rem 0 0}
-.steps{list-style:none;margin:.6rem 0 0;padding:0;display:grid;gap:.55rem}
-.step{border:1px solid var(--line);border-radius:.4rem;padding:.55rem .7rem;position:relative;
-  background:color-mix(in srgb,var(--fg) 2%,transparent)}
+.plan .why{color:var(--dim);font-size:.82rem;margin:.15rem 0 0}
+.steps{list-style:none;margin:.6rem 0 0;padding:0 0 0 .6rem;display:grid;gap:.45rem}
+.step{border-radius:.2rem;padding:.5rem .7rem;position:relative;background:var(--deep);box-shadow:var(--sunk);border-left:3px solid var(--accent)}
 .step[data-fx]{cursor:pointer}
-.step[data-fx]:hover,.step[data-fx]:focus-visible{border-color:var(--accent)}
-.step.done{opacity:.62}
-.step .n{position:absolute;left:-.55rem;top:.5rem;width:1.15rem;height:1.15rem;border-radius:50%;
-  background:var(--accent);color:var(--card);font-size:.66rem;font-weight:700;
-  display:flex;align-items:center;justify-content:center}
-.step.done .n{background:var(--up)}
-.step.started .n{background:var(--card);color:var(--accent);border:1.5px solid var(--accent)}
-.step h3{margin:0 0 .1rem .75rem;font-size:.88rem;font-weight:620}
-.step .chips{display:flex;flex-wrap:wrap;gap:.3rem .5rem;margin:.25rem 0 .1rem .75rem;font-size:.7rem;color:var(--dim)}
+.step[data-fx]:hover,.step[data-fx]:focus-visible{background:var(--deeper);outline:1px solid var(--accent);outline-offset:-1px}
+.step.done{opacity:.6;border-left-color:var(--up)}
+.step.started{border-left-color:var(--warn)}
+.step .n{position:absolute;left:-.75rem;top:.45rem;width:1.35rem;height:1.35rem;border-radius:.2rem;
+  background:linear-gradient(var(--accent-hi),var(--accent));color:#1b1a1b;font-size:.72rem;font-weight:700;
+  display:flex;align-items:center;justify-content:center;box-shadow:0 1px 0 var(--edge)}
+.step.done .n{background:linear-gradient(var(--go-hi),var(--go))}
+.step.started .n{background:var(--deeper);color:var(--warn);box-shadow:inset 0 0 0 1.5px var(--warn)}
+.step h3{margin:0 0 .1rem .75rem;font-size:.93rem;font-weight:700;color:var(--head)}
+.step .chips{display:flex;flex-wrap:wrap;gap:.3rem;margin:.3rem 0 .1rem .75rem;font-size:.74rem;color:var(--dim)}
+.step .chips span{background:var(--panel);box-shadow:var(--bevel);border-radius:.2rem;padding:.05rem .45rem}
 .step .chips b{font-weight:600;color:var(--fg)}
-.step .body{margin:.4rem 0 0 .75rem;font-size:.82rem;display:none}
+.step .body{margin:.45rem 0 0 .75rem;font-size:.86rem;display:none}
 .step.open .body{display:block}
 .step .body p{margin:0 0 .4rem}
-.step .bars{margin:.35rem 0 0 .75rem;display:grid;gap:.25rem}
-.bar{display:grid;grid-template-columns:12rem 1fr 9.5rem;gap:.6rem;align-items:center;font-size:.72rem;color:var(--dim)}
+.step .bars{margin:.4rem 0 0 .75rem;display:grid;gap:.3rem}
+/* Progress the way the game draws research: a dark trough, an orange fill. */
+.bar{display:grid;grid-template-columns:12rem 1fr 10rem;gap:.6rem;align-items:center;font-size:.76rem;color:var(--dim)}
 .bar>span:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bar .track{position:relative;display:block;height:.7rem;border-radius:.35rem;overflow:hidden;
-  background:color-mix(in srgb,var(--fg) 10%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--fg) 14%,transparent)}
-.bar .fill{position:absolute;top:0;bottom:0;left:0;background:color-mix(in srgb,var(--accent) 55%,transparent)}
-.bar .gain{position:absolute;top:0;bottom:0;background:var(--accent)}
-.bar .loss{position:absolute;top:0;bottom:0;background:color-mix(in srgb,var(--down) 70%,transparent)}
-.bar .base{position:absolute;top:-1px;bottom:-1px;width:2px;margin-left:-1px;background:var(--fg);opacity:.7}
-.bar.done .fill,.bar.done .gain{background:var(--up)}
-.bar .val{text-align:right;white-space:nowrap}
-.bar .pct{display:inline-block;min-width:2.6rem;margin-left:.4rem;font-weight:700;color:var(--fg)}
+.bar .track{position:relative;display:block;height:.75rem;border-radius:.15rem;overflow:hidden;background:var(--deeper);box-shadow:var(--sunk)}
+.bar .fill{position:absolute;top:1px;bottom:1px;left:0;background:color-mix(in srgb,var(--accent) 55%,#000)}
+.bar .gain{position:absolute;top:1px;bottom:1px;background:linear-gradient(var(--accent-hi),var(--accent))}
+.bar .loss{position:absolute;top:1px;bottom:1px;background:color-mix(in srgb,var(--down) 75%,transparent)}
+.bar .base{position:absolute;top:-1px;bottom:-1px;width:2px;margin-left:-1px;background:var(--head);opacity:.8}
+.bar.done .fill,.bar.done .gain{background:linear-gradient(var(--go-hi),var(--go))}
+.bar .val{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--fg)}
+.bar .pct{display:inline-block;min-width:2.6rem;margin-left:.4rem;font-weight:700;color:var(--head)}
 .bar.done .pct{color:var(--up)}
-.bar .val{font-variant-numeric:tabular-nums;color:var(--fg)}
-.step .more{font:inherit;font-size:.68rem;background:none;border:0;color:var(--accent);cursor:pointer;
-  padding:.1rem .3rem;margin-left:.45rem;border-radius:.2rem}
-.plan .stale{font-size:.72rem;color:var(--down);margin:.3rem 0 0}
-.step .closed{margin:.2rem 0 0;font-size:.74rem;color:var(--up);font-weight:600}
-.bar .moved{margin-left:.4rem;font-size:.66rem;font-weight:600}
+
+/* Buttons come in the game's kinds: grey for a tool, lit orange on hover, and green for the one that does something. */
+
+button{font-family:inherit}
+.step .more,.seemap,.maptools button,.planlink{font:inherit;font-size:.74rem;font-weight:600;color:var(--fg);cursor:pointer;
+  background:linear-gradient(#4a484a,#3a393a);border:1px solid var(--edge);border-radius:.2rem;padding:.12rem .55rem;box-shadow:var(--bevel);text-decoration:none}
+.step .more:hover,.seemap:hover,.seemap:focus-visible,.maptools button:hover,.maptools button:focus-visible,.planlink:hover{
+  background:linear-gradient(var(--accent-hi),var(--accent));color:#1b1a1b}
+.step .more{margin-left:.5rem;font-size:.68rem;vertical-align:.1em}
+.plan .stale{font-size:.76rem;color:var(--warn);margin:.4rem 0 0}
+.step .closed{margin:.2rem 0 0 .75rem;font-size:.78rem;color:var(--up);font-weight:600}
+.bar .moved{margin-left:.4rem;font-size:.68rem;font-weight:600}
 .bar .moved.up{color:var(--up)}.bar .moved.down{color:var(--down)}
-.planlink{font-size:.8rem;color:var(--accent);text-decoration:none;border:1px solid var(--accent);
-  border-radius:.3rem;padding:.1rem .5rem}
 .refresh{display:flex;align-items:center;gap:.5rem;margin-left:auto}
-.refresh button{font:inherit;font-size:.8rem;font-weight:600;color:var(--card);background:var(--accent);border:0;
-  border-radius:.3rem;padding:.25rem .7rem;cursor:pointer}
+.refresh button{font:inherit;font-size:.86rem;font-weight:700;color:#10200f;cursor:pointer;
+  background:linear-gradient(var(--go-hi),var(--go));border:1px solid var(--edge);border-radius:.2rem;padding:.28rem .9rem;box-shadow:var(--bevel)}
+.refresh button:hover{filter:brightness(1.12)}
 .refresh button:disabled{opacity:.55;cursor:progress}
-.refresh .msg{font-size:.72rem;color:var(--dim)}
+.refresh .msg{font-size:.76rem;color:var(--dim)}
+.refresh .msg::before{content:"";display:inline-block;width:.5rem;height:.5rem;border-radius:50%;background:var(--faint);margin-right:.4rem;vertical-align:.05em}
+.refresh .msg.live::before{background:var(--up);box-shadow:0 0 6px var(--up)}
 .refresh .msg.bad{color:var(--down)}
-.planlink:hover{background:color-mix(in srgb,var(--accent) 14%,transparent)}
-.hist{font-size:.78rem;color:var(--dim)}
+.refresh .msg.bad::before{background:var(--down)}
+.refresh .msg:empty{display:none}
+.hist{font-size:.8rem;color:var(--dim)}
 .hist a{color:var(--accent);text-decoration:none}
 .hist a:hover{text-decoration:underline}
 .wide{grid-column:1/-1}
-.advice{list-style:none;padding:0;margin:.7rem 0 0;counter-reset:a}
-.advice li{margin:0 0 .55rem;padding-left:1.5rem;position:relative;font-size:.85rem}
-.advice li::before{counter-increment:a;content:counter(a);position:absolute;left:0;top:.05rem;width:1.05rem;height:1.05rem;border-radius:50%;background:var(--accent);color:var(--card);font-size:.62rem;font-weight:700;display:flex;align-items:center;justify-content:center}
-.advice b{font-weight:620}
-.advice .why{display:block;color:var(--dim);font-size:.78rem;margin-top:.1rem}
-.advice .tag{display:inline-block;white-space:nowrap;font-size:.6rem;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);border:1px solid var(--line);border-radius:.6rem;padding:0 .35rem;margin-left:.35rem;vertical-align:.08em}
-/* The map is drawn in the save's own tile coordinates and scaled by the
-   browser, so it needs a box to fit into and a colour for the chunk squares to
-   inherit through the CSS currentColor keyword. */
-.mapbox{margin-top:.7rem;background:color-mix(in srgb,var(--fg) 4%,transparent);border-radius:.35rem;padding:.35rem;color:var(--fg)}
+.advice{list-style:none;padding:0;margin:.4rem 0 0;counter-reset:a;display:grid;gap:.35rem}
+.advice li{margin:0;padding:.38rem .55rem .4rem 2.1rem;position:relative;font-size:.88rem;background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem}
+.advice li::before{counter-increment:a;content:counter(a);position:absolute;left:.5rem;top:.42rem;width:1.2rem;height:1.2rem;border-radius:.2rem;
+  background:linear-gradient(var(--accent-hi),var(--accent));color:#1b1a1b;font-size:.68rem;font-weight:700;display:flex;align-items:center;justify-content:center}
+.advice b{font-weight:700}
+.advice .why{display:block;color:var(--dim);font-size:.8rem;margin-top:.1rem}
+.advice .tag{display:inline-flex;align-items:center;gap:.25rem;white-space:nowrap;font-size:.62rem;text-transform:uppercase;letter-spacing:.06em;color:var(--head);
+  background:var(--panel);box-shadow:var(--bevel);border-radius:.2rem;padding:.02rem .4rem;margin-left:.45rem;vertical-align:.1em;text-decoration:none}
+.advice .tag .ico{width:.9rem;height:.9rem;min-width:.9rem;min-height:.9rem;margin:0}
+.advice .tag:hover{color:#1b1a1b;background:var(--accent)}
+.mapbox{margin-top:.7rem;background:var(--deep);border-radius:.2rem;padding:.35rem;color:var(--fg)}
 svg.map{display:block;max-height:34rem;width:100%}
-.legend{font-size:.7rem;color:var(--dim);margin-top:.3rem;display:flex;flex-wrap:wrap;gap:.1rem .7rem}
-footer{margin-top:1.25rem;color:var(--dim);font-size:.72rem;border-top:1px solid var(--line);padding-top:.6rem}
+.legend{font-size:.72rem;color:var(--dim);margin-top:.3rem;display:flex;flex-wrap:wrap;gap:.1rem .7rem}
+footer{margin-top:1.1rem;color:var(--faint);font-size:.75rem;padding:.6rem .2rem}
 
-/* C33: two panes. The map holds the left and stays put while the text scrolls
-   beside it, because a map that scrolls away from the sentence referring to it
-   is a picture rather than an instrument. Below 70rem they stack and the map
-   takes a fixed height, since sticky against a short viewport hides the text. */
-.split{display:grid;grid-template-columns:minmax(30rem,47fr) minmax(24rem,53fr);gap:1.25rem;align-items:start}
-.mappane{position:sticky;top:1rem;height:calc(100vh - 2rem);display:flex;flex-direction:column;
-  background:var(--card);border:1px solid var(--line);border-radius:.5rem;padding:.7rem .8rem;min-width:0}
-.mappane h2{margin-bottom:.4rem}
-.readpane{display:grid;grid-template-columns:repeat(auto-fit,minmax(24rem,1fr));gap:1rem;align-items:start;min-width:0}
-#mapbox{flex:1 1 auto;min-height:18rem;position:relative;background:var(--void);
-  border-radius:.35rem;color:var(--fg);overflow:hidden;touch-action:none}
-/* The two sizes the map keeps in screen pixels rather than in tiles: the ink of
-   a mark, and the height of a label. Both are recomputed by the script on every
-   zoom, because a machine drawn at its true size on a 2655-tile base is a fifth
-   of a pixel and a map of those is a grey smudge. */
+/* C33: two panes. The map holds the left and stays put while the text scrolls beside it. Below 70rem they stack and the map takes a fixed height. */
+.split{display:grid;grid-template-columns:minmax(30rem,45fr) minmax(24rem,55fr);gap:.9rem;align-items:start}
+.mappane{position:sticky;top:.6rem;height:calc(100vh - 1.2rem);display:flex;flex-direction:column;padding:.7rem .8rem;min-width:0}
+.mappane h2{margin-bottom:.5rem}
+.readpane{display:grid;grid-template-columns:repeat(auto-fit,minmax(26rem,1fr));gap:.9rem;align-items:start;min-width:0}
+#mapbox{flex:1 1 auto;min-height:18rem;position:relative;background:var(--void);box-shadow:var(--sunk);
+  border-radius:.2rem;color:var(--fg);overflow:hidden;touch-action:none}
+/* The two sizes the map keeps in screen pixels rather than in tiles: the ink of a mark, and the height of a label. Both are recomputed by the script on every zoom, because a machine drawn at its true size on a 2655-tile base is a fifth of a pixel and a map of those is a grey smudge. */
 #map{display:block;width:100%;height:100%;cursor:grab;--mk:2.6;--tile:1;--lbl:14}
 #map.dragging{cursor:grabbing}
 #map .fp{fill:currentColor;stroke:currentColor;vector-effect:non-scaling-stroke;
   stroke-width:calc(var(--mk)*1px);stroke-linejoin:round}
 #map .tile{stroke:currentColor;vector-effect:non-scaling-stroke;
   stroke-width:calc(var(--tile)*1px);stroke-linejoin:round}
-/* While the view is moving, drop antialiasing quality and the labels. The map
-   holds about 50000 rectangles and the browser rasterises all of them on every
-   frame of a pan; this is the difference between a drag that tracks the cursor
-   and one that catches up afterwards. Both come back the moment it settles. */
+/* While the view is moving, drop antialiasing quality and the labels: the map holds about 50000 rectangles and the browser rasterises all of them on every frame of a pan. Both come back the moment it settles. */
 #map.moving{shape-rendering:optimizeSpeed}
-/* The real art is free while it is hidden and costly while it is not, so it is
-   revealed only at the zoom where a machine is big enough to recognise, and
-   hidden again while the view is moving. */
+/* The real art is free while it is hidden and costly while it is not, so it is revealed only at the zoom where a machine is big enough to recognise, and hidden again while the view is moving. */
 #map g[data-layer=art]{display:none}
 #map.close:not(.moving) g[data-layer=art].on{display:block}
 #map.moving .lbl,#map.moving .area{display:none}
-/* Water is ground, so it sits back: at full strength it is a blue field with a
-   base somewhere underneath it rather than a coastline the base sits on. */
+/* Water is ground, so it sits back: at full strength it is a blue field with a base somewhere underneath it rather than a coastline the base sits on. */
 #map .tile.water{opacity:.5}
 #map .cov{fill:currentColor;fill-opacity:.07;stroke:currentColor;stroke-opacity:.5;
   vector-effect:non-scaling-stroke;stroke-width:1px}
 #map .cov.build{fill-opacity:.03;stroke-opacity:.18;stroke-dasharray:4 3}
 #map .lbl{font-size:calc(var(--lbl)*1px);fill:currentColor;paint-order:stroke;stroke:var(--void);
-  stroke-width:calc(var(--lbl)*.3px);stroke-linejoin:round;text-anchor:middle;font-weight:650;
-  letter-spacing:-.01em;pointer-events:none}
+  stroke-width:calc(var(--lbl)*.3px);stroke-linejoin:round;text-anchor:middle;font-weight:700;
+  letter-spacing:-.01em;pointer-events:none;font-family:var(--font)}
 #map .area rect{fill-opacity:.1;stroke-width:2;vector-effect:non-scaling-stroke;stroke-dasharray:6 4}
 #map .area.warn rect{fill:var(--down);stroke:var(--down)}
 #map .area.good rect{fill:var(--up);stroke:var(--up)}
@@ -254,75 +332,70 @@ footer{margin-top:1.25rem;color:var(--dim);font-size:.72rem;border-top:1px solid
 #map g[data-layer].on{pointer-events:auto}
 #map g[data-layer]:not(.on){display:none}
 #map .flash rect{stroke-width:4;fill-opacity:.28}
-/* The panel a click opens. It is anchored in the map box rather than in the
-   page, so it travels with the map and never lands under the reading. */
-#pin{position:absolute;z-index:3;max-width:19rem;min-width:12rem;background:var(--card);
-  border:1px solid var(--line);border-radius:.4rem;padding:.5rem .6rem;font-size:.76rem;
-  box-shadow:0 .4rem 1.2rem rgba(0,0,0,.35);line-height:1.4}
-#pin h4{margin:0 0 .25rem;font-size:.85rem;font-weight:640;display:flex;align-items:center;gap:.35rem}
-#pin h4 img{width:1.15rem;height:1.15rem}
-#pin .kind{color:var(--dim);font-weight:400;font-size:.7rem}
-#pin dl{margin:.3rem 0 0;display:grid;grid-template-columns:auto 1fr;gap:.1rem .5rem}
+/* The panel a click opens, styled as the game's entity tooltip. It is anchored in the map box rather than in the page, so it travels with the map and never lands under the reading. */
+#pin{position:absolute;z-index:3;max-width:19rem;min-width:12rem;background:var(--panel);
+  border:1px solid var(--edge);border-radius:.2rem;padding:0 .6rem .5rem;font-size:.8rem;
+  box-shadow:var(--bevel),0 .4rem 1.2rem rgba(0,0,0,.6);line-height:1.4}
+#pin h4{margin:0 -.6rem .3rem;padding:.3rem 1.6rem .3rem .6rem;font-size:.9rem;font-weight:700;display:flex;align-items:center;gap:.4rem;
+  color:var(--head);background:linear-gradient(var(--panel-hi),var(--panel));border-bottom:1px solid var(--edge)}
+#pin h4 img{width:1.3rem;height:1.3rem}
+#pin .kind{color:var(--dim);font-weight:400;font-size:.72rem}
+#pin dl{margin:.3rem 0 0;display:grid;grid-template-columns:auto 1fr;gap:.12rem .6rem;background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem;padding:.3rem .45rem}
 #pin dt{color:var(--dim)}
-#pin dd{margin:0;font-variant-numeric:tabular-nums;text-align:right}
-#pin .where{margin:.35rem 0 0;color:var(--dim);font-size:.7rem}
-#pin .close{position:absolute;top:.2rem;right:.35rem;border:0;background:none;color:var(--dim);
-  cursor:pointer;font:inherit;font-size:.9rem;line-height:1;padding:.1rem .2rem}
-#pin .close:hover{color:var(--fg)}
-#xy{position:absolute;right:.4rem;bottom:.4rem;font-size:.68rem;font-variant-numeric:tabular-nums;
-  color:var(--fg);background:color-mix(in srgb,var(--card) 82%,transparent);border:1px solid var(--line);
-  border-radius:.25rem;padding:.05rem .35rem;pointer-events:none;opacity:0;transition:opacity .12s}
+#pin dd{margin:0;font-variant-numeric:tabular-nums;text-align:right;font-weight:600}
+#pin .where{margin:.4rem 0 0;color:var(--dim);font-size:.72rem}
+#pin .close{position:absolute;top:.25rem;right:.35rem;border:0;background:none;color:var(--dim);
+  cursor:pointer;font:inherit;font-size:1rem;line-height:1;padding:.1rem .2rem;z-index:1}
+#pin .close:hover{color:var(--accent)}
+#xy{position:absolute;right:.4rem;bottom:.4rem;font-size:.72rem;font-variant-numeric:tabular-nums;
+  color:var(--head);background:color-mix(in srgb,var(--panel) 88%,transparent);border:1px solid var(--edge);
+  border-radius:.2rem;padding:.05rem .4rem;pointer-events:none;opacity:0;transition:opacity .12s}
 #mapbox:hover #xy{opacity:1}
-.maptools{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center;margin-bottom:.45rem}
-.maptools button{font:inherit;font-size:.72rem;padding:.12rem .5rem;border:1px solid var(--line);
-  border-radius:.3rem;background:var(--card);color:var(--fg);cursor:pointer}
-.maptools button:hover,.maptools button:focus-visible{border-color:var(--accent);color:var(--accent)}
-.maptools .hint{color:var(--dim);font-size:.68rem;margin-left:auto}
-#scalebar{display:flex;align-items:center;gap:.4rem;margin-top:.4rem;color:var(--dim);font-size:.68rem;
-  font-variant-numeric:tabular-nums}
+.maptools{display:flex;flex-wrap:wrap;gap:.3rem;align-items:center;margin-bottom:.45rem}
+.maptools button{min-width:1.9rem}
+.maptools .hint{color:var(--faint);font-size:.7rem;margin-left:auto}
+.hint kbd{font:inherit;font-size:.66rem;background:var(--deep);box-shadow:var(--sunk);border-radius:.15rem;padding:0 .3rem;color:var(--dim)}
+#scalebar{display:flex;align-items:center;gap:.4rem;margin-top:.4rem;color:var(--dim);font-size:.7rem;font-variant-numeric:tabular-nums}
 #scalebar .bar{height:.5rem;border:1px solid currentColor;border-top:0}
-/* The legend is the map's table of contents, so it is grouped the way a player
-   thinks: the ground, then what is standing on it, then the places a sentence
-   points at. Each entry is one click and carries its own count. */
+/* The legend is the map's table of contents, grouped the way a player thinks: the ground, what is standing on it, the places a sentence points at. Each entry is one click and carries its own count. */
 .legend-groups{flex:0 0 auto;margin-top:.45rem;display:grid;
   grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.1rem .9rem;
-  max-height:15rem;overflow:auto}
-.lgroup h3{font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);
-  margin:.25rem 0 .15rem;font-weight:600}
+  max-height:15rem;overflow-y:auto;overflow-x:hidden;background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem;padding:.2rem .45rem;scrollbar-width:thin}
+.lgroup{min-width:0}
+.lgroup h3{font-size:.64rem;text-transform:uppercase;letter-spacing:.08em;color:var(--head);margin:.3rem 0 .15rem;font-weight:700}
 .layers{list-style:none;margin:0;padding:0}
 .layers li{margin:0}
 .layers button{display:flex;align-items:center;gap:.4rem;width:100%;text-align:left;font:inherit;
-  font-size:.73rem;background:none;border:0;padding:.1rem .2rem;border-radius:.25rem;color:var(--dim);cursor:pointer}
-.layers button:hover,.layers button:focus-visible{background:color-mix(in srgb,var(--fg) 7%,transparent)}
+  font-size:.76rem;background:none;border:0;padding:.1rem .25rem;border-radius:.15rem;color:var(--faint);cursor:pointer}
+.layers button:hover,.layers button:focus-visible{background:rgba(255,255,255,.06);color:var(--fg)}
 .layers button[aria-pressed=true]{color:var(--fg)}
 .layers button .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.layers .key{width:.62rem;height:.62rem;flex:0 0 auto;opacity:.3}
+.layers .key{width:.65rem;height:.65rem;flex:0 0 auto;opacity:.3}
 .layers button[aria-pressed=true] .key{opacity:1}
 .layers .key.dot{border-radius:50%}
 .layers .key.square{border-radius:.05rem}
 .layers .key.fill{border-radius:.1rem;opacity:.2}
 .layers button[aria-pressed=true] .key.fill{opacity:.65}
 .layers .key.box{border-radius:.1rem;background:none!important;border:1px dashed currentColor}
-.layers .n{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.75;font-size:.68rem}
-.layers .digit{opacity:.4;font-size:.6rem;width:.7rem;flex:0 0 auto}
+.layers .n{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.75;font-size:.7rem}
+.layers .digit{opacity:.6;font-size:.62rem;width:.75rem;flex:0 0 auto;color:var(--accent)}
 .layers .miss{display:none}
-.layers .miss.gap{display:block;font-size:.62rem;color:var(--down);
-  padding:0 0 .15rem 1.75rem;line-height:1.25}
-.advice li[data-fx]{cursor:pointer;border-radius:.3rem}
-.advice li[data-fx]:hover,.advice li[data-fx]:focus-visible{background:color-mix(in srgb,var(--accent) 12%,transparent)}
-.advice li[data-fx] b::after{content:" ⌖";color:var(--accent);font-weight:400}
-.seemap{font:inherit;font-size:.7rem;margin-top:.5rem;padding:.12rem .5rem;border:1px solid var(--line);
-  border-radius:.3rem;background:none;color:var(--dim);cursor:pointer}
-.seemap:hover,.seemap:focus-visible{border-color:var(--accent);color:var(--accent)}
+.layers .miss.gap{display:block;font-size:.64rem;color:var(--down);padding:0 0 .15rem 1.75rem;line-height:1.25}
+.advice li[data-fx]{cursor:pointer}
+.advice li[data-fx]:hover,.advice li[data-fx]:focus-visible{background:var(--deeper);outline:1px solid var(--accent);outline-offset:-1px}
+.advice li[data-fx] b::after{content:" \\2316";color:var(--accent);font-weight:400}
+.advice li.flash,.step.flash{outline:2px solid var(--accent);outline-offset:-2px}
+.seemap{margin-top:.6rem}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 @media (max-width:70rem){
-  .wrap{padding:1rem}
+  .wrap{padding:.6rem}
   .split{grid-template-columns:1fr}
   .mappane{position:static;height:auto}
-  /* flex:none or the pane's own flex:1 wins and the map fills the whole
-     viewport on a phone, pushing every word of the reading below the fold. */
+  /* flex:none or the pane's own flex:1 wins and the map fills the whole viewport on a phone, pushing every word of the reading below the fold. */
   #mapbox{height:60vh;flex:none}
+  .bar{grid-template-columns:8rem 1fr 8.5rem}
 }
-@media (prefers-reduced-motion:reduce){#map{transition:none!important}}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}#map{transition:none!important}}
 `;
 
 /**
@@ -380,7 +453,18 @@ const SCRIPT = `
     svg.style.setProperty("--tile", (1.1 - 0.9 * k).toFixed(2));
     svg.style.setProperty("--lbl", (13 / d.s).toFixed(2));
     // A tile wide enough on screen for a machine to be recognisable as itself.
-    svg.classList.toggle("close", d.s >= 3);
+    var close = d.s >= 3;
+    if (close) wakeArt();
+    svg.classList.toggle("close", close);
+  }
+
+  // The art arrives as text and is parsed into the map once, the first time it could be seen.
+  function wakeArt() {
+    var g = svg.querySelector("g[data-lazy]");
+    if (!g) return;
+    var src = document.getElementById(g.getAttribute("data-lazy"));
+    g.removeAttribute("data-lazy");
+    if (src) { g.innerHTML = src.textContent; src.remove(); }
   }
 
   // One repaint per animation frame, whatever the input device says.
@@ -555,6 +639,10 @@ const SCRIPT = `
     });
   }
   [].slice.call(document.querySelectorAll("[data-fx]")).forEach(hookFocus);
+  // A section tag inside a line of advice is a link to that section, not a question about the map.
+  [].slice.call(document.querySelectorAll(".advice .tag")).forEach(function (a) {
+    a.addEventListener("click", function (e) { e.stopPropagation(); });
+  });
 
   // A step opens its own reasoning in place. The button stops the click from
   // also flying the map, because wanting to read why is not wanting to move.
@@ -859,7 +947,9 @@ function adviceList(items: Advice[], full: boolean): string {
           : "";
         return (
           `<li${hook}><b>${esc(item.text)}</b>` +
-          (full ? `<span class="tag">${esc(item.section)}</span>` : "") +
+          (full
+            ? `<a class="tag" href="#sec-${esc(item.section)}" title="Go to the ${esc(item.section)} section">${iconOnly(SECTION_ICON[item.section])}${esc(item.section)}</a>`
+            : "") +
           (full ? `<span class="why">${esc(item.because)}</span>` : "") +
           `</li>`
         );
@@ -892,12 +982,17 @@ const GROUP_TITLES: Array<[LayerGroup, string]> = [
 
 function mapPane(model: MapModel): string {
   const { viewBox: v } = model;
+  // The art layer is most of the page's weight (every sprite, inlined) and is only ever shown close in, so it ships as inert text and becomes SVG the first time the view gets close enough to draw it. Until then the parser skips it and the DOM never holds its thousands of nodes.
+  let lazyArt = "";
   const groups = model.layers
-    .map(
-      (l) =>
+    .map((l) => {
+      const lazy = l.id === "art" && l.body.length > 0;
+      if (lazy) lazyArt = `<script type="text/plain" id="artsrc">${l.body.replace(/<\/script/gi, "<\\/script")}</script>`;
+      return (
         `<g data-layer="${esc(l.id)}" data-group="${esc(l.group)}" class="${l.mark} ${l.on ? "on" : ""}" ` +
-        `fill="${esc(l.colour)}" color="${esc(l.colour)}">${l.body}</g>`,
-    )
+        `fill="${esc(l.colour)}" color="${esc(l.colour)}"${lazy ? ` data-lazy="artsrc"` : ""}>${lazy ? "" : l.body}</g>`
+      );
+    })
     .join("");
 
   // The digit shortcut is assigned across the whole list in render order, so the
@@ -930,7 +1025,7 @@ function mapPane(model: MapModel): string {
     `<button type="button" id="zin">+</button>` +
     `<button type="button" id="zout">&minus;</button>` +
     `<button type="button" id="reset">All layers</button>` +
-    `<span class="hint">wheel zooms at the cursor &middot; drag pans &middot; digits toggle layers &middot; f fits</span>` +
+    `<span class="hint">wheel zooms &middot; drag pans &middot; <kbd>1</kbd>-<kbd>9</kbd> layers &middot; <kbd>f</kbd> fits &middot; <kbd>Esc</kbd> resets</span>` +
     `</div>` +
     `<div id="mapbox"><svg id="map" role="img" aria-label="Base map of ${esc(model.surface)}" ` +
     `viewBox="${v.x.toFixed(0)} ${v.y.toFixed(0)} ${v.w.toFixed(0)} ${v.h.toFixed(0)}" ` +
@@ -939,6 +1034,7 @@ function mapPane(model: MapModel): string {
     `<g id="grid" stroke="currentColor" stroke-width="0.5" opacity="0.14"></g>` +
     groups +
     `</svg><span id="xy"></span><div id="pin" hidden></div></div>` +
+    lazyArt +
     `<script type="application/json" id="mapfacts">${JSON.stringify(model.facts).replace(/</g, "\\u003c")}</script>` +
     `<div id="scalebar"><span class="bar"></span><span class="txt"></span></div>` +
     `<div class="legend-groups">${legend}</div>` +
@@ -978,10 +1074,38 @@ const REFRESH_SCRIPT = `(function(){
   function poll(){
     fetch(base + "/status" + q).then(function(r){ return r.json(); }).then(function(j){
       if (j.tick !== null && j.tick !== tick) { location.reload(); return; }
-      if (!btn.disabled && Date.now() > hold) say(j.busy ? "watch is reading a save" : "watch running, saves update this page");
+      if (!btn.disabled && Date.now() > hold) { say(j.busy ? "watch is reading a save" : "watch running, saves update this page"); msg.classList.add("live"); }
     }).catch(function(){ if (!btn.disabled) down(); });
   }
   poll(); setInterval(poll, 5000);
+})();`;
+
+/**
+ * The tab rail marks the card being read.
+ *
+ * The current tab is the last card whose top has passed under the rail. The check runs at most every 60 ms and reads a dozen rectangles, so it costs nothing a scroll would notice.
+ */
+const TABS_SCRIPT = `(function(){
+  var rail = document.querySelector(".tabs"); if (!rail) return;
+  var links = [].slice.call(rail.querySelectorAll("a"));
+  var cards = links.map(function(a){ return document.getElementById(a.getAttribute("href").slice(1)); });
+  var queued = false, cur = null;
+  function mark(){
+    queued = false;
+    var line = rail.getBoundingClientRect().bottom + 40, pick = 0;
+    for (var i = 0; i < cards.length; i++) { if (cards[i] && cards[i].getBoundingClientRect().top <= line) pick = i; }
+    // At the bottom of the page the last cards can never reach the rail, so the bottom itself counts as reaching the last one.
+    if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) pick = cards.length - 1;
+    if (pick === cur) return;
+    cur = pick;
+    links.forEach(function(a, i){ if (i === pick) a.setAttribute("aria-current", "true"); else a.removeAttribute("aria-current"); });
+    var t = links[pick];
+    if (t.offsetLeft < rail.scrollLeft || t.offsetLeft + t.offsetWidth > rail.scrollLeft + rail.clientWidth) rail.scrollLeft = t.offsetLeft - 8;
+  }
+  function soon(){ if (!queued) { queued = true; setTimeout(mark, 60); } }
+  addEventListener("scroll", soon, { passive: true });
+  addEventListener("resize", soon);
+  mark();
 })();`;
 
 /**
@@ -1114,23 +1238,23 @@ function holdingSection(b: BottleneckReport): string {
   const classes =
     b.utilisation.length > 0
       ? `<div><p class="tcap">machines, by how much of their time the output accounts for</p>` +
-        `<table><tr><th>class</th><th class="n">placed</th><th class="n">busy</th><th class="n">of them</th></tr>` +
+        `<div class="tframe"><table><tr><th>class</th><th class="n">placed</th><th class="n">busy</th><th class="n">of them</th></tr>` +
         b.utilisation
           .slice(0, 8)
           .map(
             (u) =>
               `<tr><td>${cellWithIcon(u.machine)}</td><td class="n">${String(u.count)}</td>` +
               `<td class="n">${u.busyEquivalent.toFixed(1)}</td>` +
-              `<td class="n">${esc(pct(u.fraction))}</td></tr>`,
+              numCell(pct(u.fraction)) + `</tr>`,
           )
           .join("") +
-        `</table></div>`
+        `</table></div></div>`
       : "";
 
   const lines =
     b.tightness.length > 0
       ? `<div><p class="tcap">lines, by what is left over</p>` +
-        `<table><tr><th>item</th><th class="n">made/min</th><th class="n">used/min</th><th class="n">spare/min</th></tr>` +
+        `<div class="tframe"><table><tr><th>item</th><th class="n">made/min</th><th class="n">used/min</th><th class="n">spare/min</th></tr>` +
         b.tightness
           .slice(0, 8)
           .map(
@@ -1141,18 +1265,21 @@ function holdingSection(b: BottleneckReport): string {
               `<td class="n ${t.sparePerMinute < 0 ? "down" : "up"}">${esc(signed(t.sparePerMinute))}</td></tr>`,
           )
           .join("") +
-        `</table></div>`
+        `</table></div></div>`
       : "";
 
   return (
-    `<section class="holding"><h2>What is holding you back</h2>` +
+    `<section class="holding" id="sec-holding"><h2>What is holding you back</h2>` +
     (diagnosis
       ? `<p class="lead">${esc(diagnosis.text)}</p>` +
         `<p class="carry">${esc(diagnosis.because)}</p>`
       : "") +
     findings +
     `<div class="pair">${classes}${lines}</div>` +
-    (b.limits.length > 0 ? `<p class="limits">${esc(b.limits.join(" \u00b7 "))}</p>` : "") +
+    (b.limits.length > 0
+      ? `<details class="limits"><summary>How these readings are measured, and what they cannot see (${String(b.limits.length)})</summary>` +
+        `<ul>${b.limits.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>`
+      : "") +
     `</section>`
   );
 }
@@ -1171,7 +1298,7 @@ function planSection(plan: PlanView): string {
         `</p>`
       : "";
   return (
-    `<section class="plan" id="plan"><h2>The plan</h2>` +
+    `<section class="plan" id="plan"><h2>${iconOnly("blueprint")}The plan</h2>` +
     `<p class="lead">${esc(plan.lead)}</p>` +
     `<p class="carry">${plan.corrections.map(esc).join("</p><p class=\"carry\">")}</p>` +
     `<ol class="steps">${plan.steps.map((s, i) => stepOf(s, plan.atTick, i)).join("")}</ol>` +
@@ -1206,12 +1333,24 @@ function cellWithIcon(cell: string, name?: string | null): string {
   return esc(cell);
 }
 
+/**
+ * A numeric cell, with a bar under it when the cell is a share.
+ *
+ * The bar is drawn from the cell's own text and nothing else: a cell reading `17%` gets a bar 17% long, a cell reading anything else gets none. No number reaches the page that the table did not already print.
+ */
+function numCell(cell: string): string {
+  const m = /^(-?\d+(?:\.\d+)?)%$/.exec(cell.trim());
+  if (!m) return `<td class="n">${esc(cell)}</td>`;
+  const v = Math.max(0, Math.min(100, Number(m[1])));
+  return `<td class="n">${esc(cell)}<span class="meter${v < 10 ? " low" : ""}"><i style="width:${v.toFixed(1)}%"></i></span></td>`;
+}
+
 function tableOf(t: SectionView["tables"][number], src: string): string {
   if (t.rows.length === 0) return "";
   const numeric = new Set(t.numeric);
   return (
     (t.caption ? `<p class="tcap">${esc(t.caption)}</p>` : "") +
-    `<table data-source="${esc(src)}">` +
+    `<div class="tframe"><table data-source="${esc(src)}">` +
     `<tr>${t.headers.map((h, i) => `<th${numeric.has(i) ? ' class="n"' : ""}>${esc(h)}</th>`).join("")}</tr>` +
     t.rows
       .map(
@@ -1219,14 +1358,65 @@ function tableOf(t: SectionView["tables"][number], src: string): string {
           `<tr>${row
             .map((cell, i) =>
               numeric.has(i)
-                ? `<td class="n">${esc(cell)}</td>`
+                ? numCell(cell)
                 : `<td>${cellWithIcon(cell, i === 0 ? (t.iconNames?.[r] ?? null) : null)}</td>`,
             )
             .join("")}</tr>`,
       )
       .join("") +
-    `</table>`
+    `</table></div>`
   );
+}
+
+/** The game's picture for each part of the base, by the prototype a player would recognise it by. A name the install has no icon for renders as no icon. */
+const SECTION_ICON: Record<string, string> = {
+  science: "lab",
+  energy: "steam-engine",
+  defense: "gun-turret",
+  production: "assembling-machine-2",
+  logistics: "locomotive",
+  mining: "electric-mining-drill",
+};
+
+function iconOnly(name: string | undefined): string {
+  const url = name ? (ICONS?.url(name) ?? null) : null;
+  return url ? `<img class="ico" src="${esc(url)}" alt="" decoding="async">` : "";
+}
+
+/**
+ * The headline of a section: the first figure that carries a verdict, else the first figure.
+ *
+ * Chosen from the figures the section already shows, never computed here, so the overview and the card can only disagree if the card does with itself.
+ */
+function headlineOf(v: SectionView): SectionView["figures"][number] | null {
+  return v.figures.find((x) => x.tone) ?? v.figures[0] ?? null;
+}
+
+/** The section's state as one word for a colour: warn when any figure warns, good when any is good and none warns. */
+function toneOf(v: SectionView): "warn" | "good" | "" {
+  if (v.figures.some((x) => x.tone === "warn")) return "warn";
+  if (v.figures.some((x) => x.tone === "good")) return "good";
+  return "";
+}
+
+function overviewOf(views: SectionView[], src: string): string {
+  const tiles = views
+    .map((v) => {
+      const h = headlineOf(v);
+      const tone = toneOf(v);
+      return (
+        `<a class="ov${tone ? ` ${tone}` : ""}" href="#sec-${esc(v.id)}" title="${esc(v.lead)}"` +
+        (h ? ` data-source="${esc(src)}" data-field="${esc(h.field)}"` : "") +
+        `>${iconOnly(SECTION_ICON[v.id])}` +
+        `<span class="t">${esc(v.title)}` +
+        (v.advice.length > 0 ? `<span class="nadv" title="${String(v.advice.length)} pieces of advice">${String(v.advice.length)}</span>` : "") +
+        `</span>` +
+        (h ? `<span class="x">${esc(h.value)}<small>${esc(h.label)}</small></span>` : `<span class="x"><small>no figures</small></span>`) +
+        `</a>`
+      );
+    })
+    .join("");
+  return tiles ? `<nav class="overview" aria-label="The base at a glance">${tiles}</nav>` : "";
 }
 
 export function renderPage(input: PageInput): string {
@@ -1251,21 +1441,35 @@ export function renderPage(input: PageInput): string {
   };
 
   const cards: string[] = [];
+  // The tab rail lists exactly the cards this page carries, in their order, so a tab can never point at a card that was not drawn.
+  const tabs: Array<{ id: string; label: string; tone?: string }> = [];
 
   // The plan first when there is one. The advice below it is derived and says
   // what is short right now; the plan is written and says what to do about it,
   // in what order, and how far along each step already is. They are different
   // things and the page shows both rather than choosing.
-  if (input.plan) cards.push(planSection(input.plan));
+  if (input.plan) {
+    cards.push(planSection(input.plan));
+    tabs.push({ id: "plan", label: "Plan" });
+  }
 
   // Then what is holding the factory back, because the plan says what to do and
   // this says what is stopping it.
-  if (input.bottlenecks) cards.push(holdingSection(input.bottlenecks));
+  if (input.bottlenecks) {
+    const held = holdingSection(input.bottlenecks);
+    if (held) {
+      cards.push(held);
+      tabs.push({ id: "sec-holding", label: "Holding back", tone: "warn" });
+    }
+  }
 
   // The whole advice list, tagged by section, because the reason to open the
   // page is to be told what to do, not to browse the base.
   if (a && a.advice.length > 0) {
-    cards.push(`<section class="wide"><h2>What to do</h2>${adviceList(a.advice, true)}</section>`);
+    tabs.push({ id: "sec-todo", label: `To do (${String(a.advice.length)})` });
+    cards.push(
+      `<section class="wide" id="sec-todo"><h2>What to do<span class="count">${String(a.advice.length)} in order</span></h2>${adviceList(a.advice, true)}</section>`,
+    );
   }
 
   // The base itself, one card per section. Under C33 a section no longer
@@ -1282,8 +1486,11 @@ export function renderPage(input: PageInput): string {
   };
   for (const v of views) {
     const layer = SECTION_LAYER[v.id];
+    tabs.push({ id: `sec-${v.id}`, label: v.title, tone: toneOf(v) });
     cards.push(
-      `<section data-section="${esc(v.id)}"><h2>${esc(v.title)}</h2>` +
+      `<section data-section="${esc(v.id)}" id="sec-${esc(v.id)}"><h2>${iconOnly(SECTION_ICON[v.id])}${esc(v.title)}` +
+        (v.advice.length > 0 ? `<span class="count">${String(v.advice.length)} to do</span>` : "") +
+        `</h2>` +
         `<p class="lead">${esc(v.lead)}</p>` +
         (v.carry ? `<p class="carry">${esc(v.carry)}</p>` : "") +
         (v.figures.length > 0
@@ -1302,21 +1509,22 @@ export function renderPage(input: PageInput): string {
   }
 
   // Everything below this line is the diff: what moved since the last report.
+  tabs.push({ id: "sec-state", label: "State" });
   cards.push(
-    `<section><h2>State</h2><div class="figs">` +
+    `<section id="sec-state"><h2>State</h2><div class="figs">` +
       fig(String(r.tick), src, "save.tick", "tick") +
       fig(`${r.hoursPlayed.toFixed(1)} h`, src, "save.hoursPlayed", "played") +
       fig(String(researchedCount), src, "forces.player.technologies.researched", "techs done") +
       fig(String(machineTotal), src, "forces.player.machines", "machines") +
       `</div>` +
       (r.queue.length > 1
-        ? `<table data-source="${esc(src)}" data-field="forces.player.technologies.queue">` +
+        ? `<div class="tframe"><table data-source="${esc(src)}" data-field="forces.player.technologies.queue">` +
           `<tr><th>research queue</th></tr>` +
           r.queue.slice(1).map((t) => `<tr><td>${withIcon(t)}</td></tr>`).join("") +
-          `</table>`
+          `</table></div>`
         : "") +
       (r.researched.length > 0
-        ? `<h2 style="margin-top:.7rem">Finished since last report</h2><ul class="cols">` +
+        ? `<p class="tcap">Finished since last report</p><ul class="cols">` +
           r.researched.map((t) => `<li>${esc(t)}</li>`).join("") +
           `</ul>`
         : "") +
@@ -1339,8 +1547,9 @@ export function renderPage(input: PageInput): string {
   }
 
   if (r.machines.length > 0) {
+    tabs.push({ id: "sec-changes", label: "Changed" });
     cards.push(
-      `<section><h2>Machines changed</h2><table><tr><th>prototype</th><th class="n">delta</th><th class="n">now</th></tr>` +
+      `<section id="sec-changes"><h2>Machines changed</h2><div class="tframe"><table><tr><th>prototype</th><th class="n">delta</th><th class="n">now</th></tr>` +
         r.machines
           .map((m) => {
             const d = m.after - m.before;
@@ -1351,16 +1560,17 @@ export function renderPage(input: PageInput): string {
             );
           })
           .join("") +
-        `</table></section>`,
+        `</table></div></section>`,
     );
   }
 
   if (r.production.length > 0) {
+    tabs.push({ id: "sec-moves", label: "Moves" });
     cards.push(
-      `<section><h2>${r.legacyRates ? "Consumption" : "Production"}, moves over ${r.threshold}/min</h2>` +
-        `<table><tr><th>item</th><th class="n">delta/min</th><th class="n">now/min</th></tr>` +
+      `<section id="sec-moves"><h2>${r.legacyRates ? "Consumption" : "Production"}, moves over ${r.threshold}/min</h2>` +
+        `<div class="tframe"><table><tr><th>item</th><th class="n">delta/min</th><th class="n">now/min</th></tr>` +
         r.production.map((p) => deltaRow(p.name, p.before, p.after)).join("") +
-        `</table></section>`,
+        `</table></div></section>`,
     );
   }
 
@@ -1377,8 +1587,9 @@ export function renderPage(input: PageInput): string {
   }
 
   if (history.length > 0) {
+    tabs.push({ id: "sec-history", label: "History" });
     cards.push(
-      `<section><h2>Earlier reports</h2><ul class="cols hist">` +
+      `<section id="sec-history"><h2>Earlier reports<span class="count">${String(history.length)}</span></h2><ul class="cols hist">` +
         history.map((h) => `<li><a href="${esc(h)}">${esc(h)}</a></li>`).join("") +
         `</ul></section>`,
     );
@@ -1387,21 +1598,31 @@ export function renderPage(input: PageInput): string {
   // The charset must be declared: without it the browser guesses, and a file://
   // page guessed latin-1, which turned the middle dot in "production · slowest"
   // into two characters.
-  return `<meta charset="utf-8">
+  const tabRail =
+    `<nav class="tabs" aria-label="Sections">` +
+    tabs
+      .map((t) => `<a href="#${esc(t.id)}"><span class="dot${t.tone ? ` ${esc(t.tone)}` : ""}"></span>${esc(t.label)}</a>`)
+      .join("") +
+    `</nav>`;
+
+  // The charset must be declared: without it the browser guesses, and a file:// page guessed latin-1, which turned the middle dot in "production · slowest" into two characters.
+  return `<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(r.save)} report</title>
-<style>${CSS}</style>
+<style>${fontFaces()}${CSS}</style>
 <div class="wrap">
 <header>
-  <h1>${esc(r.save)}</h1>
-  <span class="meta">tick ${r.tick}${r.previousTick !== null ? ` (was ${r.previousTick})` : ""} &middot; ${r.hoursPlayed.toFixed(1)} h played &middot; read ${esc(readAtLocal(state.save.readAt))}</span>
-  <span class="meta">Factorio ${esc(state.snapshot.gameVersion)} build ${esc(state.snapshot.build)}</span>
+  <h1>${iconOnly("rocket-silo")}${esc(r.save)}</h1>
+  <span class="meta"><span class="chip">tick <b>${r.tick}</b>${r.previousTick !== null ? ` (was ${r.previousTick})` : ""}</span><span class="chip"><b>${r.hoursPlayed.toFixed(1)} h</b> played</span><span class="chip">read <b>${esc(readAtLocal(state.save.readAt))}</b></span><span class="chip">Factorio ${esc(state.snapshot.gameVersion)} build ${esc(state.snapshot.build)}</span></span>
   <span class="refresh" data-save="${esc(state.save.name)}" data-tick="${String(r.tick)}"><span class="msg" aria-live="polite"></span><button type="button">Read latest save</button></span>
   ${input.plan ? `<a class="planlink" href="#plan">the plan, step by step &darr;</a>` : ""}
 </header>
+${overviewOf(views, src)}
 ${
   model
-    ? `<div class="split">${mapPane(model)}<div class="readpane">\n${cards.join("\n")}\n</div></div>`
-    : `<div class="grid">\n${cards.join("\n")}\n</div>`
+    ? `<div class="split">${mapPane(model)}<div class="readpane">\n${tabRail}\n${cards.join("\n")}\n</div></div>`
+    : `<div class="grid">\n${tabRail}\n${cards.join("\n")}\n</div>`
 }
 <footer>
 Every figure carries <code>data-source</code> and <code>data-field</code> naming the state file and the path inside it that produced it. Rates are the game's own one-hour average. The maps are drawn in the save's own tile coordinates from the entities and resources the collector counted chunk by chunk; there is no terrain on them, because terrain was never measured. Nothing here was written to your Factorio directories: the save was copied into this project and read from the copy.
@@ -1409,5 +1630,6 @@ Every figure carries <code>data-source</code> and <code>data-field</code> naming
 </div>
 ${model ? `<script>${SCRIPT}</script>` : ""}
 <script>${REFRESH_SCRIPT}</script>
+<script>${TABS_SCRIPT}</script>
 `;
 }
