@@ -318,9 +318,12 @@ footer{margin-top:1.1rem;color:var(--faint);font-size:.75rem;padding:.6rem .2rem
 /* While the view is moving, drop antialiasing quality and the labels: the map holds about 50000 rectangles and the browser rasterises all of them on every frame of a pan. Both come back the moment it settles. */
 #map.moving{shape-rendering:optimizeSpeed}
 /* The real art is free while it is hidden and costly while it is not, so it is revealed only at the zoom where a machine is big enough to recognise, and hidden again while the view is moving. */
-#map g[data-layer=art]{display:none}
-#map.close:not(.moving) g[data-layer=art].on{display:block}
+#map g[data-layer=art],#map g[data-layer=alt]{display:none}
+#map.close:not(.moving) g[data-layer=art].on,#map.close:not(.moving) g[data-layer=alt].on{display:block}
 #map.close:not(.moving):has(g[data-layer=art].on) .fp.drawn{fill-opacity:0;stroke-opacity:0}
+/* Close in, the machines and their icons are what a player reads, so belts recede to a tread under them and the recipe-block boxes, which the icons now say, fade to a hint. */
+#map.close g[data-layer=belts] .fp{fill-opacity:.45;stroke-opacity:.45}
+#map.close g[data-layer=blocks] .area rect{stroke-opacity:.25;fill-opacity:.03}
 #map.moving .lbl,#map.moving .area{display:none}
 /* Water is ground, so it sits back: at full strength it is a blue field with a base somewhere underneath it rather than a coastline the base sits on. */
 #map .tile.water{opacity:.5}
@@ -363,6 +366,8 @@ footer{margin-top:1.1rem;color:var(--faint);font-size:.75rem;padding:.6rem .2rem
 #pin dl{margin:.3rem 0 0;display:grid;grid-template-columns:auto 1fr;gap:.12rem .6rem;background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem;padding:.3rem .45rem}
 #pin dt{color:var(--dim)}
 #pin dd{margin:0;font-variant-numeric:tabular-nums;text-align:right;font-weight:600}
+#pin .ico{width:1.05rem;height:1.05rem;vertical-align:-.2rem;margin-right:.25rem}
+#pin dt .ico{margin-right:.3rem}
 #pin .where{margin:.4rem 0 0;color:var(--dim);font-size:.72rem}
 #pin .close{position:absolute;top:.25rem;right:.35rem;border:0;background:none;color:var(--dim);
   cursor:pointer;font:inherit;font-size:1rem;line-height:1;padding:.1rem .2rem;z-index:1}
@@ -480,11 +485,15 @@ const SCRIPT = `
 
   // The art arrives as text and is parsed into the map once, the first time it could be seen.
   function wakeArt() {
-    var g = svg.querySelector("g[data-lazy]");
+    var lazy = [].slice.call(svg.querySelectorAll("g[data-lazy]"));
+    if (lazy.length === 0) return;
+    lazy.forEach(function (l) {
+      var src = document.getElementById(l.getAttribute("data-lazy"));
+      l.removeAttribute("data-lazy");
+      if (src) { l.innerHTML = src.textContent; src.remove(); }
+    });
+    var g = svg.querySelector('g[data-layer="art"]');
     if (!g) return;
-    var src = document.getElementById(g.getAttribute("data-lazy"));
-    g.removeAttribute("data-lazy");
-    if (src) { g.innerHTML = src.textContent; src.remove(); }
     // A prototype drawn as itself no longer needs its rectangle painted under
     // it: through a silo's open middle the rectangle showed as a green square.
     // It stays in place, unpainted, so a click still lands on it.
@@ -930,7 +939,7 @@ const SCRIPT = `
     var gs = svg.querySelectorAll('g[data-layer].on');
     for (var i = 0; i < gs.length; i++) {
       var id = gs[i].getAttribute("data-layer");
-      if (id === "art" || id === "ground") continue;
+      if (id === "art" || id === "alt" || id === "ground") continue;
       var paths = gs[i].querySelectorAll("path,rect");
       for (var j = 0; j < paths.length; j++) {
         var p = paths[j];
@@ -968,6 +977,23 @@ const SCRIPT = `
     return out ? "<dl>" + out + "</dl>" : "";
   }
 
+  // The record of the one placed thing under a click: same prototype, footprint
+  // around the point. Positions are centres, so a point inside the footprint is
+  // within half its size on each axis.
+  function thingAt(list, name, ux, uy, p) {
+    if (!list) return null;
+    var hw = (p.w || 1) / 2 + 0.01, hh = (p.h || 1) / 2 + 0.01;
+    for (var i = 0; i < list.length; i++) {
+      var t = list[i];
+      if (t[2] === name && Math.abs(t[0] - ux) <= hw && Math.abs(t[1] - uy) <= hh) return t;
+    }
+    return null;
+  }
+  function withIcon(n) {
+    var u = facts && facts.icons[n];
+    return (u ? '<img class="ico" src="' + u + '" alt="">' : "") + tidy(n);
+  }
+
   function describe(ux, uy, name) {
     var cell = facts ? facts.cell : chunk;
     var cx = Math.floor(ux / cell), cy = Math.floor(uy / cell);
@@ -984,6 +1010,26 @@ const SCRIPT = `
       pairs.push(["draws", p.usage ? watts(p.usage) : null]);
       pairs.push(["idle drain", p.drain ? watts(p.drain) : null]);
       pairs.push(["buffer", p.buffer ? (p.buffer / 1e6).toFixed(1) + " MJ" : null]);
+      // What this one machine is set to, or what this one container holds,
+      // read off the save rather than off the prototype.
+      var m = thingAt(facts.machines, name, ux, uy, p);
+      if (m) {
+        pairs.push(["makes", m[3] ? withIcon(m[3]) : "nothing set"]);
+        if (m[4]) {
+          var mods = Object.keys(m[4]).map(function (k) { return m[4][k] + " &times; " + withIcon(k); });
+          pairs.push(["modules", mods.join("<br>")]);
+        } else pairs.push(["modules", "none"]);
+      }
+      var c = thingAt(facts.holds, name, ux, uy, p);
+      if (c) {
+        if (c[4]) pairs.push([withIcon(c[4].name), commas(c[4].amount) + (p.volume ? " of " + commas(p.volume) : "")]);
+        if (c[3]) {
+          var items = Object.keys(c[3]).sort(function (a, b) { return c[3][b] - c[3][a]; });
+          for (var k = 0; k < Math.min(10, items.length); k++) pairs.push([withIcon(items[k]), commas(c[3][items[k]])]);
+          if (items.length > 10) pairs.push(["and " + (items.length - 10) + " more kinds", ""]);
+        }
+        if (!c[3] && !c[4]) pairs.push(["holds", "nothing"]);
+      }
     } else {
       var here = facts && facts.chunks[key];
       html += "<h4>" + Math.round(ux) + ", " + Math.round(uy) +
@@ -1144,6 +1190,9 @@ const GROUP_TITLES: Array<[LayerGroup, string]> = [
   ["places", "Places"],
 ];
 
+/** Layers shown only close in, and shipped as inert text until the first time they could be seen. */
+const CLOSE_LAYERS = new Set(["art", "alt"]);
+
 /** A map label as `layers.ts` writes it, whole: its text never holds markup, since `esc` ran on it. */
 const LABEL_RE = /<text class="lbl"[^>]*>[^<]*<\/text>/g;
 
@@ -1166,11 +1215,11 @@ function mapPane(model: MapModel): string {
       }
       const body = texts.length > 0 ? l.body.replace(LABEL_RE, "") : l.body;
       // A body that could close the script early is drawn inline as before rather than escaped, because an escape would reach innerHTML as literal text.
-      const lazy = l.id === "art" && body.length > 0 && !/<\/script/i.test(body);
-      if (lazy) lazyArt = `<script type="text/plain" id="artsrc">${body}</script>`;
+      const lazy = CLOSE_LAYERS.has(l.id) && body.length > 0 && !/<\/script/i.test(body);
+      if (lazy) lazyArt += `<script type="text/plain" id="${esc(l.id)}src">${body}</script>`;
       return (
         `<g data-layer="${esc(l.id)}" data-group="${esc(l.group)}" class="${l.mark} ${l.on ? "on" : ""}" ` +
-        `fill="${esc(l.colour)}" color="${esc(l.colour)}"${lazy ? ` data-lazy="artsrc"` : ""}>${lazy ? "" : body}</g>`
+        `fill="${esc(l.colour)}" color="${esc(l.colour)}"${lazy ? ` data-lazy="${esc(l.id)}src"` : ""}>${lazy ? "" : body}</g>`
       );
     })
     .join("") + lifted.join("");

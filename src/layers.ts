@@ -387,6 +387,13 @@ function shapesOf(data: Data | null, names: string[]): Map<string, Shape> {
  */
 const THIN_TYPES = new Set<string>(["electric-pole"]);
 
+/**
+ * Pixels a tile carries in embedded art. The closest the page zooms is one
+ * chunk across the pane, about 25 screen pixels a tile on an 800 pixel pane, so
+ * 32 is enough at any zoom it allows.
+ */
+const ART_PX_PER_TILE = 32;
+
 /** Track pieces, whose art depends on a direction the save does not record. */
 const RAIL_TRACK = new Set<string>([
   "straight-rail",
@@ -554,8 +561,17 @@ export interface MapFacts {
       usage?: number;
       drain?: number;
       buffer?: number;
+      /** Slots for a chest, fluid volume for a tank, from the prototype. */
+      slots?: number;
+      volume?: number;
     }
   >;
+  /** Every machine the save read: x, y, prototype, recipe ("" for none), modules by name. */
+  machines: Array<[number, number, string, string, Record<string, number> | 0]>;
+  /** Every container the save read: x, y, prototype, items by name, fluid. */
+  holds: Array<[number, number, string, Record<string, number> | 0, { name: string; amount: number } | 0]>;
+  /** The game's own icon for every recipe, module, item and fluid the two lists name. */
+  icons: Record<string, string>;
 }
 
 /**
@@ -882,9 +898,6 @@ export function mapModel(input: ModelInput): MapModel {
   // and the cap is about references, which the belts at thirty thousand blow
   // and a solar field does not.
   const ART_CAP = 1500;
-  // The closest the page zooms is one chunk across the pane, about 25 screen
-  // pixels a tile on a 800 pixel pane, so 32 is enough at any zoom it allows.
-  const ART_PX_PER_TILE = 32;
   if (input.data && cutterAvailable()) {
     const defs: string[] = [];
     const pieces: string[] = [];
@@ -975,6 +988,93 @@ export function mapModel(input: ModelInput): MapModel {
             : "") +
           ` · a save records a position and not a direction, so each one is its north-facing frame`,
         body: `<defs>${defs.join("")}</defs>${pieces.join("")}`,
+      });
+    }
+  }
+
+  // What each machine is set to and what each container holds, drawn the way
+  // the game's alt mode draws it: the recipe's icon on a dark disc over the
+  // machine, its modules in a row along its bottom edge, and the icon of what
+  // a chest or tank mostly holds. All three are in the save read already
+  // (`machines` and `containers`), so this measures nothing new. It ships as
+  // inert text like the art and shows at the same zoom, because six thousand
+  // icons are a stall at the whole-base view and are unreadable there anyway.
+  if (input.data && cutterAvailable()) {
+    const data = input.data;
+    const iconIds = new Map<string, string>();
+    const iconDefs: string[] = [];
+    // One definition per icon, one unit wide about the origin, so a placement
+    // only says where and how big.
+    const iconId = (name: string, disc: boolean): string | null => {
+      const key = `${disc ? "r" : "i"}-${name}`;
+      if (iconIds.has(key)) return iconIds.get(key) || null;
+      const cut = iconCut(data, name);
+      // An icon declares no world scale; at half scale its 64 pixels are one
+      // tile, and resampled to the art's density it costs a quarter.
+      const uri = cut ? dataUriAt({ ...cut, scale: (PIXELS_PER_TILE * 2) / Math.max(1, cut.w) / 2 }, ART_PX_PER_TILE) : null;
+      iconIds.set(key, uri ? key : "");
+      if (!uri) return null;
+      iconDefs.push(
+        `<g id="${esc(key)}">` +
+          (disc ? `<circle r="0.62" fill="#000" fill-opacity="0.55"/>` : "") +
+          `<image x="-0.5" y="-0.5" width="1" height="1" href="${uri}"/></g>`,
+      );
+      return key;
+    };
+    const place = (id: string, x: number, y: number, size: number): string =>
+      `<use href="#${esc(id)}" transform="translate(${round(x)} ${round(y)}) scale(${size.toFixed(2)})"/>`;
+
+    const marks: string[] = [];
+    let set = 0;
+    let moduled = 0;
+    for (const m of map.machines ?? []) {
+      const shape = ctx.shapes.get(m.name);
+      const side = Math.min(shape?.w ?? 3, shape?.h ?? 3);
+      if (typeof m.recipe === "string") {
+        const id = iconId(m.recipe, true);
+        if (id) {
+          marks.push(place(id, m.x, m.y - side * 0.08, side * 0.42));
+          set += 1;
+        }
+      }
+      const mods = Object.entries(m.modules ?? {}).flatMap(([name, n]) => Array.from({ length: n }, () => name));
+      if (mods.length > 0) {
+        moduled += 1;
+        const size = Math.min(0.62, (side * 0.9) / mods.length);
+        const y = m.y + (shape?.h ?? 3) / 2 - size * 0.62;
+        mods.forEach((name, i) => {
+          const id = iconId(name, false);
+          if (id) marks.push(place(id, m.x + (i - (mods.length - 1) / 2) * size, y, size));
+        });
+      }
+    }
+    let held = 0;
+    for (const c of map.containers ?? []) {
+      let top = c.fluid?.name ?? "";
+      let n = 0;
+      for (const [item, count] of Object.entries(c.items ?? {})) if (count > n) [top, n] = [item, count];
+      if (!top) continue;
+      const shape = ctx.shapes.get(c.name);
+      const id = iconId(top, false);
+      if (!id) continue;
+      marks.push(place(id, c.x, c.y, Math.min(shape?.w ?? 1, shape?.h ?? 1) * 0.7));
+      held += 1;
+    }
+    if (marks.length > 0) {
+      layers.push({
+        id: "alt",
+        label: "Recipes, modules, contents",
+        colour: "#e8e8e8",
+        mark: "fill",
+        group: "base",
+        on: true,
+        drawn: set + held,
+        census: (map.machines?.length ?? 0) + (map.containers?.length ?? 0),
+        missing: [],
+        note:
+          `${String(set)} machines with a recipe, ${String(moduled)} with modules, ${String(held)} containers holding something, ` +
+          `shown when you zoom in, the way the game's alt mode shows them; a click lists them in full`,
+        body: `<defs>${iconDefs.join("")}</defs>${marks.join("")}`,
       });
     }
   }
@@ -1122,7 +1222,23 @@ function factsOf(input: ModelInput, ctx: BuildContext): MapFacts {
   const { map } = input;
   const force = input.state.forces[input.force ?? "player"];
   const energy = force?.energy ?? {};
-  const facts: MapFacts = { cell: map.cellTiles, chunks: {}, ore: {}, enemy: {}, protos: {} };
+  const facts: MapFacts = { cell: map.cellTiles, chunks: {}, ore: {}, enemy: {}, protos: {}, machines: [], holds: [], icons: {} };
+  const named = new Set<string>();
+  for (const m of map.machines ?? []) {
+    const recipe = typeof m.recipe === "string" ? m.recipe : "";
+    facts.machines.push([m.x, m.y, m.name, recipe, m.modules ?? 0]);
+    if (recipe) named.add(recipe);
+    for (const k of Object.keys(m.modules ?? {})) named.add(k);
+  }
+  for (const c of map.containers ?? []) {
+    facts.holds.push([c.x, c.y, c.name, c.items ?? 0, c.fluid ? { name: c.fluid.name, amount: Math.round(c.fluid.amount) } : 0]);
+    for (const k of Object.keys(c.items ?? {})) named.add(k);
+    if (c.fluid) named.add(c.fluid.name);
+  }
+  for (const name of named) {
+    const url = input.icons?.url(name);
+    if (url) facts.icons[name] = url;
+  }
 
   for (const c of map.cells) {
     const entry: MapFacts["chunks"][string] = { by: c.byType, total: c.total ?? 0 };
@@ -1150,6 +1266,11 @@ function factsOf(input: ModelInput, ctx: BuildContext): MapFacts {
     if (placed !== undefined) row.count = placed;
     const icon = input.icons?.url(name);
     if (icon) row.icon = icon;
+    const proto = input.data?.all(name).find((p) => "selection_box" in p) ?? null;
+    const slots = Number(proto?.["inventory_size"] ?? 0);
+    if (slots > 0) row.slots = slots;
+    const volume = Number((proto?.["fluid_box"] as Record<string, unknown> | undefined)?.["volume"] ?? 0);
+    if (volume > 0) row.volume = volume;
     const e = energy[name];
     if (e) {
       // The collector copies the engine's own resolved values per tick; a watt
