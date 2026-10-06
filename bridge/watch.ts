@@ -477,7 +477,7 @@ function modelFor(state: GameState, advisory: Advisory | null): ReturnType<typeo
     // so they inherit the tick check rather than needing their own.
     recipeBlocks: recipeBlocks(surfaceMap),
     ...(busSurvey.state === "ok" && survey
-      ? { belts: survey.belts.map((b) => ({ x: b.x, y: b.y, lanes: b.lanes })) }
+      ? { belts: survey.belts.map((b) => ({ x: b.x, y: b.y, dir: b.dir, lanes: b.lanes })) }
       : {}),
     adviceAreas,
     powerAreas: advisory?.blocks ?? [],

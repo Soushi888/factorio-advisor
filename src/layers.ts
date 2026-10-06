@@ -517,7 +517,7 @@ export interface ModelInput {
   /** Machine blocks, already clustered by recipe (MAP-4). */
   recipeBlocks?: RecipeBlock[];
   /** The belt survey for this surface, when it came back at this tick. */
-  belts?: Array<{ x: number; y: number; lanes: Array<{ item: string; count: number }> }>;
+  belts?: Array<{ x: number; y: number; dir?: number; lanes: Array<{ item: string; count: number }> }>;
   /** The places the advice points at. */
   adviceAreas?: Area[];
   /** Power blocks and ore fields, already derived by `advise.ts`. */
@@ -572,6 +572,14 @@ export interface MapFacts {
   holds: Array<[number, number, string, Record<string, number> | 0, { name: string; amount: number } | 0]>;
   /** The game's own icon for every recipe, module, item and fluid the two lists name. */
   icons: Record<string, string>;
+  /**
+   * Every belt tile carrying something, packed as base64 of an Int16Array of
+   * sevens: tile x, tile y, direction (sixteenths), left lane item, left count,
+   * right lane item, right count. An item is an index into `beltItems`, -1 for
+   * an empty lane. Packed because 27776 tiles as JSON objects were a megabyte.
+   */
+  belts: string;
+  beltItems: string[];
 }
 
 /**
@@ -1048,6 +1056,10 @@ export function mapModel(input: ModelInput): MapModel {
         });
       }
     }
+    // Belt items get a definition and no placement: the page places them, for
+    // the tiles in view only, because twenty-eight thousand belt tiles drawn at
+    // once are a stall and a belt icon is unreadable until close in.
+    for (const b of input.belts ?? []) for (const lane of b.lanes.slice(0, 2)) if (lane.item) iconId(lane.item, false);
     let held = 0;
     for (const c of map.containers ?? []) {
       let top = c.fluid?.name ?? "";
@@ -1060,10 +1072,10 @@ export function mapModel(input: ModelInput): MapModel {
       marks.push(place(id, c.x, c.y, Math.min(shape?.w ?? 1, shape?.h ?? 1) * 0.7));
       held += 1;
     }
-    if (marks.length > 0) {
+    if (marks.length > 0 || iconDefs.length > 0) {
       layers.push({
         id: "alt",
-        label: "Recipes, modules, contents",
+        label: "Recipes, modules, belts, contents",
         colour: "#e8e8e8",
         mark: "fill",
         group: "base",
@@ -1073,6 +1085,7 @@ export function mapModel(input: ModelInput): MapModel {
         missing: [],
         note:
           `${String(set)} machines with a recipe, ${String(moduled)} with modules, ${String(held)} containers holding something, ` +
+          `and what rides each belt lane closer still, ` +
           `shown when you zoom in, the way the game's alt mode shows them; a click lists them in full`,
         body: `<defs>${iconDefs.join("")}</defs>${marks.join("")}`,
       });
@@ -1222,8 +1235,26 @@ function factsOf(input: ModelInput, ctx: BuildContext): MapFacts {
   const { map } = input;
   const force = input.state.forces[input.force ?? "player"];
   const energy = force?.energy ?? {};
-  const facts: MapFacts = { cell: map.cellTiles, chunks: {}, ore: {}, enemy: {}, protos: {}, machines: [], holds: [], icons: {} };
-  const named = new Set<string>();
+  const facts: MapFacts = { cell: map.cellTiles, chunks: {}, ore: {}, enemy: {}, protos: {}, machines: [], holds: [], icons: {}, belts: "", beltItems: [] };
+  const itemIndex = new Map<string, number>();
+  const idx = (item: string): number => {
+    if (!item) return -1;
+    let i = itemIndex.get(item);
+    if (i === undefined) {
+      i = facts.beltItems.length;
+      itemIndex.set(item, i);
+      facts.beltItems.push(item);
+    }
+    return i;
+  };
+  const packed: number[] = [];
+  for (const b of input.belts ?? []) {
+    const [l, r] = [b.lanes[0], b.lanes[1]];
+    if (!l?.item && !r?.item) continue;
+    packed.push(Math.floor(b.x), Math.floor(b.y), b.dir ?? 0, idx(l?.item ?? ""), l?.count ?? 0, idx(r?.item ?? ""), r?.count ?? 0);
+  }
+  facts.belts = Buffer.from(new Int16Array(packed).buffer).toString("base64");
+  const named = new Set<string>(facts.beltItems);
   for (const m of map.machines ?? []) {
     const recipe = typeof m.recipe === "string" ? m.recipe : "";
     facts.machines.push([m.x, m.y, m.name, recipe, m.modules ?? 0]);

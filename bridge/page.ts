@@ -307,24 +307,23 @@ footer{margin-top:1.1rem;color:var(--faint);font-size:.75rem;padding:.6rem .2rem
 #mapbox{flex:1 1 auto;min-height:18rem;position:relative;background:var(--void);box-shadow:var(--sunk);
   border-radius:.2rem;color:var(--fg);overflow:hidden;touch-action:none}
 /* The two sizes the map keeps in screen pixels rather than in tiles: the ink of a mark, and the height of a label. Both are recomputed by the script on every zoom, because a machine drawn at its true size on a 2655-tile base is a fifth of a pixel and a map of those is a grey smudge. */
-#map{display:block;width:100%;height:100%;cursor:grab;--mk:2.6;--tile:1;--lbl:14}
-#map.dragging{cursor:grabbing}
+#map{display:block;position:absolute;left:-25%;top:-25%;width:150%;height:150%;transform-origin:0 0;will-change:transform;cursor:grab;--mk:2.6;--tile:1;--lbl:14}
+#mapbox.dragging #map{cursor:grabbing}
+#mapbox{user-select:none;-webkit-user-select:none}
+body.panning{user-select:none;-webkit-user-select:none;cursor:grabbing}
 #map .fp{fill:currentColor;stroke:currentColor;vector-effect:non-scaling-stroke;
   stroke-width:calc(var(--mk)*1px);stroke-linejoin:round}
 /* Poles mark where the grid reaches, so they draw fine and leave the full ink to the machines (THIN_TYPES in layers.ts). */
 #map .fp.thin{stroke-width:calc(var(--mk)*.3px);fill-opacity:.8}
 #map .tile{stroke:currentColor;vector-effect:non-scaling-stroke;
   stroke-width:calc(var(--tile)*1px);stroke-linejoin:round}
-/* While the view is moving, drop antialiasing quality and the labels: the map holds about 50000 rectangles and the browser rasterises all of them on every frame of a pan. Both come back the moment it settles. */
-#map.moving{shape-rendering:optimizeSpeed}
-/* The real art is free while it is hidden and costly while it is not, so it is revealed only at the zoom where a machine is big enough to recognise, and hidden again while the view is moving. */
+/* The real art is free while it is hidden and costly while it is not, so it is revealed only at the zoom where a machine is big enough to recognise. */
 #map g[data-layer=art],#map g[data-layer=alt]{display:none}
-#map.close:not(.moving) g[data-layer=art].on,#map.close:not(.moving) g[data-layer=alt].on{display:block}
-#map.close:not(.moving):has(g[data-layer=art].on) .fp.drawn{fill-opacity:0;stroke-opacity:0}
+#map.close g[data-layer=art].on,#map.close g[data-layer=alt].on{display:block}
+#map.close:has(g[data-layer=art].on) .fp.drawn{fill-opacity:0;stroke-opacity:0}
 /* Close in, the machines and their icons are what a player reads, so belts recede to a tread under them and the recipe-block boxes, which the icons now say, fade to a hint. */
 #map.close g[data-layer=belts] .fp{fill-opacity:.45;stroke-opacity:.45}
 #map.close g[data-layer=blocks] .area rect{stroke-opacity:.25;fill-opacity:.03}
-#map.moving .lbl,#map.moving .area{display:none}
 /* Water is ground, so it sits back: at full strength it is a blue field with a base somewhere underneath it rather than a coastline the base sits on. */
 #map .tile.water{opacity:.5}
 #map .cov{fill:currentColor;fill-opacity:.07;stroke:currentColor;stroke-opacity:.5;
@@ -508,18 +507,118 @@ const SCRIPT = `
   // event used to rebuild the grid, the scale bar and the viewBox in line.
   // Coalescing them into the next frame is the single biggest thing that made
   // the map keep up with a cursor.
+  //
+  // And while the view is moving, nothing inside the SVG changes at all. The map
+  // is tens of thousands of shapes and every change to the viewBox, to a stroke
+  // variable or to a class on the SVG re-rasterises all of them, which held a
+  // pan at twenty frames a second. So a gesture moves the last drawn picture
+  // with a CSS transform, which the compositor does for free, and the real
+  // redraw happens once, when the view has been still for a beat. The SVG is
+  // drawn with a margin of MARGIN times the pane on every side, so a pan
+  // uncovers picture rather than an empty edge, and is clipped by the pane.
+  var MARGIN = 0.25;
+  var drawnAt = { x: vb.x, y: vb.y, w: vb.w, h: vb.h };
   var frame = null;
   var settle = null;
+  function place(v, W, H) {
+    var s = Math.min(W / v.w, H / v.h);
+    return { s: s, ox: (W - v.w * s) / 2 - v.x * s, oy: (H - v.h * s) / 2 - v.y * s };
+  }
   function apply() {
     if (frame !== null) return;
     frame = requestAnimationFrame(function () {
       frame = null;
-      svg.setAttribute("viewBox", vb.x + " " + vb.y + " " + vb.w + " " + vb.h);
-      drawGrid();
+      var r = box.getBoundingClientRect();
+      var a = place(drawnAt, r.width, r.height), b = place(vb, r.width, r.height);
+      var k = b.s / a.s;
+      var offX = -MARGIN * r.width, offY = -MARGIN * r.height;
+      var tx = b.ox - offX - k * (a.ox - offX), ty = b.oy - offY - k * (a.oy - offY);
+      // A drag that has carried the picture most of the way through its margin
+      // is redrawn now rather than at the end, or the pane shows its empty edge.
+      var reach = Math.max(Math.abs(b.ox - a.ox) / r.width, Math.abs(b.oy - a.oy) / r.height);
+      if (k > 0.97 && k < 1.03 && reach > MARGIN * 0.8) { commit(); return; }
+      svg.style.transform = "translate(" + tx.toFixed(2) + "px," + ty.toFixed(2) + "px) scale(" + k.toFixed(5) + ")";
       drawScale();
-      ink();
-      tidySoon();
+      if (settle !== null) clearTimeout(settle);
+      settle = setTimeout(commit, glide ? 400 : 140);
     });
+  }
+  function commit() {
+    settle = null;
+    drawnAt = { x: vb.x, y: vb.y, w: vb.w, h: vb.h };
+    var f = 1 + 2 * MARGIN;
+    svg.setAttribute("viewBox", (vb.x - vb.w * MARGIN) + " " + (vb.y - vb.h * MARGIN) + " " + vb.w * f + " " + vb.h * f);
+    svg.style.transform = "";
+    drawGrid();
+    drawScale();
+    ink();
+    drawBelts();
+    declutter();
+  }
+
+  // What rides the belts, drawn for the tiles in view only. The page carries
+  // every belt tile as one packed table and an index by chunk; at each settle,
+  // close enough for an icon to be read, it places the icons for the tiles the
+  // pane shows and drops the rest. Twenty-eight thousand belt tiles drawn at
+  // once would be a stall; a pane's worth is a few hundred.
+  var beltTable = null, beltChunks = null, beltLayer = null, beltKey = "";
+  var BELT_MIN_PX = 12;
+  function beltIndex() {
+    if (beltTable || !facts || !facts.belts) return beltTable;
+    var bin = atob(facts.belts), u8 = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    beltTable = new Int16Array(u8.buffer);
+    beltChunks = {};
+    for (var j = 0; j < beltTable.length; j += 7) {
+      var key = Math.floor(beltTable[j] / chunk) + "," + Math.floor(beltTable[j + 1] / chunk);
+      (beltChunks[key] || (beltChunks[key] = [])).push(j);
+    }
+    return beltTable;
+  }
+  function beltAt(tx, ty) {
+    var a = beltIndex();
+    if (!a) return -1;
+    var list = beltChunks[Math.floor(tx / chunk) + "," + Math.floor(ty / chunk)] || [];
+    for (var i = 0; i < list.length; i++) if (a[list[i]] === tx && a[list[i] + 1] === ty) return list[i];
+    return -1;
+  }
+  var FORWARD = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+  function drawBelts() {
+    var alt = svg.querySelector('g[data-layer="alt"]');
+    var d = drawn();
+    var show = alt && alt.classList.contains("on") && !alt.hasAttribute("data-lazy") && d.s >= BELT_MIN_PX && beltIndex();
+    if (!beltLayer && alt && show) {
+      beltLayer = document.createElementNS(NS, "g");
+      alt.appendChild(beltLayer);
+    }
+    if (!show) { if (beltLayer && beltKey) { beltLayer.innerHTML = ""; beltKey = ""; } return; }
+    var x0 = Math.floor(vb.x), y0 = Math.floor(vb.y), x1 = Math.ceil(vb.x + vb.w), y1 = Math.ceil(vb.y + vb.h);
+    var key = [x0, y0, x1, y1].join(",");
+    if (key === beltKey) return;
+    beltKey = key;
+    var a = beltTable, items = facts.beltItems, out = [];
+    function put(item, x, y, size) {
+      if (item < 0) return;
+      out.push('<use href="#i-' + items[item] + '" transform="translate(' + x.toFixed(2) + " " + y.toFixed(2) + ") scale(" + size + ')"/>');
+    }
+    for (var cx = Math.floor(x0 / chunk); cx <= Math.floor(x1 / chunk); cx++) {
+      for (var cy = Math.floor(y0 / chunk); cy <= Math.floor(y1 / chunk); cy++) {
+        var list = beltChunks[cx + "," + cy];
+        if (!list) continue;
+        for (var i = 0; i < list.length; i++) {
+          var j = list[i], tx = a[j], ty = a[j + 1];
+          if (tx < x0 || tx > x1 || ty < y0 || ty > y1) continue;
+          var f = FORWARD[Math.round(a[j + 2] / 4) % 4], lx = f[1], ly = -f[0];
+          var px = tx + 0.5, py = ty + 0.5;
+          if (a[j + 3] === a[j + 5]) put(a[j + 3], px, py, 0.6);
+          else {
+            put(a[j + 3], px + lx * 0.24, py + ly * 0.24, 0.44);
+            put(a[j + 5], px - lx * 0.24, py - ly * 0.24, 0.44);
+          }
+        }
+      }
+    }
+    beltLayer.innerHTML = out.join("");
   }
 
   // Labels never overprint. Every label carries a rank (data-p, set where the
@@ -582,15 +681,6 @@ const SCRIPT = `
     document.fonts.ready.then(function () { measure = null; labelList().forEach(function (l) { l.w = 0; }); declutter(); });
   }
 
-  // Marks the view as moving, and unmarks it once nothing has moved for a beat.
-  function moving() {
-    svg.classList.add("moving");
-    if (settle !== null) clearTimeout(settle);
-    settle = setTimeout(function () {
-      settle = null;
-      svg.classList.remove("moving");
-    }, 160);
-  }
 
   // Chunk lines, generated for the visible range only, and only once a chunk is
   // wide enough on screen to be read. They are the same 32 tiles the collector
@@ -604,17 +694,19 @@ const SCRIPT = `
     }
     // The lines only change when the visible range of chunks changes, which is
     // far less often than the view moves.
+    var gx = vb.x - vb.w * MARGIN, gy = vb.y - vb.h * MARGIN;
+    var gw = vb.w * (1 + 2 * MARGIN), gh = vb.h * (1 + 2 * MARGIN);
     var key = [
-      Math.floor(vb.x / chunk), Math.floor(vb.y / chunk),
-      Math.ceil((vb.x + vb.w) / chunk), Math.ceil((vb.y + vb.h) / chunk),
+      Math.floor(gx / chunk), Math.floor(gy / chunk),
+      Math.ceil((gx + gw) / chunk), Math.ceil((gy + gh) / chunk),
     ].join(",");
     if (key === gridKey) return;
     gridKey = key;
-    var x0 = Math.floor(vb.x / chunk) * chunk, x1 = vb.x + vb.w;
-    var y0 = Math.floor(vb.y / chunk) * chunk, y1 = vb.y + vb.h;
+    var x0 = Math.floor(gx / chunk) * chunk, x1 = gx + gw;
+    var y0 = Math.floor(gy / chunk) * chunk, y1 = gy + gh;
     var out = [];
-    for (var x = x0; x <= x1; x += chunk) out.push("M" + x + " " + vb.y + "V" + y1);
-    for (var y = y0; y <= y1; y += chunk) out.push("M" + vb.x + " " + y + "H" + x1);
+    for (var x = x0; x <= x1; x += chunk) out.push("M" + x + " " + gy + "V" + y1);
+    for (var y = y0; y <= y1; y += chunk) out.push("M" + gx + " " + y + "H" + x1);
     grid.innerHTML = '<path vector-effect="non-scaling-stroke" fill="none" d="' + out.join("") + '"/>';
   }
 
@@ -650,31 +742,70 @@ const SCRIPT = `
 
   box.addEventListener("wheel", function (e) {
     e.preventDefault();
-    moving();
+    stopGlide();
     zoomAt(e.clientX, e.clientY, e.deltaY > 0 ? 1.18 : 1 / 1.18);
   }, { passive: false });
 
+  // A drag carries on for a moment after release, the way a map in the hand
+  // does, decaying to rest. Velocity is taken over the last few moves only, so a
+  // drag that stopped before letting go does not fling.
   var drag = null;
+  var glide = null;
+  function stopGlide() { if (glide !== null) { cancelAnimationFrame(glide); glide = null; } }
   svg.addEventListener("pointerdown", function (e) {
-    drag = { x: e.clientX, y: e.clientY };
-    svg.classList.add("dragging");
-    svg.setPointerCapture(e.pointerId);
+    // A press on the map starts a pan, never a text selection: without this the
+    // browser selected the reading beside the map as the pointer crossed it.
+    if (e.button === 0) e.preventDefault();
+    if (window.getSelection) { var sel = window.getSelection(); if (sel && !sel.isCollapsed) sel.removeAllRanges(); }
+    document.body.classList.add("panning");
+    stopGlide();
+    drag = { x: e.clientX, y: e.clientY, trail: [[performance.now(), e.clientX, e.clientY]] };
+    box.classList.add("dragging");
+    try { svg.setPointerCapture(e.pointerId); } catch (err) { /* a synthetic pointer has nothing to capture */ }
   });
   svg.addEventListener("pointermove", function (e) {
     if (!drag) return;
-    moving();
     var d = drawn();
+    travelled += Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y);
     vb.x -= (e.clientX - drag.x) / d.s;
     vb.y -= (e.clientY - drag.y) / d.s;
     drag.x = e.clientX; drag.y = e.clientY;
+    var now = performance.now();
+    drag.trail.push([now, e.clientX, e.clientY]);
+    while (drag.trail.length > 2 && now - drag.trail[0][0] > 80) drag.trail.shift();
     apply();
   });
-  function endDrag() { drag = null; svg.classList.remove("dragging"); }
+  function endDrag(e) {
+    if (!drag) return;
+    var t = drag.trail, now = performance.now();
+    drag = null;
+    box.classList.remove("dragging");
+    document.body.classList.remove("panning");
+    if (reduce || !e || t.length < 2 || now - t[t.length - 1][0] > 60) return;
+    var dt = t[t.length - 1][0] - t[0][0];
+    if (dt <= 0) return;
+    // Pixels per millisecond, and a glide only when the hand was really moving.
+    var vx = (t[t.length - 1][1] - t[0][1]) / dt, vy = (t[t.length - 1][2] - t[0][2]) / dt;
+    if (Math.abs(vx) + Math.abs(vy) < 0.3) return;
+    var last = now;
+    glide = requestAnimationFrame(function step(ts) {
+      var ms = Math.min(32, ts - last);
+      last = ts;
+      var d = drawn();
+      vb.x -= (vx * ms) / d.s;
+      vb.y -= (vy * ms) / d.s;
+      var decay = Math.pow(0.994, ms);
+      vx *= decay; vy *= decay;
+      apply();
+      if (Math.abs(vx) + Math.abs(vy) > 0.02) glide = requestAnimationFrame(step);
+      else { glide = null; if (settle !== null) clearTimeout(settle); settle = setTimeout(commit, 60); }
+    });
+  }
   svg.addEventListener("pointerup", endDrag);
-  svg.addEventListener("pointercancel", endDrag);
+  svg.addEventListener("pointercancel", function () { endDrag(null); });
   svg.addEventListener("dblclick", function (e) { zoomAt(e.clientX, e.clientY, 1 / 1.6); });
 
-  function doFit() { vb = { x: fit[0], y: fit[1], w: fit[2], h: fit[3] }; apply(); }
+  function doFit() { stopGlide(); vb = { x: fit[0], y: fit[1], w: fit[2], h: fit[3] }; apply(); }
   document.getElementById("fit").addEventListener("click", doFit);
   document.getElementById("zin").addEventListener("click", function () { var c = centre(); zoomAt(c[0], c[1], 1 / 1.4); });
   document.getElementById("zout").addEventListener("click", function () { var c = centre(); zoomAt(c[0], c[1], 1.4); });
@@ -688,7 +819,9 @@ const SCRIPT = `
     g.classList.toggle("on", next);
     var lg = svg.querySelector('g[data-labels-of="' + id + '"]');
     if (lg) lg.classList.toggle("on", next);
-    b.setAttribute("aria-pressed", next ? "true" : "false");    tidySoon();
+    b.setAttribute("aria-pressed", next ? "true" : "false");
+    tidySoon();
+    if (id === "alt") { beltKey = ""; drawBelts(); }
   }
   toggles.forEach(function (b) {
     b.addEventListener("click", function () { setLayer(b.getAttribute("data-toggle")); });
@@ -760,6 +893,7 @@ const SCRIPT = `
   }
   function clearMark() { if (mark) mark.innerHTML = ""; if (badge) badge.hidden = true; }
   function focusOn(x, y, w, h, layer, label) {
+    stopGlide();
     if (layer) setLayer(layer, true);
     drawMark(x, y, w, h, label);
     // Padded enough to show what surrounds the place, close enough that the
@@ -1020,6 +1154,14 @@ const SCRIPT = `
           pairs.push(["modules", mods.join("<br>")]);
         } else pairs.push(["modules", "none"]);
       }
+      var bi = /belt|splitter|loader/.test(p.type || "") ? beltAt(Math.floor(ux), Math.floor(uy)) : -1;
+      if (bi >= 0) {
+        var bt = beltTable;
+        [["left lane", 3], ["right lane", 5]].forEach(function (lane) {
+          var it = bt[bi + lane[1]];
+          pairs.push([lane[0], it < 0 ? "empty" : bt[bi + lane[1] + 1] + " &times; " + withIcon(facts.beltItems[it])]);
+        });
+      }
       var c = thingAt(facts.holds, name, ux, uy, p);
       if (c) {
         if (c[4]) pairs.push([withIcon(c[4].name), commas(c[4].amount) + (p.volume ? " of " + commas(p.volume) : "")]);
@@ -1085,21 +1227,25 @@ const SCRIPT = `
   }
 
   // A click that followed a drag is a pan, not a question.
+  // The whole way the pointer travelled, not where it ended: a drag that comes
+  // back near where it started is still a drag, and used to open the panel.
+  // A press that was held still for a long time is a hesitation, not a click,
+  // only when it moved; so time is not part of the test.
   var downAt = null;
-  svg.addEventListener("pointerdown", function (e) { downAt = [e.clientX, e.clientY]; });
+  var travelled = 0;
+  svg.addEventListener("pointerdown", function (e) { downAt = [e.clientX, e.clientY]; travelled = 0; });
   svg.addEventListener("click", function (e) {
     if (!downAt) return;
-    var moved = Math.abs(e.clientX - downAt[0]) + Math.abs(e.clientY - downAt[1]);
     downAt = null;
-    if (moved > 4) return;
+    if (travelled > 5 || glide !== null) return;
     openPin(e.clientX, e.clientY);
   });
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && pin && !pin.hidden) pin.hidden = true;
   });
 
-  new ResizeObserver(function () { drawGrid(); drawScale(); ink(); }).observe(box);
-  apply();
+  new ResizeObserver(function () { commit(); }).observe(box);
+  commit();
 })();
 `;
 
