@@ -307,16 +307,16 @@ footer{margin-top:1.1rem;color:var(--faint);font-size:.75rem;padding:.6rem .2rem
 #mapbox{flex:1 1 auto;min-height:18rem;position:relative;background:var(--void);box-shadow:var(--sunk);
   border-radius:.2rem;color:var(--fg);overflow:hidden;touch-action:none}
 /* The two sizes the map keeps in screen pixels rather than in tiles: the ink of a mark, and the height of a label. Both are recomputed by the script on every zoom, because a machine drawn at its true size on a 2655-tile base is a fifth of a pixel and a map of those is a grey smudge. */
-#map{display:block;position:absolute;left:-25%;top:-25%;width:150%;height:150%;transform-origin:0 0;will-change:transform;cursor:grab;--mk:2.6;--tile:1;--lbl:14}
+#map{display:block;position:absolute;left:-25%;top:-25%;width:150%;height:150%;transform-origin:0 0;will-change:transform;cursor:grab}
 #mapbox.dragging #map{cursor:grabbing}
 #mapbox{user-select:none;-webkit-user-select:none}
 body.panning{user-select:none;-webkit-user-select:none;cursor:grabbing}
 #map .fp{fill:currentColor;stroke:currentColor;vector-effect:non-scaling-stroke;
-  stroke-width:calc(var(--mk)*1px);stroke-linejoin:round}
+  stroke-width:2.6px;stroke-linejoin:round}
 /* Poles mark where the grid reaches, so they draw fine and leave the full ink to the machines (THIN_TYPES in layers.ts). */
-#map .fp.thin{stroke-width:calc(var(--mk)*.3px);fill-opacity:.8}
+#map .fp.thin{stroke-width:.8px;fill-opacity:.8}
 #map .tile{stroke:currentColor;vector-effect:non-scaling-stroke;
-  stroke-width:calc(var(--tile)*1px);stroke-linejoin:round}
+  stroke-width:1px;stroke-linejoin:round}
 /* The real art is free while it is hidden and costly while it is not, so it is revealed only at the zoom where a machine is big enough to recognise. */
 #map g[data-layer=art],#map g[data-layer=alt]{display:none}
 #map.close g[data-layer=art].on,#map.close g[data-layer=alt].on{display:block}
@@ -330,8 +330,8 @@ body.panning{user-select:none;-webkit-user-select:none;cursor:grabbing}
   vector-effect:non-scaling-stroke;stroke-width:1px}
 #map .cov.build{fill-opacity:.03;stroke-opacity:.18;stroke-dasharray:4 3}
 #map .lbl.hid{display:none}
-#map .lbl{font-size:calc(var(--lbl)*1px);fill:currentColor;paint-order:stroke;stroke:var(--void);
-  stroke-width:calc(var(--lbl)*.3px);stroke-linejoin:round;text-anchor:middle;font-weight:700;
+#map .lbl{font-size:14px;fill:currentColor;paint-order:stroke;stroke:var(--void);
+  stroke-width:4.2px;stroke-linejoin:round;text-anchor:middle;font-weight:700;
   letter-spacing:-.01em;pointer-events:none;font-family:var(--font)}
 #map .area rect{fill-opacity:.1;stroke-width:2;vector-effect:non-scaling-stroke;stroke-dasharray:6 4}
 #map .area.warn rect{fill:var(--down);stroke:var(--down)}
@@ -476,6 +476,25 @@ const SCRIPT = `
   // grid is what carries real size. A label is set in tile units computed from
   // the scale, because text inside a viewBox is measured in tiles and a fixed
   // font size would be a postage stamp at one zoom and a banner at the next.
+  // The sizes are written into a few rules of their own rather than into CSS
+  // variables on the SVG. A custom property is inherited, so changing one on the
+  // SVG restyled all fourteen thousand nodes under it: 77 to 89 ms per variable,
+  // three variables per redraw, measured at close zoom with every layer hidden.
+  // A rule is only matched by the paths and labels it names, and a value that
+  // did not change is not written at all.
+  var inkRules = (function () {
+    var el = document.createElement("style");
+    el.textContent = "#map .fp{}#map .fp.thin{}#map .tile{}#map .lbl{}#map .lbl{}";
+    document.head.appendChild(el);
+    return el.sheet.cssRules;
+  })();
+  var inkNow = [];
+  function setInk(i, prop, value) {
+    var key = i + prop;
+    if (inkNow[key] === value) return;
+    inkNow[key] = value;
+    inkRules[i].style.setProperty(prop, value);
+  }
   function ink() {
     var d = drawn();
     var px = d.s * chunk;
@@ -484,9 +503,12 @@ const SCRIPT = `
     // real footprint rather than a fat blob. Water and ore get a thinner one:
     // they are already large shapes and only need their edge closed up.
     var k = Math.max(0, Math.min(1, (px - 4) / 60));
-    svg.style.setProperty("--mk", (3.2 - 2.7 * k).toFixed(2));
-    svg.style.setProperty("--tile", (1.1 - 0.9 * k).toFixed(2));
-    svg.style.setProperty("--lbl", (13 / d.s).toFixed(2));
+    var mk = 3.2 - 2.7 * k, lbl = 13 / d.s;
+    setInk(0, "stroke-width", (mk).toFixed(2) + "px");
+    setInk(1, "stroke-width", (mk * 0.3).toFixed(2) + "px");
+    setInk(2, "stroke-width", (1.1 - 0.9 * k).toFixed(2) + "px");
+    setInk(3, "font-size", lbl.toFixed(2) + "px");
+    setInk(4, "stroke-width", (lbl * 0.3).toFixed(2) + "px");
     // A tile wide enough on screen for a machine to be recognisable as itself.
     var close = d.s >= 3;
     if (close) wakeArt();
@@ -494,13 +516,53 @@ const SCRIPT = `
   }
 
   // The art arrives as text and is parsed into the map once, the first time it could be seen.
+  var culled = [];
+  function drawCulled() {
+    var close = svg.classList.contains("close");
+    var x0 = Math.floor((vb.x - vb.w * MARGIN) / chunk), y0 = Math.floor((vb.y - vb.h * MARGIN) / chunk);
+    var x1 = Math.floor((vb.x + vb.w * (1 + MARGIN)) / chunk), y1 = Math.floor((vb.y + vb.h * (1 + MARGIN)) / chunk);
+    var key = close ? [x0, y0, x1, y1].join(",") : "";
+    culled.forEach(function (c) {
+      if (c.key === key) return;
+      c.key = key;
+      if (!close) { c.holder.innerHTML = ""; return; }
+      var out = [];
+      for (var cx = x0; cx <= x1; cx++) for (var cy = y0; cy <= y1; cy++) {
+        var b = c.buckets[cx + "," + cy];
+        if (b) out.push(b.join(""));
+      }
+      c.holder.innerHTML = out.join("");
+    });
+  }
   function wakeArt() {
     var lazy = [].slice.call(svg.querySelectorAll("g[data-lazy]"));
     if (lazy.length === 0) return;
     lazy.forEach(function (l) {
       var src = document.getElementById(l.getAttribute("data-lazy"));
       l.removeAttribute("data-lazy");
-      if (src) { l.innerHTML = src.textContent; src.remove(); }
+      if (!src) return;
+      var text = src.textContent;
+      src.remove();
+      // The definitions go into the map once; the placements are indexed by
+      // chunk and only the ones inside the drawn extent are ever in the DOM.
+      // Twelve thousand placed pictures were twelve thousand nodes the browser
+      // restyled and relaid on every redraw, on screen or not.
+      var end = text.indexOf("</defs>");
+      var defs = end >= 0 ? text.slice(0, end + 7) : "";
+      var rest = end >= 0 ? text.slice(end + 7) : text;
+      l.innerHTML = defs;
+      var holder = document.createElementNS(NS, "g");
+      l.insertBefore(holder, l.firstChild ? l.firstChild.nextSibling : null);
+      var buckets = {};
+      var re = /<use [^>]*\\/>/g, m;
+      while ((m = re.exec(rest))) {
+        var u = m[0];
+        var p = /translate\\(([-\\d.]+) ([-\\d.]+)\\)/.exec(u) || /\\bx="([-\\d.]+)" y="([-\\d.]+)"/.exec(u);
+        if (!p) continue;
+        var key = Math.floor(+p[1] / chunk) + "," + Math.floor(+p[2] / chunk);
+        (buckets[key] || (buckets[key] = [])).push(u);
+      }
+      culled.push({ holder: holder, buckets: buckets, key: "" });
     });
     var g = svg.querySelector('g[data-layer="art"]');
     if (!g) return;
@@ -563,6 +625,7 @@ const SCRIPT = `
     drawGrid();
     drawScale();
     ink();
+    drawCulled();
     drawBelts();
     declutter();
   }
