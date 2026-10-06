@@ -334,6 +334,19 @@ footer{margin-top:1.1rem;color:var(--faint);font-size:.75rem;padding:.6rem .2rem
 #map g[data-layer].on{pointer-events:auto}
 #map g[data-layer]:not(.on){display:none}
 #map .flash rect{stroke-width:4;fill-opacity:.28}
+#mark{pointer-events:none;color:var(--accent)}
+#mark .halo{fill:none;stroke:var(--void);stroke-width:7;vector-effect:non-scaling-stroke;stroke-opacity:.85}
+#mark .box{fill:currentColor;fill-opacity:.14;stroke:currentColor;stroke-width:3;vector-effect:non-scaling-stroke}
+#mark .pulse{fill:none;stroke:currentColor;stroke-width:2;vector-effect:non-scaling-stroke;animation:markpulse 1.4s ease-out 3}
+@keyframes markpulse{from{stroke-opacity:1}to{stroke-opacity:0}}
+#mark .shade{fill:var(--void);fill-opacity:.62;fill-rule:evenodd}
+#mark .cross{fill:none;stroke:currentColor;stroke-width:1.5;vector-effect:non-scaling-stroke;stroke-dasharray:8 5;stroke-opacity:.9}
+#focusbadge{position:absolute;left:.5rem;top:.5rem;z-index:3;max-width:calc(100% - 1rem);background:var(--accent);color:#111;font-weight:700;font-size:.8rem;line-height:1.3;padding:.3rem .6rem;border-radius:.3rem;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+#focusbadge[hidden]{display:none}
+.coord{color:var(--accent);text-decoration:underline dotted;text-underline-offset:2px;cursor:pointer;white-space:nowrap}
+.coord::after{content:" \u2316";font-size:.85em}
+.coord:hover,.coord:focus-visible{text-decoration-style:solid}
+.coord.flash{background:color-mix(in srgb,var(--accent) 18%,transparent);border-radius:.2rem}
 /* The panel a click opens, styled as the game's entity tooltip. It is anchored in the map box rather than in the page, so it travels with the map and never lands under the reading. */
 #pin{position:absolute;z-index:3;max-width:19rem;min-width:12rem;background:var(--panel);
   border:1px solid var(--edge);border-radius:.2rem;padding:0 .6rem .5rem;font-size:.8rem;
@@ -397,7 +410,7 @@ footer{margin-top:1.1rem;color:var(--faint);font-size:.75rem;padding:.6rem .2rem
   #mapbox{height:60vh;flex:none}
   .bar{grid-template-columns:8rem 1fr 8.5rem}
 }
-@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}#map{transition:none!important}}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}#map{transition:none!important}#mark .pulse{animation:none}}
 `;
 
 /**
@@ -603,14 +616,76 @@ const SCRIPT = `
   // its edge, and floored at a few chunks so a small target is not zoomed into
   // a void.
   var flashed = null;
-  function focusOn(x, y, w, h, layer) {
-    if (layer) setLayer(layer, true);
-    var pad = Math.max(w, h) * 0.8 + chunk * 2;
-    var target = {
-      x: x - pad, y: y - pad,
-      w: Math.max(w + pad * 2, chunk * 4),
-      h: Math.max(h + pad * 2, chunk * 4),
+  var mark = document.getElementById("mark");
+  var badge = document.getElementById("focusbadge");
+  var NS = "http://www.w3.org/2000/svg";
+  // The place itself, outlined on top of every layer, so a click says which
+  // tiles it means rather than leaving the player to guess inside a padded view.
+  // A point is drawn as a few tiles around it, because a zero-size box has no
+  // outline to see.
+  function drawMark(x, y, w, h, label) {
+    if (!mark) return;
+    mark.innerHTML = "";
+    var m = 3;
+    var r = { x: x - (w < m ? (m - w) / 2 : 0), y: y - (h < m ? (m - h) / 2 : 0), w: Math.max(w, m), h: Math.max(h, m) };
+    var cs = getComputedStyle(mark);
+    var ink = cs.color, under = cs.getPropertyValue("--void") || "#000";
+    // Everything but the place goes dark, so the eye lands on it whatever the
+    // layers around it are doing. The outer rectangle is far larger than any
+    // base, and evenodd fill cuts the place out of it.
+    var big = Math.max(fit[2], fit[3]) * 4;
+    var shade = document.createElementNS(NS, "path");
+    shade.setAttribute("class", "shade");
+    shade.setAttribute("fill", under);
+    shade.setAttribute("fill-opacity", "0.62");
+    shade.setAttribute("fill-rule", "evenodd");
+    shade.setAttribute("d",
+      "M" + (fit[0] - big) + " " + (fit[1] - big) + "h" + (fit[2] + 2 * big) + "v" + (fit[3] + 2 * big) + "h" + (-(fit[2] + 2 * big)) + "Z" +
+      "M" + r.x + " " + r.y + "h" + r.w + "v" + r.h + "h" + (-r.w) + "Z");
+    mark.appendChild(shade);
+    // A crosshair through the centre, across the whole map, so a place a few
+    // tiles wide is still found at any zoom.
+    var cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    var cross = document.createElementNS(NS, "path");
+    cross.setAttribute("class", "cross");
+    cross.setAttribute("stroke", ink);
+    cross.setAttribute("fill", "none");
+    cross.setAttribute("d",
+      "M" + (fit[0] - big) + " " + cy + "H" + r.x + "M" + (r.x + r.w) + " " + cy + "H" + (fit[0] + fit[2] + big) +
+      "M" + cx + " " + (fit[1] - big) + "V" + r.y + "M" + cx + " " + (r.y + r.h) + "V" + (fit[1] + fit[3] + big));
+    mark.appendChild(cross);
+    var paint = {
+      halo: { fill: "none", stroke: under },
+      box: { fill: ink, "fill-opacity": "0.14", stroke: ink },
+      pulse: { fill: "none", stroke: ink },
     };
+    ["halo", "box", "pulse"].forEach(function (c) {
+      var e = document.createElementNS(NS, "rect");
+      e.setAttribute("class", c);
+      for (var k in paint[c]) e.setAttribute(k, paint[c][k]);
+      e.setAttribute("x", r.x); e.setAttribute("y", r.y);
+      e.setAttribute("width", r.w); e.setAttribute("height", r.h);
+      mark.appendChild(e);
+    });
+    // The words go in a badge pinned to the map's corner, in screen pixels, so
+    // they are never lost among the map's own labels.
+    if (badge) {
+      var where = w === 0 && h === 0 ? "x " + x + ", y " + y : "x " + x + " to " + (x + w) + ", y " + y + " to " + (y + h);
+      badge.textContent = "Showing " + (label || where) + "  \u00b7  Esc clears";
+      badge.hidden = false;
+    }
+  }
+  function clearMark() { if (mark) mark.innerHTML = ""; if (badge) badge.hidden = true; }
+  function focusOn(x, y, w, h, layer, label) {
+    if (layer) setLayer(layer, true);
+    drawMark(x, y, w, h, label);
+    // Padded enough to show what surrounds the place, close enough that the
+    // place is most of the view: a belt end three tiles wide used to sit in a
+    // 128-tile window and read as nothing. Floored at 40 tiles, which is still
+    // close enough for the game's own art to draw.
+    var pad = Math.max(w, h) * 0.5 + 10;
+    var side = Math.max(w + pad * 2, h + pad * 2, 40);
+    var target = { x: x + w / 2 - side / 2, y: y + h / 2 - side / 2, w: side, h: side };
     if (reduce) { vb = target; apply(); return; }
     var from = { x: vb.x, y: vb.y, w: vb.w, h: vb.h };
     var t0 = performance.now();
@@ -629,16 +704,21 @@ const SCRIPT = `
   function hookFocus(el) {
     var fx = el.getAttribute("data-fx");
     if (!fx) return;
-    function go() {
+    function go(e) {
+      // A coordinate inside a step means that spot, not the whole step.
+      if (e) e.stopPropagation();
       var p = fx.split(" ");
-      focusOn(Number(p[0]), Number(p[1]), Number(p[2]), Number(p[3]), p[4]);
+      focusOn(Number(p[0]), Number(p[1]), Number(p[2]), Number(p[3]), p[4], el.getAttribute("data-fx-label"));
       if (flashed) flashed.classList.remove("flash");
       el.classList.add("flash"); flashed = el;
+      // On a narrow screen the map is not beside the text, so bring it to the
+      // reader; beside it, nearest is already in view and nothing moves.
+      if (!box.contains(el)) box.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "nearest" });
     }
     el.addEventListener("click", go);
     el.addEventListener("keydown", function (e) {
       if (e.target !== el) return;
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); }
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(e); }
     });
   }
   [].slice.call(document.querySelectorAll("[data-fx]")).forEach(hookFocus);
@@ -703,6 +783,7 @@ const SCRIPT = `
     if (e.key === "Escape") {
       doFit();
       if (flashed) { flashed.classList.remove("flash"); flashed = null; }
+      clearMark();
       return;
     }
     var n = parseInt(e.key, 10);
@@ -1037,7 +1118,8 @@ function mapPane(model: MapModel): string {
     `data-chunk="${String(model.cellTiles)}" preserveAspectRatio="xMidYMid meet">` +
     `<g id="grid" stroke="currentColor" stroke-width="0.5" opacity="0.14"></g>` +
     groups +
-    `</svg><span id="xy"></span><div id="pin" hidden></div></div>` +
+    `<g id="mark"></g>` +
+    `</svg><div id="focusbadge" hidden></div><span id="xy"></span><div id="pin" hidden></div></div>` +
     lazyArt +
     `<script type="application/json" id="mapfacts">${JSON.stringify(model.facts).replace(/</g, "\\u003c")}</script>` +
     `<div id="scalebar"><span class="bar"></span><span class="txt"></span></div>` +
@@ -1121,6 +1203,43 @@ const TABS_SCRIPT = `(function(){
 })();`;
 
 /**
+ * Every coordinate a line of plan prose names, made into a link to that spot.
+ *
+ * The prose is authored, so the coordinates in it are the player's own words
+ * for a place, and a place named in words should be a place the map can show.
+ * Two shapes are read, the only two the plans write: `x A to B, y C to D` (each
+ * half a point or a range), and `at A, B` or `to A, B` where either half may be
+ * a hyphenated range such as `66-134`. The leading word is what keeps a figure
+ * pair like "past 0.9, 443 turrets" from reading as a place.
+ */
+const NUM = String.raw`-?\d+(?:\.\d+)?`;
+const COORD = new RegExp(
+  String.raw`\bx (${NUM})(?: to (${NUM}))?, y (${NUM})(?: to (${NUM}))?` +
+    String.raw`|\b(at|to) (${NUM})(?:-(\d+(?:\.\d+)?))?, (${NUM})(?:-(\d+(?:\.\d+)?))?`,
+  "g",
+);
+
+export function linkCoords(text: string, layer?: string): string {
+  let out = "";
+  let last = 0;
+  for (const m of text.matchAll(COORD)) {
+    const lead = m[5] ? `${m[5]} ` : "";
+    const [a, b, c, d] = m[5] ? [m[6], m[7], m[8], m[9]] : [m[1], m[2], m[3], m[4]];
+    const x0 = Number(a), x1 = b === undefined ? x0 : Number(b);
+    const y0 = Number(c), y1 = d === undefined ? y0 : Number(d);
+    const shown = m[0].slice(lead.length);
+    const fx = [Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0)].map(String).join(" ");
+    out +=
+      esc(text.slice(last, m.index)) +
+      lead +
+      `<a class="coord" data-fx="${fx} ${esc(layer ?? "")}" data-fx-label="${esc(shown)}" tabindex="0" role="button" ` +
+      `title="Outline ${esc(shown)} on the map">${esc(shown)}</a>`;
+    last = m.index + m[0].length;
+  }
+  return out + esc(text.slice(last));
+}
+
+/**
  * The plan, rendered as part of the dashboard rather than beside it.
  *
  * A step is a card that knows where it happens, so `data-fx` sends the one map
@@ -1195,26 +1314,27 @@ function stepOf(step: StepView, atTick: number, i: number): string {
   // check is met, which is the same condition `done` already carries.
   const closed = step.progress.filter((p) => p.closedAtTick !== null).map((p) => p.closedAtTick!);
   const doneSince = step.done && closed.length > 0 ? Math.max(...closed) : null;
+  const L = (t: string): string => linkCoords(t, step.where?.layer);
   const fx = step.where
     ? ` data-fx="${step.where.x.toFixed(0)} ${step.where.y.toFixed(0)} ${step.where.w.toFixed(0)} ` +
       `${step.where.h.toFixed(0)} ${esc(step.where.layer ?? "")}" tabindex="0" role="button"` +
-      ` title="Show this on the map"`
+      ` data-fx-label="${esc(`${String(i + 1)}. ${step.where.label ?? step.title}`)}" title="Outline this step's area on the map"`
     : "";
   return (
     `<li class="step${step.done ? " done" : ""}${step.started ? " started" : ""}"${fx}>` +
     `<span class="n">${String(i + 1)}</span>` +
-    `<h3>${esc(step.title)}<button type="button" class="more" data-open>why &amp; how</button></h3>` +
+    `<h3>${L(step.title)}<button type="button" class="more" data-open>why &amp; how</button></h3>` +
     (doneSince === null
       ? ""
       : `<p class="closed">Done, and it has held since ${esc(agoOf(atTick - doneSince))}.</p>`) +
-    `<div class="chips"><span>costs <b>${esc(step.cost)}</b></span>` +
-    `<span>buys <b>${esc(step.buys)}</b></span>` +
-    `<span>undo: ${esc(step.reversible)}</span>` +
-    (step.where?.label ? `<span>at <b>${esc(step.where.label)}</b></span>` : "") +
+    `<div class="chips"><span>costs <b>${L(step.cost)}</b></span>` +
+    `<span>buys <b>${L(step.buys)}</b></span>` +
+    `<span>undo: ${L(step.reversible)}</span>` +
+    (step.where?.label ? `<span>at <b>${L(step.where.label)}</b></span>` : "") +
     `</div>` +
     (step.progress.length > 0 ? `<div class="bars">${step.progress.map(barOf).join("")}</div>` : "") +
-    `<div class="body"><p class="why">${esc(step.why)}</p>` +
-    step.detail.map((d) => `<p>${esc(d)}</p>`).join("") +
+    `<div class="body"><p class="why">${L(step.why)}</p>` +
+    step.detail.map((d) => `<p>${L(d)}</p>`).join("") +
     `</div></li>`
   );
 }
@@ -1311,8 +1431,8 @@ function planSection(plan: PlanView): string {
       : "";
   return (
     `<section class="plan" id="plan"><h2>${iconOnly("blueprint")}The plan</h2>` +
-    `<p class="lead">${esc(plan.lead)}</p>` +
-    `<p class="carry">${plan.corrections.map(esc).join("</p><p class=\"carry\">")}</p>` +
+    `<p class="lead">${linkCoords(plan.lead)}</p>` +
+    `<p class="carry">${plan.corrections.map((c) => linkCoords(c)).join("</p><p class=\"carry\">")}</p>` +
     `<ol class="steps">${plan.steps.map((s, i) => stepOf(s, plan.atTick, i)).join("")}</ol>` +
     stale +
     (plan.source ? `<p class="hist"><a href="${esc(plan.source)}">the long form, with every number and its command</a></p>` : "") +
