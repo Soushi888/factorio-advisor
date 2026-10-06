@@ -582,6 +582,12 @@ export interface MapFacts {
    */
   belts: string;
   beltItems: string[];
+  /**
+   * Every pipe tile holding fluid, packed the same way in fours: tile x, tile y,
+   * fluid (an index into `beltItems`, which names fluids as well as items), and
+   * the amount rounded to a whole unit.
+   */
+  pipes: string;
 }
 
 /**
@@ -1062,6 +1068,8 @@ export function mapModel(input: ModelInput): MapModel {
     // the tiles in view only, because twenty-eight thousand belt tiles drawn at
     // once are a stall and a belt icon is unreadable until close in.
     for (const b of input.belts ?? []) for (const lane of b.lanes.slice(0, 2)) if (lane.item) iconId(lane.item, false);
+    // Pipe fluids likewise: a definition each, placed by the page close in.
+    for (const p of map.pipes ?? []) iconId(p[2], false);
     let held = 0;
     for (const c of map.containers ?? []) {
       let top = c.fluid?.name ?? "";
@@ -1237,7 +1245,7 @@ function factsOf(input: ModelInput, ctx: BuildContext): MapFacts {
   const { map } = input;
   const force = input.state.forces[input.force ?? "player"];
   const energy = force?.energy ?? {};
-  const facts: MapFacts = { cell: map.cellTiles, chunks: {}, ore: {}, enemy: {}, protos: {}, machines: [], holds: [], icons: {}, belts: "", beltItems: [] };
+  const facts: MapFacts = { cell: map.cellTiles, chunks: {}, ore: {}, enemy: {}, protos: {}, machines: [], holds: [], icons: {}, belts: "", beltItems: [], pipes: "" };
   const itemIndex = new Map<string, number>();
   const idx = (item: string): number => {
     if (!item) return -1;
@@ -1256,6 +1264,11 @@ function factsOf(input: ModelInput, ctx: BuildContext): MapFacts {
     packed.push(Math.floor(b.x), Math.floor(b.y), b.dir ?? 0, idx(l?.item ?? ""), l?.count ?? 0, idx(r?.item ?? ""), r?.count ?? 0);
   }
   facts.belts = Buffer.from(new Int16Array(packed).buffer).toString("base64");
+  const piped: number[] = [];
+  for (const [x, y, fluid, amount] of map.pipes ?? []) {
+    piped.push(Math.floor(x), Math.floor(y), idx(fluid), Math.min(32767, Math.round(amount)));
+  }
+  facts.pipes = Buffer.from(new Int16Array(piped).buffer).toString("base64");
   const named = new Set<string>(facts.beltItems);
   for (const m of map.machines ?? []) {
     const recipe = typeof m.recipe === "string" ? m.recipe : "";

@@ -682,11 +682,34 @@ const SCRIPT = `
     for (var i = 0; i < list.length; i++) if (a[list[i]] === tx && a[list[i] + 1] === ty) return list[i];
     return -1;
   }
+  // What the pipes carry, from a second packed table of fours (x, y, fluid,
+  // amount), indexed by chunk the same way and drawn in the same pass.
+  var pipeTable = null, pipeChunks = null;
+  function pipeIndex() {
+    if (pipeTable || !facts || !facts.pipes) return pipeTable;
+    var bin = atob(facts.pipes), u8 = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    pipeTable = new Int16Array(u8.buffer);
+    pipeChunks = {};
+    for (var j = 0; j < pipeTable.length; j += 4) {
+      var key = Math.floor(pipeTable[j] / chunk) + "," + Math.floor(pipeTable[j + 1] / chunk);
+      (pipeChunks[key] || (pipeChunks[key] = [])).push(j);
+    }
+    return pipeTable;
+  }
+  function pipeAt(tx, ty) {
+    var a = pipeIndex();
+    if (!a) return -1;
+    var list = pipeChunks[Math.floor(tx / chunk) + "," + Math.floor(ty / chunk)] || [];
+    for (var i = 0; i < list.length; i++) if (a[list[i]] === tx && a[list[i] + 1] === ty) return list[i];
+    return -1;
+  }
   var FORWARD = [[0, -1], [1, 0], [0, 1], [-1, 0]];
   function drawBelts() {
     var alt = svg.querySelector('g[data-layer="alt"]');
     var d = drawn();
-    var show = alt && alt.classList.contains("on") && !alt.hasAttribute("data-lazy") && d.s >= BELT_MIN_PX && beltIndex();
+    var hasBelts = !!beltIndex(), hasPipes = !!pipeIndex();
+    var show = alt && alt.classList.contains("on") && !alt.hasAttribute("data-lazy") && d.s >= BELT_MIN_PX && (hasBelts || hasPipes);
     if (!beltLayer && alt && show) {
       beltLayer = document.createElementNS(NS, "g");
       alt.appendChild(beltLayer);
@@ -699,7 +722,7 @@ const SCRIPT = `
     var key = [x0, y0, x1, y1].join(",");
     if (key === beltKey) return;
     beltKey = key;
-    var a = beltTable, items = facts.beltItems, out = [];
+    var a = beltTable || new Int16Array(0), items = facts.beltItems, out = [];
     function put(item, x, y, size) {
       if (item < 0) return;
       out.push('<use href="#i-' + items[item] + '" transform="translate(' + x.toFixed(2) + " " + y.toFixed(2) + ") scale(" + size + ')"/>');
@@ -718,6 +741,13 @@ const SCRIPT = `
             put(a[j + 3], px + lx * 0.25, py + ly * 0.25, 0.5);
             put(a[j + 5], px - lx * 0.25, py - ly * 0.25, 0.5);
           }
+        }
+        var plist = pipeChunks && pipeChunks[cx + "," + cy];
+        if (!plist) continue;
+        for (var q = 0; q < plist.length; q++) {
+          var pj = plist[q], qx = pipeTable[pj], qy = pipeTable[pj + 1];
+          if (qx < x0 || qx > x1 || qy < y0 || qy > y1) continue;
+          put(pipeTable[pj + 2], qx + 0.5, qy + 0.5, 0.6);
         }
       }
     }
@@ -1426,6 +1456,10 @@ const SCRIPT = `
           pairs.push([lane[0], it < 0 ? "empty" : bt[bi + lane[1] + 1] + " &times; " + withIcon(facts.beltItems[it])]);
         });
       }
+      var pi = /^(pipe|pipe-to-ground|pump)$/.test(p.type || "") ? pipeAt(Math.floor(ux), Math.floor(uy)) : -1;
+      if (/^(pipe|pipe-to-ground|pump)$/.test(p.type || "")) {
+        pairs.push(["carries", pi < 0 ? "nothing" : commas(pipeTable[pi + 3]) + " &times; " + withIcon(facts.beltItems[pipeTable[pi + 2]])]);
+      }
       var c = thingAt(facts.holds, name, ux, uy, p);
       if (c) {
         if (c[4]) pairs.push([withIcon(c[4].name), commas(c[4].amount) + (p.volume ? " of " + commas(p.volume) : "")]);
@@ -1707,7 +1741,7 @@ function mapPane(model: MapModel): string {
     `<dt><kbd>m</kbd></dt><dd>full view</dd>` +
     `<dt><kbd>f</kbd></dt><dd>fit the whole base</dd>` +
     `<dt><kbd>Esc</kbd></dt><dd>closes what is open, one at a time, then fits and clears</dd>` +
-    `</dl><p>Close in, the game's own art appears, then recipes, modules and what the belts carry.</p></div>` +
+    `</dl><p>Close in, the game's own art appears, then recipes, modules and what the belts and pipes carry.</p></div>` +
     `<div class="corner bl" id="scalebar"><span class="bar"></span><span class="txt"></span></div>` +
     `<span class="corner br" id="xy"></span>` +
     `<div id="pin" hidden></div></div>` +

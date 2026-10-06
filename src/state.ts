@@ -407,6 +407,12 @@ export interface SurfaceMap {
   /** Containers beyond the budget, per prototype, with what they cost. */
   containersDropped?: Array<{ name: string; count: number }>;
   /**
+   * What every pipe, underground pipe and pump holds: `[x, y, fluid, amount]`,
+   * empty ones left out. A tuple rather than a record because there are seven
+   * thousand of them on game 4. Absent in state files read before it.
+   */
+  pipes?: Array<[number, number, string, number]>;
+  /**
    * Tiles the player has laid, counted per placing ITEM rather than per tile.
    *
    * Part of MAP-2 rather than a separate unit, because MAP-2's falsifier is
@@ -1017,6 +1023,7 @@ script.on_nth_tick(1, function()
     local cells, ore, points = {}, {}, {}
     local machines = {}
     local containers = {}
+    local pipes = {}
     local minx, miny, maxx, maxy
 
     local function bound(x, y)
@@ -1047,6 +1054,9 @@ script.on_nth_tick(1, function()
     local hold_types = { ["container"] = true, ["logistic-container"] = true,
                          ["cargo-wagon"] = true, ["storage-tank"] = true,
                          ["fluid-wagon"] = true }
+    -- What a pipe CARRIES, read in the same loop: the first fluidbox, which is
+    -- the only one a pipe has, as the fluid's name and this entity's amount.
+    local pipe_types = { ["pipe"] = true, ["pipe-to-ground"] = true, ["pump"] = true }
 
     for _, e in pairs(surface.find_entities_filtered{ force = player_force }) do
       local pos = e.position
@@ -1067,6 +1077,13 @@ script.on_nth_tick(1, function()
         local p = points[e.name]
         if not p then p = {}; points[e.name] = p end
         p[#p + 1] = { pos.x, pos.y }
+
+        if pipe_types[kind] then
+          local okf, f = pcall(function() return e.fluidbox[1] end)
+          if okf and f and f.name and (f.amount or 0) > 0 then
+            pipes[#pipes + 1] = { pos.x, pos.y, f.name, math.floor(f.amount * 10 + 0.5) / 10 }
+          end
+        end
 
         if craft_types[kind] then
           local rec = { name = e.name, x = pos.x, y = pos.y, direction = e.direction }
@@ -1335,6 +1352,7 @@ script.on_nth_tick(1, function()
       machinesDropped = #machines_dropped > 0 and machines_dropped or nil,
       containers = containers,
       containersDropped = #containers_dropped > 0 and containers_dropped or nil,
+      pipes = #pipes > 0 and pipes or nil,
       paved = next(paved) and paved or nil,
       oreRuns = ore_runs,
       water = ok_chart and runs_of(water_rows) or nil,
