@@ -9,6 +9,7 @@ import type { Icons } from "../src/icons.ts";
 import type { BottleneckReport } from "../src/bottlenecks.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { findCore } from "../src/paths.ts";
 
 /**
@@ -84,7 +85,8 @@ function fontFaces(): string {
     .map(([file, weight]) => {
       const path = join(core!, "data", "core", "fonts", file);
       if (!existsSync(path)) return "";
-      return `@font-face{font-family:"Titillium Factorio";src:url("file://${esc(path)}") format("truetype");font-weight:${String(weight)};font-display:swap}`;
+      const url = pathToFileURL(path).href.replace(/["\\]/g, "");
+      return `@font-face{font-family:"Titillium Factorio";src:url("${url}") format("truetype");font-weight:${String(weight)};font-display:swap}`;
     })
     .join("");
 }
@@ -635,6 +637,7 @@ const SCRIPT = `
     }
     el.addEventListener("click", go);
     el.addEventListener("keydown", function (e) {
+      if (e.target !== el) return;
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); }
     });
   }
@@ -986,8 +989,9 @@ function mapPane(model: MapModel): string {
   let lazyArt = "";
   const groups = model.layers
     .map((l) => {
-      const lazy = l.id === "art" && l.body.length > 0;
-      if (lazy) lazyArt = `<script type="text/plain" id="artsrc">${l.body.replace(/<\/script/gi, "<\\/script")}</script>`;
+      // A body that could close the script early is drawn inline as before rather than escaped, because an escape would reach innerHTML as literal text.
+      const lazy = l.id === "art" && l.body.length > 0 && !/<\/script/i.test(l.body);
+      if (lazy) lazyArt = `<script type="text/plain" id="artsrc">${l.body}</script>`;
       return (
         `<g data-layer="${esc(l.id)}" data-group="${esc(l.group)}" class="${l.mark} ${l.on ? "on" : ""}" ` +
         `fill="${esc(l.colour)}" color="${esc(l.colour)}"${lazy ? ` data-lazy="artsrc"` : ""}>${lazy ? "" : l.body}</g>`
@@ -1025,7 +1029,7 @@ function mapPane(model: MapModel): string {
     `<button type="button" id="zin">+</button>` +
     `<button type="button" id="zout">&minus;</button>` +
     `<button type="button" id="reset">All layers</button>` +
-    `<span class="hint">wheel zooms &middot; drag pans &middot; <kbd>1</kbd>-<kbd>9</kbd> layers &middot; <kbd>f</kbd> fits &middot; <kbd>Esc</kbd> resets</span>` +
+    `<span class="hint">wheel zooms &middot; drag pans &middot; <kbd>1</kbd>-<kbd>9</kbd> layers &middot; <kbd>f</kbd> fits &middot; <kbd>Esc</kbd> fits and clears</span>` +
     `</div>` +
     `<div id="mapbox"><svg id="map" role="img" aria-label="Base map of ${esc(model.surface)}" ` +
     `viewBox="${v.x.toFixed(0)} ${v.y.toFixed(0)} ${v.w.toFixed(0)} ${v.h.toFixed(0)}" ` +
@@ -1409,7 +1413,7 @@ function overviewOf(views: SectionView[], src: string): string {
         (h ? ` data-source="${esc(src)}" data-field="${esc(h.field)}"` : "") +
         `>${iconOnly(SECTION_ICON[v.id])}` +
         `<span class="t">${esc(v.title)}` +
-        (v.advice.length > 0 ? `<span class="nadv" title="${String(v.advice.length)} pieces of advice">${String(v.advice.length)}</span>` : "") +
+        (v.advice.length > 0 ? `<span class="nadv" title="${String(v.advice.length)} to do">${String(v.advice.length)}</span>` : "") +
         `</span>` +
         (h ? `<span class="x">${esc(h.value)}<small>${esc(h.label)}</small></span>` : `<span class="x"><small>no figures</small></span>`) +
         `</a>`
@@ -1459,7 +1463,7 @@ export function renderPage(input: PageInput): string {
     const held = holdingSection(input.bottlenecks);
     if (held) {
       cards.push(held);
-      tabs.push({ id: "sec-holding", label: "Holding back", tone: "warn" });
+      tabs.push({ id: "sec-holding", label: "Holding back", ...(input.bottlenecks.findings.length > 0 ? { tone: "warn" } : {}) });
     }
   }
 
