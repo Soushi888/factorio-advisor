@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { findCore } from "../src/paths.ts";
+import { milestoneOverlay, type Earned } from "./milestone.ts";
 
 /**
  * The dashboard.
@@ -1005,6 +1006,10 @@ export interface PageInput {
   bottlenecks?: BottleneckReport | null;
   /** The one map's layers, or null when the state file carries no map. */
   model?: MapModel | null;
+  /**
+   * Milestones earned on this map, with the earliest archived read of it for the "since" line. Absent or empty leaves the page exactly as it was.
+   */
+  milestones?: { earned: Earned[]; firstRead: GameState | null } | null;
 }
 
 /**
@@ -1559,6 +1564,10 @@ export function renderPage(input: PageInput): string {
   const f = state.forces["player"];
   const a = r.advisory;
 
+  const milestone = input.milestones
+    ? milestoneOverlay(state, src, (n) => ICONS?.url(n) ?? null, input.milestones.earned, input.milestones.firstRead)
+    : null;
+
   const machineTotal = Object.values(f?.machines ?? {}).reduce((n, c) => n + c, 0);
   const researchedCount = f?.technologies.researched.length ?? 0;
 
@@ -1746,7 +1755,7 @@ export function renderPage(input: PageInput): string {
 <div class="wrap">
 <header>
   <h1>${iconOnly("rocket-silo")}${esc(r.save)}</h1>
-  <span class="meta"><span class="chip">tick <b>${r.tick}</b>${r.previousTick !== null ? ` (was ${r.previousTick})` : ""}</span><span class="chip"><b>${r.hoursPlayed.toFixed(1)} h</b> played</span><span class="chip">read <b>${esc(readAtLocal(state.save.readAt))}</b></span><span class="chip">Factorio ${esc(state.snapshot.gameVersion)} build ${esc(state.snapshot.build)}</span></span>
+  <span class="meta"><span class="chip">tick <b>${r.tick}</b>${r.previousTick !== null ? ` (was ${r.previousTick})` : ""}</span><span class="chip"><b>${r.hoursPlayed.toFixed(1)} h</b> played</span><span class="chip">read <b>${esc(readAtLocal(state.save.readAt))}</b></span><span class="chip">Factorio ${esc(state.snapshot.gameVersion)} build ${esc(state.snapshot.build)}</span>${milestone?.chip ?? ""}</span>
   <span class="refresh" data-save="${esc(state.save.name)}" data-tick="${String(r.tick)}"><span class="msg" aria-live="polite"></span><button type="button">Read latest save</button></span>
   ${input.plan ? `<a class="planlink" href="#plan">the plan, step by step &darr;</a>` : ""}
 </header>
@@ -1761,6 +1770,7 @@ Every figure carries <code>data-source</code> and <code>data-field</code> naming
 </footer>
 </div>
 ${model ? `<script>${SCRIPT}</script>` : ""}
+${milestone?.overlay ?? ""}
 <script>${REFRESH_SCRIPT}</script>
 <script>${TABS_SCRIPT}</script>
 `;

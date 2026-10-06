@@ -226,6 +226,8 @@ export interface ForceState {
   /** Present from U5 onward. */
   electric?: ElectricState;
   research?: ResearchState;
+  /** `LuaForce.rockets_launched`. Absent on a read made before the collector recorded it. */
+  rocketsLaunched?: number;
   /** Logistic network contents by item, summed across networks. */
   logistic?: Record<string, number>;
   /** One entry per logistic network on every surface, for the robot half of logistics. */
@@ -977,6 +979,11 @@ script.on_nth_tick(1, function()
     forces[force_name] = {
       energy = energy,
       electric = { networks = net_count, production = prod, consumption = cons },
+      -- The engine's own count, and the only record of a launch: the rocket
+      -- part is consumed inside the silo and no item statistic says it flew.
+      -- Read under pcall: a missing key on a LuaObject throws, and a throw here
+      -- would cost the whole read for one counter.
+      rocketsLaunched = select(2, pcall(function() return force.rockets_launched end)),
       research = { labSpeedModifier = force.laboratory_speed_modifier,
                    labProductivityBonus = force.laboratory_productivity_bonus,
                    progress = research_progress },

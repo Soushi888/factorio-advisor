@@ -14,6 +14,7 @@ import { RecipeIndex } from "../src/recipes.ts";
 import { researchable } from "../src/next.ts";
 import { sections } from "../src/sections.ts";
 import { renderPage, REFRESH_PORT } from "./page.ts";
+import { earliestReadFor, recordMilestones, type Earned } from "./milestone.ts";
 import { mapModel } from "../src/layers.ts";
 import { advanceMarkers, authoredChanged, planView, type Plan, type PlanView } from "../src/plan.ts";
 import { Icons } from "../src/icons.ts";
@@ -190,6 +191,7 @@ export async function reportOn(
     icons: new Icons(protoData()),
     bottlenecks: bottlenecksFor(state, previous),
     model: modelFor(state, derived?.advisory ?? null),
+    milestones: milestonesFor(state),
   });
 
   // The archived state drops the map's geometry and keeps its paved counts.
@@ -258,6 +260,7 @@ export function rerenderPage(save: string, opts: { threshold?: number } = {}): s
       icons: new Icons(protoData()),
       bottlenecks: bottlenecksFor(state, previousState(save, state.save.tick)),
       model: modelFor(state, derived?.advisory ?? null),
+      milestones: milestonesFor(state),
     }),
   );
   return pagePath;
@@ -400,6 +403,20 @@ function bottlenecksFor(state: GameState, previous: GameState | null = null): Bo
   try {
     const data = load();
     return bottlenecks(data, new RecipeIndex(data), state, "player");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Milestones earned on this map, recorded against this read. Never throws: a milestone is a nicety, and the page must render without one.
+ */
+function milestonesFor(state: GameState): { earned: Earned[]; firstRead: GameState | null } | null {
+  try {
+    const planets = Object.keys(protoData()?.klass("planet") ?? {});
+    const earned = recordMilestones(state, planets);
+    if (earned.length === 0) return null;
+    return { earned, firstRead: earned.some((e) => e.full) ? earliestReadFor(state, REPORTS_DIR) : null };
   } catch {
     return null;
   }
