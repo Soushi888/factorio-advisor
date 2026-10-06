@@ -302,7 +302,13 @@ footer{margin-top:1.1rem;color:var(--faint);font-size:.75rem;padding:.6rem .2rem
 /* C33: two panes. The map holds the left and stays put while the text scrolls beside it. Below 70rem they stack and the map takes a fixed height. */
 .split{display:grid;grid-template-columns:minmax(30rem,45fr) minmax(24rem,55fr);gap:.9rem;align-items:start}
 .mappane{position:sticky;top:.6rem;height:calc(100vh - 1.2rem);display:flex;flex-direction:column;padding:.7rem .8rem;min-width:0}
-.mappane h2{margin-bottom:.5rem}
+/* The map window's title bar: the name, the game's ridged draggable space, then square tool buttons, which is how every window in Factorio is topped. */
+.mapbar{display:flex;align-items:center;gap:.5rem;margin:-.7rem -.8rem .55rem;padding:.32rem .45rem .32rem .85rem;
+  border-bottom:1px solid var(--edge);background:linear-gradient(var(--panel-hi),var(--panel));border-radius:.25rem .25rem 0 0;box-shadow:inset 0 -1px 0 rgba(255,255,255,.05)}
+.mapbar h2{margin:0;padding:0;background:none;border:0;box-shadow:none;white-space:nowrap}
+.dragspace{flex:1 1 auto;align-self:stretch;min-width:1rem;margin:.2rem 0;border-radius:.1rem;
+  background:radial-gradient(circle at 1px 1px,rgba(0,0,0,.55) .9px,transparent 1.3px) 0 0/4px 4px,
+    radial-gradient(circle at 1px 1px,rgba(255,255,255,.07) .9px,transparent 1.3px) 2px 2px/4px 4px}
 .readpane{display:grid;grid-template-columns:repeat(auto-fit,minmax(26rem,1fr));gap:.9rem;align-items:start;min-width:0}
 #mapbox{flex:1 1 auto;min-height:18rem;position:relative;background:var(--void);box-shadow:var(--sunk);
   border-radius:.2rem;color:var(--fg);overflow:hidden;touch-action:none}
@@ -321,6 +327,8 @@ body.panning{user-select:none;-webkit-user-select:none;cursor:grabbing}
 #map g[data-layer=art],#map g[data-layer=alt]{display:none}
 #map.close g[data-layer=art].on,#map.close g[data-layer=alt].on{display:block}
 #map.close:has(g[data-layer=art].on) .fp.drawn{fill-opacity:0;stroke-opacity:0}
+/* Close in, ink() has already thinned every outline to a hairline of half a pixel or less, which says nothing a filled footprint does not, and stroking the whole-base paths cost the redraw 100 ms of its 117 in full view (measured 2026-10-06). So close in the shapes are filled only. */
+#map.close .fp,#map.close .tile{stroke:none}
 /* Close in, the machines and their icons are what a player reads, so belts recede to a tread under them and the recipe-block boxes, which the icons now say, fade to a hint. */
 #map.close g[data-layer=belts] .fp{fill-opacity:.45;stroke-opacity:.45}
 #map.close g[data-layer=blocks] .area rect{stroke-opacity:.25;fill-opacity:.03}
@@ -371,31 +379,47 @@ body.panning{user-select:none;-webkit-user-select:none;cursor:grabbing}
 #pin .close{position:absolute;top:.25rem;right:.35rem;border:0;background:none;color:var(--dim);
   cursor:pointer;font:inherit;font-size:1rem;line-height:1;padding:.1rem .2rem;z-index:1}
 #pin .close:hover{color:var(--accent)}
-#xy{position:absolute;right:.4rem;bottom:.4rem;font-size:.72rem;font-variant-numeric:tabular-nums;
-  color:var(--head);background:color-mix(in srgb,var(--panel) 88%,transparent);border:1px solid var(--edge);
-  border-radius:.2rem;padding:.05rem .4rem;pointer-events:none;opacity:0;transition:opacity .12s}
-#mapbox:hover #xy{opacity:1}
-.maptools{display:flex;flex-wrap:wrap;gap:.3rem;align-items:center;margin-bottom:.45rem}
-.maptools button{min-width:1.9rem}
-.maptools .hint{color:var(--faint);font-size:.7rem;margin-left:auto}
-.hint kbd{font:inherit;font-size:.66rem;background:var(--deep);box-shadow:var(--sunk);border-radius:.15rem;padding:0 .3rem;color:var(--dim)}
-#scalebar{display:flex;align-items:center;gap:.4rem;margin-top:.4rem;color:var(--dim);font-size:.7rem;font-variant-numeric:tabular-nums}
-#scalebar .bar{height:.5rem;border:1px solid currentColor;border-top:0}
+#xy{color:var(--head);opacity:0;transition:opacity .12s}
+#mapbox:hover #xy:not(:empty){opacity:1}
+.maptools{display:flex;gap:.25rem;align-items:center;flex:0 0 auto}
+.maptools .tool{display:inline-flex;align-items:center;justify-content:center;gap:.3rem;height:1.75rem;min-width:1.75rem;padding:0 .3rem}
+.maptools .tool svg{width:1rem;height:1rem;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:0 0 auto}
+.maptools .tool.wide{padding:0 .5rem 0 .4rem}
+.maptools .tool[aria-pressed=true]{background:linear-gradient(var(--accent-hi),var(--accent));color:#1b1a1b;box-shadow:inset 0 1px 2px rgba(0,0,0,.45)}
+.maptools .count{font-size:.66rem;font-variant-numeric:tabular-nums;background:var(--deeper);box-shadow:var(--sunk);color:var(--dim);border-radius:.15rem;padding:0 .3rem;line-height:1.35}
+.maptools .tool[aria-pressed=true] .count{background:rgba(0,0,0,.25);color:#1b1a1b;box-shadow:none}
+.toolsep{width:1px;align-self:stretch;margin:.2rem .1rem;background:var(--edge);box-shadow:1px 0 0 rgba(255,255,255,.06)}
+/* The map's own GUI floats on the map: a frame the colour of the game's windows, opaque (no backdrop blur, which repaints the map under it every frame). */
+.mapui{position:absolute;z-index:4;background:var(--panel);border:1px solid var(--edge);border-radius:.2rem;box-shadow:var(--bevel),0 .3rem 1rem rgba(0,0,0,.55);font-size:.78rem}
+.mapui[hidden]{display:none}
+.uihead{display:flex;align-items:center;gap:.4rem;padding:.25rem .3rem .25rem .55rem;color:var(--head);font-weight:700;font-size:.8rem;
+  background:linear-gradient(var(--panel-hi),var(--panel));border-bottom:1px solid var(--edge);border-radius:.2rem .2rem 0 0}
+.uihead .x{margin-left:auto;border:0;background:none;color:var(--dim);cursor:pointer;font:inherit;font-size:1rem;line-height:1;padding:0 .25rem}
+.uihead .x:hover,.uihead .x:focus-visible{color:var(--accent)}
+#legend{top:.5rem;right:.5rem;width:17.5rem;max-height:calc(100% - 3rem);display:none;flex-direction:column}
+#mapbox.legend-open #legend{display:flex}
+#legend .legend-groups{margin:.35rem;max-height:none;min-height:0;flex:1 1 auto;grid-template-columns:1fr}
+#maphelp{top:.5rem;right:.5rem;width:20rem;max-width:calc(100% - 1rem);z-index:5;padding-bottom:.45rem}
+#maphelp dl{display:grid;grid-template-columns:auto 1fr;gap:.2rem .7rem;margin:.4rem .45rem 0;padding:.35rem .5rem;background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem}
+#maphelp dt{color:var(--head);white-space:nowrap}
+#maphelp dd{margin:0;color:var(--fg)}
+#maphelp p{margin:.4rem .55rem 0;color:var(--dim);font-size:.72rem}
+#maphelp kbd{font:inherit;font-size:.68rem;background:var(--deeper);box-shadow:var(--sunk);border-radius:.15rem;padding:0 .3rem;color:var(--fg)}
+/* The overview: the whole base as one picture taken once, the view drawn on it as the game draws the camera on its minimap. */
+#overview{left:.5rem;bottom:2.3rem;width:15rem;padding:.25rem;cursor:crosshair;touch-action:none}
+#overview img{display:block;width:100%;height:auto;background:var(--void);box-shadow:var(--sunk);border-radius:.1rem;pointer-events:none}
+#overview .vp{position:absolute;left:0;top:0;border:2px solid var(--accent);background:color-mix(in srgb,var(--accent) 22%,transparent);box-shadow:0 0 0 1px rgba(0,0,0,.7);pointer-events:none;transform-origin:0 0}
+.corner{position:absolute;z-index:3;pointer-events:none;font-size:.7rem;font-variant-numeric:tabular-nums;line-height:1.5;
+  background:color-mix(in srgb,var(--deeper) 86%,transparent);border:1px solid var(--edge);border-radius:.2rem;padding:.05rem .45rem}
+.corner.bl{left:.5rem;bottom:.5rem}
+.corner.br{right:.5rem;bottom:.5rem}
+#scalebar{display:flex;align-items:center;gap:.45rem;color:var(--dim)}
+#scalebar .bar{height:.45rem;border:1.5px solid var(--head);border-top:0}
 /* The legend is the map's table of contents, grouped the way a player thinks: the ground, what is standing on it, the places a sentence points at. Each entry is one click and carries its own count. */
-/* Full view: the pane leaves the page and fills the window, the map takes everything but a legend column. */
-.mappane.full{position:fixed;inset:0;z-index:40;height:100vh;width:100vw;border-radius:0;display:grid;
-  grid-template-columns:minmax(0,1fr) 19rem;grid-template-rows:auto auto minmax(0,1fr) auto;column-gap:.8rem;
-  grid-template-areas:"title legend" "tools legend" "map legend" "scale legend"}
-.mappane.full>h2{grid-area:title}
-.mappane.full>.maptools{grid-area:tools}
-.mappane.full>#mapbox{grid-area:map;min-height:0}
-.mappane.full>#scalebar{grid-area:scale}
-.mappane.full>.legend-groups{grid-area:legend;max-height:none;margin-top:0;grid-template-columns:1fr;align-content:start}
+/* Full view: the same window, fixed over the page, so the view, the layers and an open panel carry over. */
+.mappane.full{position:fixed;inset:0;z-index:40;height:100vh;width:100vw;border-radius:0}
 body.mapfull{overflow:hidden}
-#full[aria-pressed=true]{color:#111;background:var(--accent)}
-.legend-groups{flex:0 0 auto;margin-top:.45rem;display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.1rem .9rem;
-  max-height:15rem;overflow-y:auto;overflow-x:hidden;background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem;padding:.2rem .45rem;scrollbar-width:thin}
+.legend-groups{display:grid;gap:.1rem .9rem;overflow-y:auto;overflow-x:hidden;background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem;padding:.2rem .45rem;scrollbar-width:thin}
 .lgroup{min-width:0}
 .lgroup h3{font-size:.64rem;text-transform:uppercase;letter-spacing:.08em;color:var(--head);margin:.3rem 0 .15rem;font-weight:700}
 .layers{list-style:none;margin:0;padding:0}
@@ -412,7 +436,7 @@ body.mapfull{overflow:hidden}
 .layers .key.fill{border-radius:.1rem;opacity:.2}
 .layers button[aria-pressed=true] .key.fill{opacity:.65}
 .layers .key.box{border-radius:.1rem;background:none!important;border:1px dashed currentColor}
-.layers .n{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.75;font-size:.7rem}
+.layers .n{margin-left:auto;white-space:nowrap;padding-left:.4rem;font-variant-numeric:tabular-nums;opacity:.75;font-size:.7rem}
 .layers .digit{opacity:.6;font-size:.62rem;width:.75rem;flex:0 0 auto;color:var(--accent)}
 .layers .miss{display:none}
 .layers .miss.gap{display:block;font-size:.64rem;color:var(--down);padding:0 0 .15rem 1.75rem;line-height:1.25}
@@ -612,6 +636,7 @@ const SCRIPT = `
       if (k > 0.97 && k < 1.03 && reach > MARGIN * 0.98) { commit(); return; }
       svg.style.transform = "translate(" + tx.toFixed(2) + "px," + ty.toFixed(2) + "px) scale(" + k.toFixed(5) + ")";
       drawScale();
+      drawOverviewView();
       if (settle !== null) clearTimeout(settle);
       settle = setTimeout(commit, glide ? 400 : 140);
     });
@@ -624,6 +649,7 @@ const SCRIPT = `
     svg.style.transform = "";
     drawGrid();
     drawScale();
+    drawOverviewView();
     ink();
     drawCulled();
     drawBelts();
@@ -820,7 +846,10 @@ const SCRIPT = `
     return [r.left + r.width / 2, r.top + r.height / 2];
   }
 
+  function onUi(e) { return !!(e.target && e.target.closest && e.target.closest(".mapui")); }
   box.addEventListener("wheel", function (e) {
+    // The layer list scrolls under the wheel; only the map itself zooms.
+    if (onUi(e)) return;
     e.preventDefault();
     stopGlide();
     zoomAt(e.clientX, e.clientY, e.deltaY > 0 ? 1.18 : 1 / 1.18);
@@ -893,11 +922,133 @@ const SCRIPT = `
   function setFull(on) {
     if (!pane) return;
     var next = on === undefined ? !pane.classList.contains("full") : on;
+    if (next === pane.classList.contains("full")) return;
     pane.classList.toggle("full", next);
     document.body.classList.toggle("mapfull", next);
     if (fullBtn) fullBtn.setAttribute("aria-pressed", next ? "true" : "false");
+    // The full view has the room for the layer list and an overview; the split
+    // view gives its room back to the map, and keeps the list the way it was.
+    setLegend(next ? true : legendSplit, true);
+    showOverview(next);
   }
   if (fullBtn) fullBtn.addEventListener("click", function () { setFull(); });
+
+  // The layer list floats over the map's right edge. Opening it never resizes
+  // the map, so nothing redraws; the split view remembers whether it was open.
+  var legendBtn = document.getElementById("layersbtn");
+  var legendSplit = false;
+  try { legendSplit = localStorage.getItem("factorio-advisor:legend") === "1"; } catch (err) { legendSplit = false; }
+  function setLegend(on, auto) {
+    var next = on === undefined ? !box.classList.contains("legend-open") : on;
+    box.classList.toggle("legend-open", next);
+    if (legendBtn) legendBtn.setAttribute("aria-pressed", next ? "true" : "false");
+    if (next) setHelp(false);
+    if (!auto && !(pane && pane.classList.contains("full"))) {
+      legendSplit = next;
+      try { localStorage.setItem("factorio-advisor:legend", next ? "1" : "0"); } catch (err) { /* private window */ }
+    }
+  }
+  if (legendBtn) legendBtn.addEventListener("click", function () { setLegend(); });
+  var legendClose = document.getElementById("legendclose");
+  if (legendClose) legendClose.addEventListener("click", function () { setLegend(false); });
+  setLegend(legendSplit, true);
+
+  var help = document.getElementById("maphelp");
+  var helpBtn = document.getElementById("helpbtn");
+  function setHelp(on) {
+    if (!help) return;
+    var next = on === undefined ? help.hidden : on;
+    help.hidden = !next;
+    if (helpBtn) helpBtn.setAttribute("aria-pressed", next ? "true" : "false");
+  }
+  if (helpBtn) helpBtn.addEventListener("click", function () { setHelp(); });
+  var helpClose = document.getElementById("helpclose");
+  if (helpClose) helpClose.addEventListener("click", function () { setHelp(false); });
+
+  // ---- The overview -----------------------------------------------------
+  //
+  // The base layers at the fit view, serialised once into an image the first
+  // time the full view opens, and again only when a layer changes while it is
+  // showing. An image costs nothing to repaint, so the view rectangle is the
+  // only thing that moves with a pan. Art, alt mode, labels and the marks are
+  // left out: at this size they are noise, and the art is most of the page.
+  var ov = document.getElementById("overview");
+  var ovImg = ov ? ov.querySelector("img") : null;
+  var ovVp = ov ? ov.querySelector(".vp") : null;
+  var ovUrl = null, ovStale = true, ovTimer = null;
+  var ovPad = ov ? parseFloat(getComputedStyle(ov).paddingLeft) || 0 : 0;
+  var OV_STYLE = "path,rect{vector-effect:non-scaling-stroke;stroke-width:1px;stroke:currentColor;stroke-linejoin:round}" +
+    ".tile.water{opacity:.5}.cov{fill-opacity:.07;stroke-opacity:.4}.cov.build{display:none}";
+  function buildOverview() {
+    ovTimer = null;
+    if (!ov || !ovImg) return;
+    var out = '<svg xmlns="' + NS + '" viewBox="' + fit.join(" ") + '" width="600" height="' + Math.round(600 * fit[3] / fit[2]) + '">' +
+      '<style>' + OV_STYLE + '</style><rect x="' + fit[0] + '" y="' + fit[1] + '" width="' + fit[2] + '" height="' + fit[3] + '" fill="#0f0f10" stroke="none"/>';
+    [].slice.call(svg.querySelectorAll("g[data-layer].on")).forEach(function (g) {
+      var grp = g.getAttribute("data-group");
+      if (grp !== "ground" && grp !== "base") return;
+      var id = g.getAttribute("data-layer");
+      if (id === "art" || id === "alt") return;
+      out += new XMLSerializer().serializeToString(g).replace(/<text[^>]*>[^<]*<\\/text>/g, "");
+    });
+    out += "</svg>";
+    if (ovUrl) URL.revokeObjectURL(ovUrl);
+    ovUrl = URL.createObjectURL(new Blob([out], { type: "image/svg+xml" }));
+    ovImg.src = ovUrl;
+    ovStale = false;
+  }
+  function showOverview(on) {
+    if (!ov) return;
+    ov.hidden = !on;
+    if (on && ovStale && ovTimer === null) ovTimer = setTimeout(buildOverview, 0);
+    if (on) drawOverviewView();
+  }
+  function overviewStale() {
+    ovStale = true;
+    if (ov && !ov.hidden && ovTimer === null) ovTimer = setTimeout(buildOverview, 250);
+  }
+  function drawOverviewView() {
+    if (!ov || ov.hidden || !ovVp || !ovImg) return;
+    var W = ovImg.clientWidth, H = ovImg.clientHeight;
+    if (!W || !H) return;
+    // The view as the pane shows it, letterbox included, so the rectangle is what is on screen.
+    var r = box.getBoundingClientRect(), d = drawn();
+    var vx = vb.x - (d.left - r.left) / d.s, vy = vb.y - (d.top - r.top) / d.s;
+    var vw = r.width / d.s, vh = r.height / d.s;
+    var k = W / fit[2];
+    var x0 = Math.max(0, (vx - fit[0]) * k), y0 = Math.max(0, (vy - fit[1]) * k);
+    var x1 = Math.min(W, (vx + vw - fit[0]) * k), y1 = Math.min(H, (vy + vh - fit[1]) * k);
+    // Close in the view is a few pixels of the overview, so it keeps a findable
+    // minimum size about its own centre rather than shrinking to a dot.
+    var MIN = 12, w = x1 - x0, h = y1 - y0;
+    if (w < MIN) { x0 -= (MIN - w) / 2; w = MIN; }
+    if (h < MIN) { y0 -= (MIN - h) / 2; h = MIN; }
+    ovVp.style.transform = "translate(" + (ovPad + x0).toFixed(1) + "px," + (ovPad + y0).toFixed(1) + "px)";
+    ovVp.style.width = w.toFixed(1) + "px";
+    ovVp.style.height = h.toFixed(1) + "px";
+  }
+  if (ov && ovImg) {
+    var ovDrag = false;
+    var ovMove = function (e) {
+      var r = ovImg.getBoundingClientRect();
+      var ux = fit[0] + ((e.clientX - r.left) / r.width) * fit[2];
+      var uy = fit[1] + ((e.clientY - r.top) / r.height) * fit[3];
+      stopGlide();
+      vb.x = ux - vb.w / 2; vb.y = uy - vb.h / 2;
+      apply();
+    };
+    ov.addEventListener("pointerdown", function (e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      ovDrag = true;
+      try { ov.setPointerCapture(e.pointerId); } catch (err) { /* synthetic */ }
+      ovMove(e);
+    });
+    ov.addEventListener("pointermove", function (e) { if (ovDrag) ovMove(e); });
+    ov.addEventListener("pointerup", function () { ovDrag = false; });
+    ov.addEventListener("pointercancel", function () { ovDrag = false; });
+    ovImg.addEventListener("load", drawOverviewView);
+  }
 
   function doFit() { stopGlide(); vb = { x: fit[0], y: fit[1], w: fit[2], h: fit[3] }; apply(); }
   document.getElementById("fit").addEventListener("click", doFit);
@@ -916,6 +1067,13 @@ const SCRIPT = `
     b.setAttribute("aria-pressed", next ? "true" : "false");
     tidySoon();
     if (id === "alt") { beltKey = ""; drawBelts(); }
+    countLayers();
+    if (g.getAttribute("data-group") !== "places") overviewStale();
+  }
+  var layerCount = document.getElementById("layercount");
+  function countLayers() {
+    if (!layerCount) return;
+    layerCount.textContent = svg.querySelectorAll("g[data-layer].on").length + "/" + toggles.length;
   }
   toggles.forEach(function (b) {
     b.addEventListener("click", function () { setLayer(b.getAttribute("data-toggle")); });
@@ -1094,9 +1252,14 @@ const SCRIPT = `
     // Esc peels one thing at a time: an open panel first, and only then the
     // highlight and the view. Closing a panel used to throw away the place you
     // were looking at, which made Esc a key to avoid.
+    if (e.key === "Escape" && help && !help.hidden) { setHelp(false); return; }
     if (e.key === "Escape" && pin && !pin.hidden) { pin.hidden = true; return; }
-    if (e.key === "Escape" && pane && pane.classList.contains("full")) { setFull(false); return; }
+    var full = pane && pane.classList.contains("full");
+    if (e.key === "Escape" && !full && box.classList.contains("legend-open")) { setLegend(false); return; }
+    if (e.key === "Escape" && full) { setFull(false); return; }
     if (e.key === "m") { setFull(); return; }
+    if (e.key === "l") { setLegend(); return; }
+    if (e.key === "?") { setHelp(); return; }
     if (e.key === "Escape") {
       doFit();
       if (flashed) { flashed.classList.remove("flash"); flashed = null; }
@@ -1112,6 +1275,7 @@ const SCRIPT = `
   var xy = document.getElementById("xy");
   box.addEventListener("pointermove", function (e) {
     if (!xy) return;
+    if (onUi(e)) { xy.textContent = ""; return; }
     var d = drawn();
     var ux = vb.x + (e.clientX - d.left) / d.s;
     var uy = vb.y + (e.clientY - d.top) / d.s;
@@ -1439,6 +1603,20 @@ const CLOSE_LAYERS = new Set(["art", "alt"]);
 /** A map label as `layers.ts` writes it, whole: its text never holds markup, since `esc` ran on it. */
 const LABEL_RE = /<text class="lbl"[^>]*>[^<]*<\/text>/g;
 
+/** The title bar's tool icons, drawn inline (the page loads nothing) on a 16 unit grid in the stroke weight the game's own GUI icons use. */
+const TOOL_ICONS = {
+  fit: icon("M2 5V2h3M11 2h3v3M14 11v3h-3M5 14H2v-3M6 6h4v4H6z"),
+  zin: icon("M3 8h10M8 3v10"),
+  zout: icon("M3 8h10"),
+  layers: icon("M8 2l6 3-6 3-6-3zM2 8l6 3 6-3M2 11l6 3 6-3"),
+  reset: icon("M13 8a5 5 0 1 1-1.6-3.7M13 2v3h-3"),
+  help: icon("M6 6a2 2 0 1 1 3 1.7c-.7.4-1 .9-1 1.6V10M8 12.5v.5"),
+  full: icon("M2 6V2h4M2 2l4 4M14 6V2h-4M14 2l-4 4M2 10v4h4M2 14l4-4M14 10v4h-4M14 14l-4-4"),
+};
+function icon(d: string): string {
+  return `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="${d}"/></svg>`;
+}
+
 function mapPane(model: MapModel): string {
   const { viewBox: v } = model;
   // The art layer is most of the page's weight (every sprite, inlined) and is only ever shown close in, so it ships as inert text and becomes SVG the first time the view gets close enough to draw it. Until then the parser skips it and the DOM never holds its thousands of nodes.
@@ -1490,16 +1668,24 @@ function mapPane(model: MapModel): string {
     return `<div class="lgroup"><h3>${esc(title)}</h3><ul class="layers">${rows}</ul></div>`;
   }).join("");
 
+  const on = model.layers.filter((l) => l.on).length;
   return (
-    `<aside class="mappane"><h2>${esc(model.surface)}</h2>` +
-    `<div class="maptools">` +
-    `<button type="button" id="fit">Fit</button>` +
-    `<button type="button" id="zin">+</button>` +
-    `<button type="button" id="zout">&minus;</button>` +
-    `<button type="button" id="reset">All layers</button>` +
-    `<button type="button" id="full" aria-pressed="false" title="Fill the window with the map (m)">Full view</button>` +
-    `<span class="hint">wheel zooms &middot; drag pans &middot; <kbd>1</kbd>-<kbd>9</kbd> layers &middot; <kbd>m</kbd> full view &middot; <kbd>f</kbd> fits &middot; <kbd>Esc</kbd> closes the panel, then fits and clears</span>` +
-    `</div>` +
+    `<aside class="mappane">` +
+    // The window's title bar, laid out the way the game lays out one: the name, a
+    // strip of draggable space, then the window's own buttons. Everything else the
+    // map needs sits on the map itself, so the map keeps the pane.
+    `<div class="mapbar"><h2>${esc(model.surface)}</h2><span class="dragspace" aria-hidden="true"></span>` +
+    `<div class="maptools" role="toolbar" aria-label="Map controls">` +
+    `<button type="button" class="tool" id="fit" title="Fit the whole base (f)">${TOOL_ICONS.fit}</button>` +
+    `<button type="button" class="tool" id="zin" title="Zoom in (wheel)">${TOOL_ICONS.zin}</button>` +
+    `<button type="button" class="tool" id="zout" title="Zoom out (wheel)">${TOOL_ICONS.zout}</button>` +
+    `<span class="toolsep"></span>` +
+    `<button type="button" class="tool wide" id="layersbtn" aria-pressed="false" aria-controls="legend" title="Map layers (l)">${TOOL_ICONS.layers}<span>Layers</span><span class="count" id="layercount">${String(on)}/${String(model.layers.length)}</span></button>` +
+    `<button type="button" class="tool" id="reset" title="Every layer back to its default, whole base">${TOOL_ICONS.reset}</button>` +
+    `<span class="toolsep"></span>` +
+    `<button type="button" class="tool" id="helpbtn" aria-pressed="false" aria-controls="maphelp" title="Controls (?)">${TOOL_ICONS.help}</button>` +
+    `<button type="button" class="tool" id="full" aria-pressed="false" title="Fill the window with the map (m)">${TOOL_ICONS.full}</button>` +
+    `</div></div>` +
     `<div id="mapbox"><svg id="map" role="img" aria-label="Base map of ${esc(model.surface)}" ` +
     `viewBox="${v.x.toFixed(0)} ${v.y.toFixed(0)} ${v.w.toFixed(0)} ${v.h.toFixed(0)}" ` +
     `data-fit="${v.x.toFixed(0)} ${v.y.toFixed(0)} ${v.w.toFixed(0)} ${v.h.toFixed(0)}" ` +
@@ -1507,11 +1693,26 @@ function mapPane(model: MapModel): string {
     `<g id="grid" stroke="currentColor" stroke-width="0.5" opacity="0.14"></g>` +
     groups +
     `<g id="mark"></g>` +
-    `</svg><div id="focusbadge" hidden></div><span id="xy"></span><div id="pin" hidden></div></div>` +
+    `</svg><div id="focusbadge" hidden></div>` +
+    // Overlays: anything inside .mapui is the map's own GUI, and a wheel or a drag on it never moves the map.
+    `<div class="mapui" id="legend" role="region" aria-label="Map layers"><div class="uihead">Map layers<button type="button" class="x" id="legendclose" title="Close (l)" aria-label="Close the layer list">&times;</button></div>` +
+    `<div class="legend-groups">${legend}</div></div>` +
+    `<div class="mapui" id="overview" hidden title="The whole base: click or drag to move there"><img alt="" draggable="false"><span class="vp"></span></div>` +
+    `<div class="mapui" id="maphelp" hidden><div class="uihead">Controls<button type="button" class="x" id="helpclose" aria-label="Close the controls">&times;</button></div><dl>` +
+    `<dt>drag</dt><dd>pan, with a glide on release</dd>` +
+    `<dt>wheel, double-click</dt><dd>zoom about the pointer</dd>` +
+    `<dt>click</dt><dd>what is here: recipe, modules, contents, belt lanes</dd>` +
+    `<dt><kbd>1</kbd>-<kbd>9</kbd></dt><dd>toggle the numbered layers</dd>` +
+    `<dt><kbd>l</kbd></dt><dd>the layer list</dd>` +
+    `<dt><kbd>m</kbd></dt><dd>full view</dd>` +
+    `<dt><kbd>f</kbd></dt><dd>fit the whole base</dd>` +
+    `<dt><kbd>Esc</kbd></dt><dd>closes what is open, one at a time, then fits and clears</dd>` +
+    `</dl><p>Close in, the game's own art appears, then recipes, modules and what the belts carry.</p></div>` +
+    `<div class="corner bl" id="scalebar"><span class="bar"></span><span class="txt"></span></div>` +
+    `<span class="corner br" id="xy"></span>` +
+    `<div id="pin" hidden></div></div>` +
     lazyArt +
     `<script type="application/json" id="mapfacts">${JSON.stringify(model.facts).replace(/</g, "\\u003c")}</script>` +
-    `<div id="scalebar"><span class="bar"></span><span class="txt"></span></div>` +
-    `<div class="legend-groups">${legend}</div>` +
     `</aside>`
   );
 }
