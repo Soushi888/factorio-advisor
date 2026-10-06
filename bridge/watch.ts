@@ -281,8 +281,52 @@ export function rerenderPage(save: string, opts: { threshold?: number } = {}): s
  * half parses would put half a step on the page.
  */
 function planFor(save: string, state: GameState): PlanView | null {
-  const plan = readPlan(save);
+  const plan = readPlan(planOwner(save, state));
   return plan ? planView(plan, state) : null;
+}
+
+/**
+ * Whose plan a save reads: its own, or the plan of the game it is an autosave of.
+ *
+ * Factorio names autosaves `_autosave1` to `_autosave3` whatever game is
+ * running, so a plan keyed by name was found for `game 4` and never for the
+ * autosave the watch loop read ten minutes later, and the page lost its plan
+ * every time the game autosaved. The map seed is the one thing an autosave and
+ * its game share and two different games almost never do, so a save with no
+ * plan of its own reads the plan whose save has the same seed. Exactly one
+ * match or none: two plans on one seed means two games started from the same
+ * map, and picking one would be a guess.
+ */
+export function planOwner(save: string, state: GameState): string {
+  if (existsSync(planPath(save))) return save;
+  const seed = state.save.seed;
+  if (typeof seed !== "number") return save;
+  const dir = join(PROJECT_ROOT, "data", "plans");
+  if (!existsSync(dir)) return save;
+  const owners = readdirSync(dir)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => {
+      try {
+        return (JSON.parse(readFileSync(join(dir, f), "utf8")) as Plan).save;
+      } catch {
+        return null;
+      }
+    })
+    .filter((owner): owner is string => typeof owner === "string" && slug(owner) !== slug(save))
+    .filter((owner) => seedOf(owner) === seed);
+  return owners.length === 1 ? owners[0]! : save;
+}
+
+/** The map seed a save's last read recorded, or null when there is none. */
+function seedOf(save: string): number | null {
+  const path = join(PROJECT_ROOT, "data", "state", `${slug(save)}.json`);
+  if (!existsSync(path)) return null;
+  try {
+    const seed = (JSON.parse(readFileSync(path, "utf8")) as GameState).save.seed;
+    return typeof seed === "number" ? seed : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The plan file for a save, or null when there is none or it does not parse. */
@@ -326,7 +370,8 @@ export function planForReport(
   state: GameState,
 ): { view: PlanView | null; markers: MarkerOutcome; commit: () => void } {
   const noop = (): void => {};
-  const before = readPlan(save);
+  const owner = planOwner(save, state);
+  const before = readPlan(owner);
   if (!before) return { view: null, markers: "absent", commit: noop };
   const { persist, render, changed } = advanceMarkers(before, state);
   if (!changed) return { view: planView(before, state), markers: "unchanged", commit: noop };
@@ -340,7 +385,7 @@ export function planForReport(
   return {
     view: planView(render, state),
     markers: "written",
-    commit: () => writeFileSync(planPath(save), JSON.stringify(persist, null, 2) + "\n"),
+    commit: () => writeFileSync(planPath(owner), JSON.stringify(persist, null, 2) + "\n"),
   };
 }
 

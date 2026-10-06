@@ -473,6 +473,11 @@ export interface GameState {
     censusClasses?: string[];
     /** Evolution and pollution per surface. Present from U5 onward. */
     surfaceState?: SurfaceState[];
+    /**
+     * Nauvis's map generation seed. An autosave carries no game name, so this
+     * is what matches it to the game it belongs to. Absent in older files.
+     */
+    seed?: number;
   };
   forces: Record<string, ForceState>;
   /**
@@ -1336,8 +1341,13 @@ script.on_nth_tick(1, function()
   end
 
 ${opts.belts ? BELT_SURVEY_LUA : ""}
+  -- The map seed is what ties an autosave to the game it came from: the engine
+  -- names every autosave _autosaveN whatever game is running, so the name says
+  -- nothing, and the seed is fixed when the map is generated.
+  local ok_seed, map_seed = pcall(function() return game.surfaces["nauvis"].map_gen_settings.seed end)
   helpers.write_file("factorio-advisor/state.json", helpers.table_to_json({
     tick = game.tick,
+    seed = ok_seed and map_seed or nil,
     surfaces = surfaces,
     day = day,
     censusClasses = energy_types(),
@@ -1574,6 +1584,7 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
 
   const raw = JSON.parse(readFileSync(outPath, "utf8")) as {
     tick: number;
+    seed?: number;
     surfaces: string[];
     day?: SurfaceDay;
     censusClasses?: string[];
@@ -1601,6 +1612,7 @@ export async function readState(opts: ReadStateOptions): Promise<GameState> {
       ...(raw.day ? { day: raw.day } : {}),
       ...(raw.censusClasses ? { censusClasses: raw.censusClasses } : {}),
       ...(raw.surfaceState ? { surfaceState: raw.surfaceState } : {}),
+      ...(typeof raw.seed === "number" ? { seed: raw.seed } : {}),
     },
     forces: raw.forces,
     ...(raw.map ? { map: raw.map } : {}),
