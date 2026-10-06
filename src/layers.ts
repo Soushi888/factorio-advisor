@@ -159,7 +159,7 @@ function round(n: number): string {
  * which is a gap rather than a number to invent: those fall back to a single
  * tile and the layer's note says how many did.
  */
-function footprints(groups: Array<{ points: Array<[number, number]>; w: number; h: number }>): string {
+function footprints(groups: Array<{ points: Array<[number, number]>; w: number; h: number }>, cls = "fp"): string {
   const d: string[] = [];
   for (const g of groups) {
     if (g.w === 1 && g.h === 1) {
@@ -181,7 +181,7 @@ function footprints(groups: Array<{ points: Array<[number, number]>; w: number; 
     }
   }
   if (d.length === 0) return "";
-  return `<path class="fp" d="${d.join("")}"/>`;
+  return `<path class="${cls}" d="${d.join("")}"/>`;
 }
 
 /**
@@ -273,15 +273,31 @@ function cleanStopName(name: string): string {
   return name.replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim() || name;
 }
 
-/** A label the page keeps at a readable size, with a halo so it survives anything under it. */
-function label(x: number, y: number, text: string): string {
-  return `<text class="lbl" x="${round(x)}" y="${round(y)}">${esc(text)}</text>`;
+/**
+ * How much a label is worth keeping when two of them would overprint.
+ *
+ * The page hides the loser of every collision at the current zoom, and this is
+ * the order it hides them in: a power block over an ore field over a train stop
+ * over a recipe block, and within one kind the larger place first. A name is
+ * never removed from the document, only from the frame where it would land on
+ * another one, so zooming in brings it back and a click still reads it.
+ */
+const LABEL_RANK = { power: 4, ore: 3, stop: 2, block: 1 } as const;
+type LabelKind = keyof typeof LABEL_RANK;
+
+function labelRank(kind: LabelKind, size: number): number {
+  return LABEL_RANK[kind] * 1e7 + Math.min(1e7 - 1, Math.max(0, Math.round(size)));
 }
 
-function areaShapes(areas: Area[], withLabels = false): string {
+/** A label the page keeps at a readable size, with a halo so it survives anything under it. */
+function label(x: number, y: number, text: string, rank: number): string {
+  return `<text class="lbl" data-p="${String(rank)}" x="${round(x)}" y="${round(y)}">${esc(text)}</text>`;
+}
+
+function areaShapes(areas: Area[], kind?: LabelKind): string {
   return areas
     .map((a) => {
-      const text = withLabels ? label(a.x + a.w / 2, a.y - 3, a.label) : "";
+      const text = kind ? label(a.x + a.w / 2, a.y - 3, a.label, labelRank(kind, a.w * a.h)) : "";
       return (
         `<g class="area ${a.tone}" data-x="${a.x.toFixed(0)}" data-y="${a.y.toFixed(0)}" ` +
         `data-w="${a.w.toFixed(0)}" data-h="${a.h.toFixed(0)}">` +
@@ -352,6 +368,17 @@ function shapesOf(data: Data | null, names: string[]): Map<string, Shape> {
   return out;
 }
 
+/**
+ * Types drawn with a fine mark rather than the layer's full ink.
+ *
+ * A pole is everywhere power reaches, so at the whole-base zoom its marks are
+ * a spray of dots across every block, the same weight as the engines and
+ * boilers that are the reason to look at the layer. Drawn fine, the poles still
+ * show where the grid reaches and the generators stand out of it. They go first
+ * in the layer so the machines paint over them.
+ */
+const THIN_TYPES = new Set<string>(["electric-pole"]);
+
 interface BuildContext {
   map: SurfaceMap;
   shapes: Map<string, Shape>;
@@ -381,6 +408,7 @@ function entityLayer(
 ): MapLayer {
   const want = new Set<string>(types);
   const groups: Array<{ points: Array<[number, number]>; w: number; h: number }> = [];
+  const thin: Array<{ points: Array<[number, number]>; w: number; h: number }> = [];
   const missing: Array<{ name: string; count: number }> = [];
   let drawn = 0;
   let census = 0;
@@ -389,7 +417,7 @@ function entityLayer(
   for (const [name, points] of Object.entries(ctx.map.points)) {
     const shape = ctx.shapes.get(name);
     if (!shape || !want.has(shape.type)) continue;
-    groups.push({ points, w: shape.w, h: shape.h });
+    (THIN_TYPES.has(shape.type) ? thin : groups).push({ points, w: shape.w, h: shape.h });
     drawn += points.length;
     if (shape.guessed) guessed += points.length;
     census += Math.max(points.length, ctx.census[name] ?? 0);
@@ -431,7 +459,7 @@ function entityLayer(
     drawn,
     census,
     missing,
-    body: footprints(groups),
+    body: footprints(thin, "fp thin") + footprints(groups),
     note: notes.join(" · "),
   };
 }
@@ -657,7 +685,7 @@ export function mapModel(input: ModelInput): MapModel {
       census: oreTiles,
       missing: [],
       note: `${oreNames.join(", ")}, each in its own colour`,
-      body: oreBody.join("") + areaShapes(input.oreAreas ?? [], true),
+      body: oreBody.join("") + areaShapes(input.oreAreas ?? [], "ore"),
     });
   }
 
@@ -725,18 +753,18 @@ export function mapModel(input: ModelInput): MapModel {
 
   layers.push(entityLayer("rail", "Rail network", "#9aa3b0", "square", "base", DOMAINS.rail, ctx, true));
   layers.push(entityLayer("belts", "Belts and inserters", "#d8b64a", "square", "base", DOMAINS.belts, ctx, true));
-  layers.push(entityLayer("pipes", "Pipes and tanks", "#3f8a96", "square", "base", DOMAINS.pipes, ctx, true));
+  layers.push(entityLayer("pipes", "Pipes and tanks", "#2fc4c4", "square", "base", DOMAINS.pipes, ctx, true));
   layers.push(entityLayer("walls", "Walls", "#9a7f6a", "square", "base", DOMAINS.walls, ctx, true));
-  layers.push(entityLayer("power", "Power", "#e8c25a", "dot", "base", DOMAINS.power, ctx, true));
+  layers.push(entityLayer("power", "Power", "#ff8a3d", "dot", "base", DOMAINS.power, ctx, true));
   const powerLayer = layers[layers.length - 1];
   if (powerLayer && input.powerAreas && input.powerAreas.length > 0) {
-    powerLayer.body += areaShapes(input.powerAreas, true);
+    powerLayer.body += areaShapes(input.powerAreas, "power");
   }
-  layers.push(entityLayer("mining", "Drills and pumpjacks", "#f0d060", "dot", "base", DOMAINS.mining, ctx, true));
+  layers.push(entityLayer("mining", "Drills and pumpjacks", "#f4f1e8", "dot", "base", DOMAINS.mining, ctx, true));
   layers.push(
     entityLayer("production", "Assembly, chemistry, furnaces", "#5fd98a", "square", "base", DOMAINS.production, ctx, true),
   );
-  layers.push(entityLayer("logistics", "Roboports and chests", "#5fb0f0", "square", "base", DOMAINS.logistics, ctx, true));
+  layers.push(entityLayer("logistics", "Roboports and chests", "#4d8ef5", "square", "base", DOMAINS.logistics, ctx, true));
   layers.push(entityLayer("defence", "Turrets and radar", "#e8615a", "dot", "base", DOMAINS.defence, ctx, true));
   layers.push(entityLayer("science", "Labs", "#b88ae8", "square", "base", DOMAINS.science, ctx, true));
 
@@ -779,7 +807,7 @@ export function mapModel(input: ModelInput): MapModel {
   const stops = state.forces[input.force ?? "player"]?.stops ?? [];
   if (stops.length > 0) {
     const shown = stops.flatMap((s) =>
-      s.at.map(([x, y]) => label(x, y - 2, cleanStopName(s.name))),
+      s.at.map(([x, y]) => label(x, y - 2, cleanStopName(s.name), labelRank("stop", s.count))),
     );
     layers.push({
       id: "stops",
@@ -925,7 +953,7 @@ export function mapModel(input: ModelInput): MapModel {
         `machines, ${String(named.length)} named on the map and all of them on a click`,
       body:
         areaShapes(blocks.filter((b) => b.machines < NAMED_BLOCK_MACHINES)) +
-        areaShapes(named, true),
+        areaShapes(named, "block"),
     });
   }
 

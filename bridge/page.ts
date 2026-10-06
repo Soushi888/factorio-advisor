@@ -311,6 +311,8 @@ footer{margin-top:1.1rem;color:var(--faint);font-size:.75rem;padding:.6rem .2rem
 #map.dragging{cursor:grabbing}
 #map .fp{fill:currentColor;stroke:currentColor;vector-effect:non-scaling-stroke;
   stroke-width:calc(var(--mk)*1px);stroke-linejoin:round}
+/* Poles mark where the grid reaches, so they draw fine and leave the full ink to the machines (THIN_TYPES in layers.ts). */
+#map .fp.thin{stroke-width:calc(var(--mk)*.3px);fill-opacity:.8}
 #map .tile{stroke:currentColor;vector-effect:non-scaling-stroke;
   stroke-width:calc(var(--tile)*1px);stroke-linejoin:round}
 /* While the view is moving, drop antialiasing quality and the labels: the map holds about 50000 rectangles and the browser rasterises all of them on every frame of a pan. Both come back the moment it settles. */
@@ -324,6 +326,7 @@ footer{margin-top:1.1rem;color:var(--faint);font-size:.75rem;padding:.6rem .2rem
 #map .cov{fill:currentColor;fill-opacity:.07;stroke:currentColor;stroke-opacity:.5;
   vector-effect:non-scaling-stroke;stroke-width:1px}
 #map .cov.build{fill-opacity:.03;stroke-opacity:.18;stroke-dasharray:4 3}
+#map .lbl.hid{display:none}
 #map .lbl{font-size:calc(var(--lbl)*1px);fill:currentColor;paint-order:stroke;stroke:var(--void);
   stroke-width:calc(var(--lbl)*.3px);stroke-linejoin:round;text-anchor:middle;font-weight:700;
   letter-spacing:-.01em;pointer-events:none;font-family:var(--font)}
@@ -333,7 +336,7 @@ footer{margin-top:1.1rem;color:var(--faint);font-size:.75rem;padding:.6rem .2rem
 #map .area.info rect{fill:var(--dim);stroke:var(--dim)}
 #map g[data-layer]{pointer-events:none}
 #map g[data-layer].on{pointer-events:auto}
-#map g[data-layer]:not(.on){display:none}
+#map g[data-layer]:not(.on),#map g[data-labels-of]:not(.on){display:none}
 #map .flash rect{stroke-width:4;fill-opacity:.28}
 #mark{pointer-events:none;color:var(--accent)}
 #mark .halo{fill:none;stroke:var(--void);stroke-width:7;vector-effect:non-scaling-stroke;stroke-opacity:.85}
@@ -499,7 +502,68 @@ const SCRIPT = `
       drawGrid();
       drawScale();
       ink();
+      tidySoon();
     });
+  }
+
+  // Labels never overprint. Every label carries a rank (data-p, set where the
+  // layer is built), and once the view settles they are placed in rank order on
+  // screen: one that would land on a label already placed is hidden for this
+  // frame of the view, never removed, so zooming in brings it back. Widths are
+  // measured once per label with the label's own font, because a label's screen
+  // size is constant whatever the zoom. It runs once per settle, never per
+  // frame of a pan: a few hundred rectangles compared pairwise is nothing, a few
+  // hundred rectangles compared sixty times a second is a stutter.
+  var labels = null;
+  var measure = null;
+  var LABEL_PX = 13;
+  function labelList() {
+    if (labels) return labels;
+    labels = [].slice.call(svg.querySelectorAll(".lbl")).map(function (t) {
+      return { t: t, p: Number(t.getAttribute("data-p")) || 0, x: Number(t.getAttribute("x")), y: Number(t.getAttribute("y")), w: 0 };
+    });
+    labels.sort(function (a, b) { return b.p - a.p; });
+    return labels;
+  }
+  function widthOf(l) {
+    if (l.w > 0) return l.w;
+    if (!measure) {
+      measure = document.createElement("canvas").getContext("2d");
+      measure.font = "700 " + LABEL_PX + "px " + getComputedStyle(svg).getPropertyValue("--font");
+    }
+    l.w = measure.measureText(l.t.textContent).width;
+    return l.w;
+  }
+  function declutter() {
+    var d = drawn();
+    var r = box.getBoundingClientRect();
+    var placed = [];
+    var pad = 3;
+    labelList().forEach(function (l) {
+      var layer = l.t.closest("g[data-labels-of]");
+      if (layer && !layer.classList.contains("on")) return;
+      var sx = d.left + (l.x - vb.x) * d.s;
+      var sy = d.top + (l.y - vb.y) * d.s;
+      var hw = widthOf(l) / 2 + pad;
+      var a = [sx - hw, sy - LABEL_PX * 0.85 - pad, sx + hw, sy + LABEL_PX * 0.3 + pad];
+      // Off the pane it can cover nothing, so it neither hides nor blocks.
+      if (a[2] < r.left || a[0] > r.right || a[3] < r.top || a[1] > r.bottom) { l.t.classList.remove("hid"); return; }
+      var hit = false;
+      for (var i = 0; i < placed.length; i++) {
+        var b = placed[i];
+        if (a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]) { hit = true; break; }
+      }
+      l.t.classList.toggle("hid", hit);
+      if (!hit) placed.push(a);
+    });
+  }
+  var tidy = null;
+  function tidySoon() {
+    if (tidy !== null) clearTimeout(tidy);
+    tidy = setTimeout(function () { tidy = null; declutter(); }, 170);
+  }
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(function () { measure = null; labelList().forEach(function (l) { l.w = 0; }); declutter(); });
   }
 
   // Marks the view as moving, and unmarks it once nothing has moved for a beat.
@@ -606,7 +670,9 @@ const SCRIPT = `
     if (!g || !b) return;
     var next = on === undefined ? !g.classList.contains("on") : on;
     g.classList.toggle("on", next);
-    b.setAttribute("aria-pressed", next ? "true" : "false");
+    var lg = svg.querySelector('g[data-labels-of="' + id + '"]');
+    if (lg) lg.classList.toggle("on", next);
+    b.setAttribute("aria-pressed", next ? "true" : "false");    tidySoon();
   }
   toggles.forEach(function (b) {
     b.addEventListener("click", function () { setLayer(b.getAttribute("data-toggle")); });
@@ -1069,21 +1135,36 @@ const GROUP_TITLES: Array<[LayerGroup, string]> = [
   ["places", "Places"],
 ];
 
+/** A map label as `layers.ts` writes it, whole: its text never holds markup, since `esc` ran on it. */
+const LABEL_RE = /<text class="lbl"[^>]*>[^<]*<\/text>/g;
+
 function mapPane(model: MapModel): string {
   const { viewBox: v } = model;
   // The art layer is most of the page's weight (every sprite, inlined) and is only ever shown close in, so it ships as inert text and becomes SVG the first time the view gets close enough to draw it. Until then the parser skips it and the DOM never holds its thousands of nodes.
   let lazyArt = "";
+  // Labels are lifted out of their layers and drawn above every shape, or a
+  // power block's name lies under the machines of the layers painted after it.
+  // Each layer's labels keep their own group, tagged with the layer they came
+  // from, so the layer's toggle still shows and hides them.
+  const lifted: string[] = [];
   const groups = model.layers
     .map((l) => {
+      const texts = l.body.match(LABEL_RE) ?? [];
+      if (texts.length > 0) {
+        lifted.push(
+          `<g data-labels-of="${esc(l.id)}" class="${l.on ? "on" : ""}" fill="${esc(l.colour)}" color="${esc(l.colour)}">${texts.join("")}</g>`,
+        );
+      }
+      const body = texts.length > 0 ? l.body.replace(LABEL_RE, "") : l.body;
       // A body that could close the script early is drawn inline as before rather than escaped, because an escape would reach innerHTML as literal text.
-      const lazy = l.id === "art" && l.body.length > 0 && !/<\/script/i.test(l.body);
-      if (lazy) lazyArt = `<script type="text/plain" id="artsrc">${l.body}</script>`;
+      const lazy = l.id === "art" && body.length > 0 && !/<\/script/i.test(body);
+      if (lazy) lazyArt = `<script type="text/plain" id="artsrc">${body}</script>`;
       return (
         `<g data-layer="${esc(l.id)}" data-group="${esc(l.group)}" class="${l.mark} ${l.on ? "on" : ""}" ` +
-        `fill="${esc(l.colour)}" color="${esc(l.colour)}"${lazy ? ` data-lazy="artsrc"` : ""}>${lazy ? "" : l.body}</g>`
+        `fill="${esc(l.colour)}" color="${esc(l.colour)}"${lazy ? ` data-lazy="artsrc"` : ""}>${lazy ? "" : body}</g>`
       );
     })
-    .join("");
+    .join("") + lifted.join("");
 
   // The digit shortcut is assigned across the whole list in render order, so the
   // number beside an entry is the key that toggles it, whichever group it is in.
