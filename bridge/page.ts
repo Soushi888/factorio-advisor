@@ -382,6 +382,17 @@ body.panning{user-select:none;-webkit-user-select:none;cursor:grabbing}
 #scalebar{display:flex;align-items:center;gap:.4rem;margin-top:.4rem;color:var(--dim);font-size:.7rem;font-variant-numeric:tabular-nums}
 #scalebar .bar{height:.5rem;border:1px solid currentColor;border-top:0}
 /* The legend is the map's table of contents, grouped the way a player thinks: the ground, what is standing on it, the places a sentence points at. Each entry is one click and carries its own count. */
+/* Full view: the pane leaves the page and fills the window, the map takes everything but a legend column. */
+.mappane.full{position:fixed;inset:0;z-index:40;height:100vh;width:100vw;border-radius:0;display:grid;
+  grid-template-columns:minmax(0,1fr) 19rem;grid-template-rows:auto auto minmax(0,1fr) auto;column-gap:.8rem;
+  grid-template-areas:"title legend" "tools legend" "map legend" "scale legend"}
+.mappane.full>h2{grid-area:title}
+.mappane.full>.maptools{grid-area:tools}
+.mappane.full>#mapbox{grid-area:map;min-height:0}
+.mappane.full>#scalebar{grid-area:scale}
+.mappane.full>.legend-groups{grid-area:legend;max-height:none;margin-top:0;grid-template-columns:1fr;align-content:start}
+body.mapfull{overflow:hidden}
+#full[aria-pressed=true]{color:#111;background:var(--accent)}
 .legend-groups{flex:0 0 auto;margin-top:.45rem;display:grid;
   grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.1rem .9rem;
   max-height:15rem;overflow-y:auto;overflow-x:hidden;background:var(--deep);box-shadow:var(--sunk);border-radius:.2rem;padding:.2rem .45rem;scrollbar-width:thin}
@@ -610,10 +621,10 @@ const SCRIPT = `
           if (tx < x0 || tx > x1 || ty < y0 || ty > y1) continue;
           var f = FORWARD[Math.round(a[j + 2] / 4) % 4], lx = f[1], ly = -f[0];
           var px = tx + 0.5, py = ty + 0.5;
-          if (a[j + 3] === a[j + 5]) put(a[j + 3], px, py, 0.6);
+          if (a[j + 3] === a[j + 5]) put(a[j + 3], px, py, 0.72);
           else {
-            put(a[j + 3], px + lx * 0.24, py + ly * 0.24, 0.44);
-            put(a[j + 5], px - lx * 0.24, py - ly * 0.24, 0.44);
+            put(a[j + 3], px + lx * 0.25, py + ly * 0.25, 0.5);
+            put(a[j + 5], px - lx * 0.25, py - ly * 0.25, 0.5);
           }
         }
       }
@@ -804,6 +815,20 @@ const SCRIPT = `
   svg.addEventListener("pointerup", endDrag);
   svg.addEventListener("pointercancel", function () { endDrag(null); });
   svg.addEventListener("dblclick", function (e) { zoomAt(e.clientX, e.clientY, 1 / 1.6); });
+
+  // The map alone, filling the window, with the legend beside it. The pane is
+  // the same element restyled, so the view, the layers and the panel carry over
+  // and the ResizeObserver redraws it at its new size.
+  var pane = box.closest(".mappane");
+  var fullBtn = document.getElementById("full");
+  function setFull(on) {
+    if (!pane) return;
+    var next = on === undefined ? !pane.classList.contains("full") : on;
+    pane.classList.toggle("full", next);
+    document.body.classList.toggle("mapfull", next);
+    if (fullBtn) fullBtn.setAttribute("aria-pressed", next ? "true" : "false");
+  }
+  if (fullBtn) fullBtn.addEventListener("click", function () { setFull(); });
 
   function doFit() { stopGlide(); vb = { x: fit[0], y: fit[1], w: fit[2], h: fit[3] }; apply(); }
   document.getElementById("fit").addEventListener("click", doFit);
@@ -997,6 +1022,12 @@ const SCRIPT = `
   document.addEventListener("keydown", function (e) {
     if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
     if (e.key === "f") { doFit(); return; }
+    // Esc peels one thing at a time: an open panel first, and only then the
+    // highlight and the view. Closing a panel used to throw away the place you
+    // were looking at, which made Esc a key to avoid.
+    if (e.key === "Escape" && pin && !pin.hidden) { pin.hidden = true; return; }
+    if (e.key === "Escape" && pane && pane.classList.contains("full")) { setFull(false); return; }
+    if (e.key === "m") { setFull(); return; }
     if (e.key === "Escape") {
       doFit();
       if (flashed) { flashed.classList.remove("flash"); flashed = null; }
@@ -1240,9 +1271,6 @@ const SCRIPT = `
     if (travelled > 5 || glide !== null) return;
     openPin(e.clientX, e.clientY);
   });
-  document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && pin && !pin.hidden) pin.hidden = true;
-  });
 
   new ResizeObserver(function () { commit(); }).observe(box);
   commit();
@@ -1400,7 +1428,8 @@ function mapPane(model: MapModel): string {
     `<button type="button" id="zin">+</button>` +
     `<button type="button" id="zout">&minus;</button>` +
     `<button type="button" id="reset">All layers</button>` +
-    `<span class="hint">wheel zooms &middot; drag pans &middot; <kbd>1</kbd>-<kbd>9</kbd> layers &middot; <kbd>f</kbd> fits &middot; <kbd>Esc</kbd> fits and clears</span>` +
+    `<button type="button" id="full" aria-pressed="false" title="Fill the window with the map (m)">Full view</button>` +
+    `<span class="hint">wheel zooms &middot; drag pans &middot; <kbd>1</kbd>-<kbd>9</kbd> layers &middot; <kbd>m</kbd> full view &middot; <kbd>f</kbd> fits &middot; <kbd>Esc</kbd> closes the panel, then fits and clears</span>` +
     `</div>` +
     `<div id="mapbox"><svg id="map" role="img" aria-label="Base map of ${esc(model.surface)}" ` +
     `viewBox="${v.x.toFixed(0)} ${v.y.toFixed(0)} ${v.w.toFixed(0)} ${v.h.toFixed(0)}" ` +
