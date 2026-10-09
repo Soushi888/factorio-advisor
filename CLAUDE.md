@@ -19,7 +19,7 @@ bun run power                             # generation against draw, priced from
 bun run gen electronic-circuit --rate=45/min # lay one recipe step out as a row and print the blueprint string. Refuses a fluid recipe. --rate takes a unit (/s /min /h); a bare number is per second.
 bun run advise --spm=45                   # where the base stands and what the next step costs, with the number behind each call.
 bun run bottleneck                        # machine classes by how much of their time the output accounts for, and lines by what is spare.
-bun run bus --save="game 4" --map         # belt runs grouped into buses, lanes against the item's own rate; --map writes the corridors on the map, --reuse skips the engine run.
+bun run bus --save="game 4" --map         # belt runs grouped into buses, lanes against the item's own rate; --map also writes .local/bus-map-<save>-<tick>.html, --reuse skips the engine run.
 bun run report                            # one report for the newest save under reports/, a diff against the previous report of that save.
 bun run report --page                     # redraw reports/index.html from the state file already on disk. No engine run.
 bun run watch                             # leave it running from the MAIN tree; a save in game becomes a report and reports/index.html.

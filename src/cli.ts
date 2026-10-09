@@ -1814,9 +1814,18 @@ Flags for state:
   --force=player                          which force to report on
   --top=10                                how many items and fluids to list
 
-Nothing here writes to your game. sync and state launch Factorio headless with
-their write-data redirected into this project, and state reads a copy of the
-save rather than the save itself; every other command reads the snapshot.`,
+Flags for bus:
+  --save="game 4"                         which save to read (newest when omitted)
+  --map                                   also write .local/bus-map-<save>-<tick>.html
+  --reuse                                 answer from the last survey on disk, no engine run
+
+Rates take a unit: --rate=45/min, 1.5/s, 5400/h. A bare number is per second.
+The loop around the advisor: bun run watch, bun run report [--page] (see README).
+
+Nothing here writes to your game. sync, state and bus (without --reuse) launch
+Factorio headless with their write-data redirected into this project, and read a
+copy of the save rather than the save itself; every other command reads the
+snapshot and the last read.`,
   );
 }
 
