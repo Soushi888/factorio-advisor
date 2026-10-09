@@ -390,7 +390,7 @@ export function advise(
   const active = packs.filter((p) => p.everMade && currentRate(p) > 0);
   const derived = opts.spm === undefined;
   const best = active.reduce((n, p) => Math.max(n, currentRate(p)), 0);
-  // A default nobody typed still has to be explained: twice what the slowest
+  // A default nobody typed still has to be explained: twice what the best
   // active line makes now, which is the smallest target that is a real change.
   const spm = opts.spm ?? Math.max(1, Math.round(best * 2));
 
@@ -626,9 +626,10 @@ interface AdviceInput {
  *
  * Each rule fires on a measured threshold and carries the measurement with it.
  * A rule that cannot state its number does not belong here, which is why there
- * is no rule about base layout, belt weaving or where to put the mall: the save
- * does not report position, so the advisor has nothing to say about it and says
- * nothing rather than repeating what every guide already says.
+ * is no rule about base layout, belt weaving or where to put the mall: no
+ * measurement says what a good one is, so the advisor says nothing rather than
+ * repeating what every guide already says. Where a rule does name a place, the
+ * place comes from the clusters in `map.ts` and is stated as an area.
  */
 /**
  * A rectangle as tiles a player can find, never as a bare point.

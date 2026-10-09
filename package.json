@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Read-only prototype solver and blueprint auditor for advising on a vanilla Factorio 2.0 Space Age playthrough.",
+  "description": "Read-only advisor for a vanilla Factorio 2.0 Space Age playthrough: prototype solver, blueprint auditor, save reader and dashboard.",
   "scripts": {
     "sync": "bun src/cli.ts sync",
     "search": "bun src/cli.ts search",

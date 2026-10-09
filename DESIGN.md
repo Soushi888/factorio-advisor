@@ -209,6 +209,8 @@ A single column of forty figures is a log. The page is cut into the parts a play
 
 Six thumbnails were the right first answer and they are what made the next question askable. They are being superseded by one interactive, zoomable, layered map with the sections carrying the text there was no room for (C33). The thumbnails stay built and working until that lands; being superseded by something better is not the same as being wrong.
 
+**Status, 2026-10-09:** landed. The thumbnails are gone from `bridge/page.ts` and `src/sections.ts`; each section card points at the one map instead, and the layer its header turns on is how a section shows its place.
+
 **Consequence:** `sections.ts` derives the cut and `bridge/page.ts` lays it out, so a new section is a data change rather than a template change. Every figure carries `data-source` and `data-field` into the DOM, which is the same discipline the CLI follows by printing the snapshot in its header.
 
 ## ADR-15: the map is drawn tile by tile, and water is the one terrain that is measured
@@ -273,63 +275,13 @@ The split is the one this file has always described: the builder owns `src/` and
 
 ## Module map
 
-Bottom up, one data flow, mirroring the sibling project.
+Bottom up, one data flow, mirroring the sibling project. `proto.ts` is the choke point every other module reads through, the way `save.ts` is in the sibling project, and `bridge/` imports `src/` while nothing in `src/` imports it, which a grep in the ISA keeps honest.
 
-```
-paths.ts     locate the Steam install, the binary, the user dir; FACTORIO_CORE / FACTORIO_USERDATA override
-dump.ts      generate the isolated config, run --dump-data, write data/ + manifest
-energy.ts    parse "375kW", "1.5MW", "0.2kJ" into watts and joules
-proto.ts     load the snapshot once, index it, typed accessors per prototype class
-recipes.ts   normalise ingredients and results, index by product, resolve which recipe makes what
-machines.ts  which machines serve a recipe category, effective speed under modules and beacons, power, pollution
-solve.ts     target rate -> machine counts, raw inputs, byproducts, power, pollution
-belts.ts     belt and inserter throughput, saturation
-tech.ts      prerequisite closure, cumulative science cost, what unlocks a recipe, research path
-blueprint.ts decode and encode blueprint strings
-state.ts     copy a save, inject a collector, run the engine, read live state back
-next.ts      intersect the tech tree with what a save says is already researched
-target.ts    judge an audited print against a target rate
-layout.ts    lay one recipe step out as a row and emit a blueprint string
-power.ts     generation, steam chain and draw, priced from the machine census
-audit.ts     entity census, ratio check against the solver, belt saturation, module and beacon coverage
-advise.ts    the synthesis: what the base is doing, what limits it, what the next step costs
-map.ts       chunks clustered into power blocks and ore fields; SVG in the save's own tile coordinates
-sections.ts  the base cut into science, energy, defence, production, logistics, mining
-bus.ts       belt runs grouped into buses, lanes priced against the item's own rate
-render.ts    tables and trees for the terminal
-cli.ts       the only entry point and the only place that formats output
-
-bridge/      the loop around the advisor: watch a save directory, write a report, render the page
-             imports src/, and nothing in src/ imports it, which a grep in the ISA keeps honest
-```
-
-`proto.ts` is the choke point every other module reads through, the way `save.ts` is in the sibling project.
+The module list itself lives in one place, [README § How it is put together](README.md#how-it-is-put-together), and each module's rules in `CLAUDE.md` § Architecture. A list kept here as well drifted: by 2026-10-09 it was missing eleven modules.
 
 ## Commands
 
-```bash
-bun run sync                              # refresh the prototype snapshot
-bun run search plate                      # find prototypes by name or type
-bun run recipe electronic-circuit         # ingredients, results, makers, unlocking tech
-bun run ratio science --rate=1.5          # full chain for 1.5/s, machine counts, raw inputs, power
-bun run ratio plastic-bar --rate=90/m --machine=assembling-machine-3 --modules=productivity-module-3
-bun run tech logistics-3                  # cost, prerequisites, unlocks
-bun run tech --path=kovarex-enrichment-process   # full research path with cumulative science
-bun run belt iron-plate --rate=45         # belts and inserters needed, saturation
-bun run bp --file=blueprint.txt           # decode and audit a blueprint
-bun run state --save "game 4"             # live state read from a copy of a save
-bun run next                              # what is researchable now, from that state
-bun run next --for=carbon-fiber           # the unresearched path to what unlocks an item
-bun run power                             # generation against draw, from the census
-bun run gen electronic-circuit --rate=45  # one recipe step as a placeable row
-bun run advise --spm=45                   # where the base stands and what the next step costs
-bun run bus --save="game 4" --map         # buses, lanes, saturation, corridors on the base map
-bun run report --save="game 4"            # one report and the dashboard for a save
-bun run watch                             # leave running: a save becomes a report (MAIN tree only)
-bun run typecheck
-```
-
-The state file every command above reads is documented in `STATE.md`, and how to use them to read a base is in `.claude/skills/Factorio/`.
+Every command and flag is in [README § Commands](README.md#commands). The state file every command reads is documented in `STATE.md`, and how to use the commands to read a base is in `.claude/skills/Factorio/`.
 
 ## Constraints that must hold
 
