@@ -13,13 +13,15 @@ bun run bus --save="game 4"      # your buses: lanes, what they carry, how satur
 bun run watch                    # leave it running: every save becomes a report
 ```
 
-![The dashboard: one layered map of the base on the left, the plan and the sections on the right](docs/dashboard.png)
+![The dashboard: a header tile per section, the layered map of the base on the left, the written plan and the section tabs on the right](docs/dashboard.png)
 
-`report` writes `reports/index.html`: one zoomable, layered map of your base beside a reading cut into science, energy, defence, production, logistics and mining. Each section carries its figures, its tables, the advice that belongs to it, and the map layer its header turns on, so a recommendation like "put the next copper outpost at 0, 1152" is one click from the place it names.
+`report` writes `reports/index.html`. Across the top, one tile per section (science, energy, defence, production, logistics, mining) with its headline figure and how many pieces of advice it holds. On the left, one zoomable, layered map of your base. On the right, tabs: the written plan, what is holding the base back, the to-do list the advice adds up to, each section in full, and the raw state. Each section carries its figures, its tables, the advice that belongs to it, and the map layer its header turns on, so a step like "the steel block, 30 furnaces at x -274.5 to -223.5, y -102.5 to -96.5" is one click from the place it names. Advice that names a place names an area corner to corner, never a bare point.
 
-The map is drawn tile by tile in your save's own coordinates. Every entity is at the footprint its prototype declares and the position the engine reported; water and ore are at tile resolution; the charted extent and the enemy nests inside it are there for context. Nothing on it is drawn that was not measured, and the footer says which is which. The icons are the game's own, read out of your installation at render time and never copied into this repository.
+The map is drawn tile by tile in your save's own coordinates. Every entity is at the footprint its prototype declares and the position the engine reported, drawn with the game's own art and answering a click with what it is. Water and ore are at tile resolution; the charted extent and the enemy nests inside it are there for context; train stops carry the names you gave them. Close in, it shows what the game's alt mode shows: each machine's recipe and modules, what each chest or tank holds, the item riding each belt lane and the fluid in each pipe. The map keeps its controls on itself the way the game's map view does: fit, zoom, a layer panel, refresh, a `?` for the keys, and a full-window mode with an overview. Nothing on it is drawn that was not measured, and the footer says which is which. The art and icons are the game's own, read out of your installation at render time and never copied into this repository.
 
-`bun run report --page` redraws the page from the last read without launching anything, which is the loop for working on the dashboard rather than on the base.
+When a plan exists for the save at `data/plans/<save>.json`, the page shows it step by step: what each step costs, what it buys, whether it can be undone, where it is, and progress bars read from the save rather than ticked by hand. Every coordinate in the plan is a link that outlines its place on the map. An autosave picks up the plan of the game it belongs to by matching the map seed. The page also keeps a ledger of milestones per map (hours played, technologies, rockets launched, lifetime production) and marks only what a later read newly finds, never what was already true the first time.
+
+`bun run report --page` redraws the page from the last read without launching anything, which is the loop for working on the dashboard rather than on the base. With `bun run watch` running, the open page reloads itself after each save and its "Read latest save" button triggers a read on demand.
 
 Every recommendation carries the measurement that produced it. That is the point of the project: not "build more smelters", but "iron ore is running 263/min behind what your furnaces eat, and the patch under your 82 drills has 4.8M left against an untouched 11.4M at -128, 1376".
 
@@ -28,12 +30,16 @@ Every recommendation carries the measurement that produced it. That is the point
 ```bash
 bun install
 bun run sync                              # once, and again after a game update
-bun run ratio electronic-circuit --rate=45
+bun run ratio electronic-circuit --rate=45/min
 ```
+
+Requires Bun and a Steam install of Factorio 2.0 with Space Age. The install and your user directory are found automatically; `FACTORIO_CORE` and `FACTORIO_USERDATA` override them (see `src/paths.ts`).
 
 `sync` launches Factorio headless for about three seconds with its write-data redirected into this project, so the dump lands in `data/` and `~/.factorio` is never written to.
 
-Two commands launch the engine: `sync`, and `state`, which additionally copies your save and reads the copy. Everything else reads what those two wrote and launches nothing. Neither ever writes to a game directory, and the probe that proves it is in `bun run state`'s own section below.
+Every rate flag takes a unit: `/s`, `/min` (or `/m`) and `/h`. **A bare number is per second**, so `--rate=45` asks for 2700 a minute. `advise --spm` is the exception and is always per minute.
+
+Two kinds of run launch the engine: `sync`, and every read of a save (`state`, `report`, `watch`, and `bus` without `--reuse`), which copies your save and reads the copy. Everything else reads what those wrote and launches nothing. None of them ever writes to a game directory, and the probe that proves it is under [What it will not do](#what-it-will-not-do).
 
 To ask about your actual base, save in game (or let an autosave fire) and then:
 
@@ -45,41 +51,55 @@ bun run power                             # generation against draw
 
 ## Commands
 
+Prototype questions, answered from the snapshot alone:
+
 ```bash
-bun run sync                              # refresh the prototype snapshot
-bun run search asteroid                   # find prototypes by name
-bun run recipe rocket-fuel                # ingredients, results, every machine that can run it
-bun run ratio processing-unit --rate=5    # full production chain, machine counts, power, raw inputs
-bun run tech kovarex --path               # cost, prerequisites, the whole research path with totals
-bun run belt iron-plate --rate=45         # which belt tier carries it, and at what saturation
-bun run bp --file=blueprint.txt           # decode and audit a blueprint string
-bun run bp --file=bp.txt --rate=45        # judge that print against a target rate
-bun run bp --file=bp.txt --draw           # draw that print with the game's own art, as a page under .local/
-bun run state --save "game 4"             # live state, read from a copy of your save
-bun run next                              # what you can research right now
-bun run next --for=carbon-fiber           # the path from here to what unlocks an item
-bun run power                             # generation against draw, from your census
-bun run gen electronic-circuit --rate=45  # one recipe step, laid out as a placeable row
-bun run watch                             # watch your saves; every save becomes a report
-bun run report                            # write one report for the newest save now
-bun run typecheck
+bun run sync                                  # refresh the prototype snapshot (launches Factorio headless)
+bun run search asteroid                       # find prototypes by name across every class (--limit=40)
+bun run recipe rocket-fuel                    # ingredients, results, every machine that can run it, unlocking tech
+bun run ratio processing-unit --rate=300/min  # full production chain, machine counts, power, pollution, raw inputs
+bun run tech kovarex --path                   # cost, prerequisites, the whole research path with totals
+bun run belt iron-plate --rate=45/min         # which belt tier carries it, at what saturation, inserter ceilings
+bun run bp --file=blueprint.txt               # decode and audit a blueprint string or book
+bun run bp --file=bp.txt --rate=45/min        # judge that print against a target rate
+bun run bp --file=bp.txt --draw               # draw that print with the game's own art, as a page under .local/
+bun run gen electronic-circuit --rate=45/min  # one recipe step, laid out as a placeable row
 ```
+
+Questions about your base, answered from a read of your save:
+
+```bash
+bun run state --save "game 4"                 # live state, read from a copy of your save
+bun run next                                  # what you can research right now
+bun run next --for=carbon-fiber               # the path from here to what unlocks an item or technology
+bun run power                                 # generation against draw, from your census
+bun run advise --spm=45                       # where the base stands and what the next step costs
+bun run bottleneck                            # machine classes by how busy they are, lines by what is spare
+bun run bus --save="game 4" --map             # buses, lanes, saturation, and the corridors on the map
+bun run watch                                 # watch your saves; every save becomes a report
+bun run report                                # write one report for the newest save now
+bun run report --page                         # redraw the dashboard from the last read, no engine run
+bun run typecheck                             # tsc --noEmit
+```
+
+Every command that answers about a save takes `--save=<name>`, the name as it appears in your save list. Without it, `state`, `bus` and `report` read the newest save on disk, and `next`, `power`, `advise` and `bottleneck` answer from the newest read already on file. `state`, `next`, `power`, `advise` and `bottleneck` also take `--force=<name>` (default `player`). `bun src/cli.ts help` prints the advisor's own usage.
 
 ### ratio
 
 ```bash
 bun run ratio plastic-bar --rate=90/m
-bun run ratio plastic-bar --rate=30 --recipe=petroleum-gas=advanced-oil-processing
-bun run ratio electronic-circuit --rate=45 --machine=assembling-machine-3 --modules=productivity-module-3x4 --beacons=8
+bun run ratio plastic-bar --rate=30/min --recipe=petroleum-gas=advanced-oil-processing
+bun run ratio electronic-circuit --rate=45/min --machine=assembling-machine-3 --modules=productivity-module-3x4 --beacons=8
 ```
 
 | Flag | Meaning |
 |---|---|
-| `--rate=45` / `90/m` / `5400/h` | target output rate |
+| `--rate=90/min` / `1.5/s` / `5400/h` | target output rate; a bare number is per second, and the default is 1/s |
 | `--machine=<name>` | prefer this machine wherever it can run the category |
 | `--modules=<name>x<n>,...` | modules in every machine; what does not fit is reported |
 | `--beacons=<n>` `--beacon-modules=<spec>` | beacons reaching each machine, with the Space Age falloff profile applied |
-| `--recipe=<product>=<recipe>` | override a recipe choice |
+| `--beacon=<name>` | which beacon prototype; the first the snapshot declares otherwise |
+| `--recipe=<product>=<recipe>,...` | override a recipe choice; several pairs separated by commas |
 | `--raw=iron-plate,copper-plate` | treat these as bought in and stop expanding there |
 
 The solver states its own choices. When a product has several recipes it names the ones it declined and prints the flag that would switch them, so a default you disagree with is one flag away rather than buried.
@@ -91,22 +111,15 @@ bun run state --save "game 4"        # the save name as it appears in your save 
 bun run state --save "game 4" --top=20 --force=player
 ```
 
-Reports what your base has actually done: how many technologies are researched, what is being researched now and what is queued behind it, the items and fluids you produce with their one-hour average rate and their lifetime totals, every machine you have placed counted by prototype, evolution and pollution per surface, and what is sitting in your logistic network.
+Reports what your base has actually done: how many technologies are researched, what is being researched now and what is queued behind it, the items and fluids you make and use with their one-hour average rates and their lifetime totals, every machine you have placed counted by prototype, power delivered, evolution and pollution per surface, and what is sitting in your logistic network. `--top=<n>` sets how many production rows to print (default 10).
+
+The same read also collects what the dashboard draws: every placed entity's position, water and ore as tile runs, charted chunks and enemy nests, trains with their schedules and state, train stops by name, logistic networks with their robot fleets, the contents of chests and tanks, each machine's recipe and modules, and what each pipe carries.
 
 With no `--save` it reads the newest save in your save directory, autosaves included, so the loop is: save in game, then ask.
 
 It works by copying your save into `.factorio-runtime/saves/`, appending a collector to the copy's own `control.lua`, and running the engine against the copy in benchmark mode. Your save is never opened in place and never written back. No mod is installed, so a save made with mods still loads.
 
-Rates are the game's own one-hour average expressed in items per minute. Totals are cumulative since the map was created. The parsed result is written to `data/state/<save>.json`, shaped like this, so other commands can build on it:
-
-```
-{ snapshot: { gameVersion, build, mods, dumpedAt },
-  save:     { name, copiedFrom, tick, hoursPlayed, surfaces, readAt },
-  forces:   { <force>: { technologies: { researched[], current, queue[] },
-                         production:  { item:  { <name>: { input, output, perMinute } },
-                                        fluid: { <name>: { input, output, perMinute } } },
-                         machines:    { <prototype>: count } } } }
-```
+Rates are the game's own one-hour average expressed per minute, recorded in both directions, made and used, because the gap between them is the diagnosis. Totals are cumulative since the map was created. The parsed result is written to `data/state/<save>.json` so other commands can build on it; its full schema, and the two engine conventions that are easy to get backwards, are in [`STATE.md`](STATE.md).
 
 ### next
 
@@ -123,7 +136,7 @@ Lab-seconds are given twice: at speed 1, and at your actual lab speed read from 
 
 `--for` takes an item or a technology. Given an item, it finds which technology gates it, says which recipe that is via, lists the alternatives when several would do, and then prints only the part of the path you have not already researched, with the science totals for what is left.
 
-Trigger technologies are shown as the action they want rather than as zero cost, because in Space Age a good deal of progress is unlocked by doing rather than by researching. Lab-seconds are at speed 1, before lab speed and productivity, which are live game facts this tool does not read.
+Trigger technologies are shown as the action they want rather than as zero cost, because in Space Age a good deal of progress is unlocked by doing rather than by researching. Lab productivity is not applied to the lab-seconds; the column at your speed divides by the lab speed bonus the save reports and nothing else. `--top=<n>` caps the table.
 
 If a save carries technologies this snapshot has never heard of, from another version or a modded run, they are listed rather than dropped. A silently shorter answer would look exactly like a correct one.
 
@@ -148,7 +161,38 @@ Drain is copied from the engine, not inferred. A radar declaring no drain resolv
 
 Some machines draw per event rather than per second. An inserter spends `energy_per_movement` on each swing, a radar `energy_per_sector` on each scan. Their idle drain is in the total, because it is paid every tick, but the per-event cost is listed separately and left out, since converting it to watts needs a swings-per-second that no prototype declares. That is the same wall the inserter throughput figure hits, and it is not worth guessing past.
 
-Three honest limits, all printed. Draw is a ceiling, since no base runs every machine at once. Generation is nameplate capacity, not what your grid actually delivered, which is a runtime figure this tool does not read yet. And where the boilers cannot feed the engines built, the steam-limited figure is computed and the balance drawn against that, because the nameplate number would otherwise be a fiction.
+Two honest limits, both printed. Draw is a ceiling, since no base runs every machine at once; what the grid really did is the Delivered section above. And where the boilers cannot feed the engines built, the steam-limited figure is computed and the balance drawn against that, because the nameplate number would otherwise be a fiction. A state file read before power delivered was collected says so, and only then is generation nameplate alone.
+
+### advise
+
+```bash
+bun run advise                 # target defaults to twice the best current pack line
+bun run advise --spm=45        # where the base stands against 45 packs a minute, PER MINUTE
+bun run advise --top=18        # how many requirement gaps to list
+```
+
+The synthesis. It reads the science pack lines and the pack that sets the pace, lab utilisation against the current research's own `unit.time` and your lab speed, grid headroom against the steam-limited capacity `power` derives, and, for a target rate, what the extra chain needs per item against what the base has spare. Spare is made minus used, never total production, because a requirement compared against total production calls a saturated line healthy. Every recommendation carries the measurement that produced it. Advice that names a place names an area, corner to corner with its size, and an outpost is never recommended for a resource whose belts and chests are already full.
+
+### bottleneck
+
+```bash
+bun run bottleneck                     # from the newest read
+bun run bottleneck --save="game 4" --top=20
+```
+
+Answers "what is holding the factory back" with readings that are never blended. **Machine classes** by how much of their time the output accounts for: how many times each recipe ran, charged back to the classes that could have run it, split by count times crafting speed where several share a recipe. **Items and fluids** by what is left over against their own demand, biggest hole first. And a **sinks** column saying how full the belts and chests carrying each product are (`backed-up`, `flowing`, `starved`, or `no sink read`), which is what says whether a spare figure is capacity or demand: a backed-up line makes exactly what its consumers take, and more of it changes no number.
+
+Which recipes are running is solved from the base's own rates rather than chosen by the default rule, so oil processing, for instance, lands on the mix your refineries actually run. Module loadouts are a standing gap, since a save read reports none, and the output says so rather than estimating.
+
+### bus
+
+```bash
+bun run bus                          # the newest save, read fresh
+bun run bus --save="game 4" --map    # and write the corridors onto the base map
+bun run bus --save="game 4" --reuse  # answer from the last survey on disk, no engine run
+```
+
+The belt survey: belt runs grouped into buses, each lane with what it carries and how saturated it is against the item's own rate. The survey is collected by the same save copy a state read uses, so the default launches the engine once and answers both.
 
 ### watch and report
 
@@ -159,7 +203,9 @@ bun run report --save="game 4"    # or a named one
 bun run watch --threshold=120     # only mention rate changes of 120/min or more
 ```
 
-`watch` polls your save directory and, when a save stops changing, reads it the same way `state` does: your save is copied into this project and the copy is read. It then writes `reports/<save>-<tick>.md` and regenerates `reports/index.html`.
+`watch` polls your save directory and, when a save stops changing, reads it the same way `state` does: your save is copied into this project and the copy is read. It then writes `reports/<save>-<tick>.md` and regenerates `reports/index.html`. While it runs it also serves the page's live loop on `127.0.0.1:8737` (`FACTORIO_ADVISOR_PORT` overrides): an open page reloads itself after a new read, and its "Read latest save" button asks for one.
+
+`report` is the same read done once, now. `report --page` skips the read and redraws `reports/index.html` from the state file already on disk.
 
 A report is a diff, not a description. The first one for a save describes, because there is nothing to compare against; every later one names only what moved and says so when nothing did. You already know how many solar panels you have; what is worth telling you is that eleven appeared and that coal fell 61/min. The threshold for a production change is printed in the report rather than hidden, because a number that decides what you get told about should be arguable.
 
@@ -174,12 +220,13 @@ Run the loop from the main checkout only. Reading a save writes `data/state/<sav
 ### gen
 
 ```bash
-bun run gen electronic-circuit --rate=45
-bun run gen iron-plate --rate=100 --belt=fast-transport-belt
-bun run gen electronic-circuit --rate=45 --machines=8    # pin the count instead
+bun run gen electronic-circuit --rate=45/min
+bun run gen iron-plate --rate=100/min --belt=fast-transport-belt
+bun run gen electronic-circuit --rate=45/min --machines=8                 # pin the count instead
+bun run gen electronic-circuit --rate=45/min --machine=assembling-machine-2 --draw
 ```
 
-Lays ONE recipe step out as a row and prints a blueprint string you can paste into the game: machines side by side, an input belt above, an output belt below, an inserter per machine per side. The string is printed last and alone, so it is easy to copy.
+Lays ONE recipe step out as a row and prints a blueprint string you can paste into the game: machines side by side, an input belt above, an output belt below, an inserter per machine per side. The string is printed last and alone, so it is easy to copy. `--machine=<name>` picks the machine, `--belt=<name>` the belt tier, and `--draw` draws the row it built (see `bp` below). A recipe with a fluid ingredient or product is refused, because a belt row cannot carry it.
 
 Machine counts round up, so the row meets the target and the overcapacity is printed and written into the blueprint label, where it survives into your game. `--machines=<n>` pins a count instead and tells you the rate that gives, shortfall included. The belt tier is picked for the rounded-up rate, and a row that outruns its belt says so rather than quietly running at 140%.
 
@@ -191,7 +238,14 @@ One step only. A whole chain or a main bus is out of scope and the output says s
 
 ### bp
 
-With `--rate=<n[/s|/m|/h]>` the audit stops describing the print and starts judging it: what fraction of the target it reaches, how many of the print the target would take, what that scale means per machine type, whether the belt tier it places carries the target, and how many inserters per machine the target needs at the rotation ceiling. `--item=<name>` picks which product to judge; without it the print's largest net export is used and the output says so.
+```bash
+bun run bp --file=blueprint.txt                      # a string from a file
+bun run bp --string='0eNq...'                        # or inline; a positional argument or stdin works too
+bun run bp --file=bp.txt --rate=45/min --item=electronic-circuit
+bun run bp --file=bp.txt --draw                      # a page under .local/; --svg for the bare SVG, --out=<path> to place it
+```
+
+With `--rate=<n[/s|/min|/h]>` the audit stops describing the print and starts judging it: what fraction of the target it reaches, how many of the print the target would take, what that scale means per machine type, whether the belt tier it places carries the target, and how many inserters per machine the target needs at the rotation ceiling. `--item=<name>` picks which product to judge; without it the print's largest net export is used and the output says so.
 
 A print scales as a unit, so every step scales with it, including steps that make none of the target item. The output says that too, because the alternative is a column that reads like a per-recipe requirement and is not one. To size a single recipe rather than a whole print, use `bun run ratio`.
 
@@ -201,7 +255,7 @@ The art is read from the game and never copied into this repository. Sprites are
 
 Which picture an entity gets is derived, not listed. Every prototype declares where its sheet is, how big a cell is and how many frames and directions it holds, so the cell is arithmetic; the row length is measured from the sheet's own width rather than taken from a default that differs between an animation and a rotated sprite. Of the 140 prototypes a blueprint can hold, 132 resolve a sprite, and the eight that do not are ore and scrap, which are resources no print contains.
 
-Two things it does not do, and says so on the page. It does not infer connections, so a belt at a corner is drawn straight and a pipe is drawn as a straight run rather than a junction. And an inserter is drawn as its base without its hand, because the string says which way it faces and not which of its two ends that names. A prototype with no resolvable sprite keeps a coloured category box, which is the fallback rather than a failure, and the page names it.
+Belts and pipes are shaped the way the engine shapes them, from their neighbours. A belt fed from the side is drawn as the curve, one nothing feeds gets its start cap, one whose output goes nowhere gets its end cap, and only a belt fed from behind is the plain straight. A pipe carries no direction at all, so its picture is chosen from the sides it is open on, and a junction reads as a junction. One thing it does not do, and says so on the page: an inserter is drawn as its base without its hand, because the string says which way it faces and not which of its two ends that names. A prototype with no resolvable sprite keeps a coloured category box, which is the fallback rather than a failure, and the page names it.
 
 Direction is applied where it changes the footprint: 4 is East and 12 is West, both of which swap width against height, measured from underground belt pairs in the shipped test prints rather than recalled. A belt carries the game's own arrow for the way it runs, `indication_arrow` out of `utility-sprites`, the same yellow chevron the engine draws over a belt, turned by the belt's own direction. An inserter carries its rotation and no arrow, because the string does not say which of an inserter's two ends its direction names. The odd sixteenths are diagonal, no declared box describes a rail at 45 degrees, and those are drawn unrotated and counted on the page rather than guessed at.
 
@@ -229,37 +283,69 @@ Feed it a blueprint string from a file, an argument, or stdin. Books are unrolle
 ## How it is put together
 
 ```
-paths.ts     find the install and the binary; FACTORIO_CORE / FACTORIO_USERDATA override
-dump.ts      runs Factorio for the prototype dump, with write-data redirected into this project
-state.ts     runs Factorio over a copy of a save to read live state back
-next.ts      intersects the tech tree with what a save says is already researched
-power.ts     generation, steam chain and draw, priced from the machine census
-target.ts    judges an audited print against a target rate
-layout.ts    lays one recipe step out as a row and emits a blueprint string
+src/            the advisor, bottom up. Nothing in it imports bridge/.
 
-bridge/      the loop above the advisor. It may import src/; src/ never imports it.
-report.ts    what changed since the last report for this save
-page.ts      the dashboard, every figure carrying the field it came from
-watch.ts     polls the save directory and drives the loop
-cli.ts       the bridge's entry point, separate from the advisor's
-proto.ts     load and index the snapshot; every other module reads through here
-energy.ts    parse "375kW", "1.5MW", "0.2kJ"
-recipes.ts   normalise recipes, index by product, choose a default and justify it
-machines.ts  machines for a category, effective speed under modules and beacons, power, pollution
-solve.ts     target rate to machine counts, raw inputs, byproducts, power, pollution
-belts.ts     belt throughput (exact) and inserter ceilings (labelled as ceilings)
-tech.ts      prerequisite closure, science cost, research paths, trigger technologies
-blueprint.ts decode and encode blueprint strings
-audit.ts     entity census, beacon geometry, net flow analysis
-render.ts    tables for the terminal
-cli.ts       the only entry point and the only place that formats output
+paths.ts        find the install and the binary; FACTORIO_CORE / FACTORIO_USERDATA override; the only paths written to
+dump.ts         runs Factorio for the prototype dump, with write-data redirected into this project
+proto.ts        load and index the snapshot; every other module reads through here
+energy.ts       parse "375kW", "1.5MW", "0.2kJ", keeping power and energy distinct
+recipes.ts      normalise recipes, index by product, choose a default and justify it; recycling excluded
+machines.ts     machines for a category, effective speed under modules and beacons, power, pollution
+solve.ts        target rate to machine counts, raw inputs, byproducts, power, pollution
+belts.ts        belt throughput (exact) and inserter ceilings (labelled as ceilings)
+tech.ts         prerequisite closure, science cost, research paths, trigger technologies
+blueprint.ts    decode and encode blueprint strings
+audit.ts        entity census, beacon geometry, net flow analysis of a print
+target.ts       judges an audited print against a target rate
+layout.ts       lays one recipe step out as a row and emits a blueprint string
+pipes.ts        fluid ports from each machine's own prototype, and whether a print is plumbed
+draw.ts         draws a print to scale with the game's own art
+sprites.ts      cuts in-world art out of the installation at the cell each prototype declares
+belt-shape.ts   which belt picture a tile takes, from what its neighbours do
+pipe-shape.ts   which pipe picture a tile takes, from the sides it is open on
+icons.ts        resolves the game's own icons in the installation, by file:// URL, never copied
+state.ts        runs Factorio over a copy of a save and reads live state and geometry back
+next.ts         intersects the tech tree with what a save says is already researched
+power.ts        generation, steam chain and draw, priced from the machine census
+advise.ts       the synthesis: what limits the base and what the next step costs, with its numbers
+bottlenecks.ts  machine-class utilisation and item tightness, solved from the base's own rates
+saturation.ts   how full the belts and containers carrying each product are
+bus.ts          belt runs grouped into buses, lanes priced against the item's own rate
+map.ts          chunks clustered into power blocks and ore fields, in the save's own tile coordinates
+layers.ts       the one map's layers: footprints, art, alt mode, labels that never overprint
+sections.ts     the dashboard cut into science, energy, defence, production, logistics, mining
+plan.ts         the written plan for a save, every figure in it read from the state file at render time
+render.ts       tables for the terminal
+cli.ts          the advisor's only entry point and the only place that formats its output
+
+bridge/         the loop around the advisor. It imports src/; src/ never imports it.
+
+cli.ts          the bridge's entry point (bun run watch, bun run report), separate from the advisor's
+watch.ts        polls the save directory, drives the loop, serves the page's reload and read button
+report.ts       what changed since the last report for this save
+page.ts         the dashboard, every figure carrying the field it came from
+milestone.ts    the per-map ledger of milestones, keyed by map seed
 ```
 
-Design rationale and the decisions behind it are in `DESIGN.md`. What "done" means, with falsifiers, is in `ISA.md`.
+Design rationale and the decisions behind it are in `DESIGN.md`; the architecture at the level of each module's rules is in `CLAUDE.md`. What "done" means, with falsifiers, is in `ISA.md`.
 
 ## Where things are written down
 
 - `DESIGN.md`: the decisions and why, as numbered ADRs.
 - `STATE.md`: the schema of the state file every command reads, and the two engine conventions that are easy to get backwards.
 - `ISA.md`: the state of record. Its claims are the test suite, and its "Not yet specified" section is the real backlog.
+- `CLAUDE.md`: the architecture module by module, the constraints that must hold, and how work lands in this repo.
 - `.claude/skills/Factorio/`: how to use this toolkit and how to read a base, for an agent or a person.
+- [Issues](https://github.com/Soushi888/factorio-advisor/issues): one per open ISA claim, carrying its falsifiers.
+
+What lives on disk, and whether it is versioned:
+
+| Path | What it holds | In git |
+|---|---|---|
+| `data/` | the prototype snapshot and `manifest.json` | no |
+| `data/state/<save>.json` | each save read | no |
+| `data/plans/<save>.json` | the written plan the dashboard shows | no |
+| `data/milestones/<seed>.json` | the milestone ledger per map | no |
+| `.factorio-runtime/` | the engine's redirected write-data, config and save copies | no |
+| `reports/` | the diff reports and `index.html` | no |
+| `.local/` | drawings, cut sprites, scratch pages | no |

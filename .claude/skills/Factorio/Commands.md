@@ -11,6 +11,7 @@ Run them from `~/Projets/factorio-advisor`. **bun always, never npm.**
 | `bun run sync` | Refresh the prototype snapshot from the installed game. | yes, ~3 s |
 | `bun run state --save="game 4"` | Research, production and consumption rates, machine census, power delivered, evolution, pollution, logistic contents, and the map geometry, from a **copy** of the save. | yes |
 | `bun run report --save="game 4"` | The same read, plus a diff against the previous report of that save, plus `reports/index.html`. | yes |
+| `bun run bus --save="game 4"` | The belt survey: belt runs grouped into buses, each lane with what it carries and how saturated it is against the item's own rate. Collected by the same save copy a state read uses. `--map` writes the corridors onto the base map; `--reuse` answers from the last survey on disk without launching the engine. | yes, unless `--reuse` |
 | `bun run watch` | Leave it running. A save in game becomes a report and refreshes the page, and the open page reloads itself. Also serves the page's "Read latest save" button on `127.0.0.1:8737` (`FACTORIO_ADVISOR_PORT` overrides). **Main tree only.** | on each save |
 
 The save is copied into `.factorio-runtime/saves/` and read there; his own save is never opened in place. A modded save still loads, because the collector is appended to the copy's own `control.lua` rather than shipped as a mod.
@@ -30,24 +31,33 @@ The save is copied into `.factorio-runtime/saves/` and read there; his own save 
 
 | Command | Answers |
 |---|---|
-| `bun run ratio processing-unit --rate=5` | The full chain: machine counts, raw inputs, power, pollution, and which recipe it declined at each step. |
+| `bun run ratio processing-unit --rate=300/min` | The full chain: machine counts, raw inputs, power, pollution, and which recipe it declined at each step. |
 | `bun run recipe rocket-fuel` | Ingredients, results, every machine that can run it, the unlocking technology. |
 | `bun run tech kovarex --path` | Cost, prerequisites, the whole research path with totals. |
-| `bun run belt iron-plate --rate=45` | Belt tier saturation and the inserter rotation ceiling. |
+| `bun run belt iron-plate --rate=45/min` | Belt tier saturation and the inserter rotation ceiling. |
 | `bun run search asteroid` | Prototypes by name across every class. |
 | `bun run bp --file=print.txt` | Decode and audit a blueprint or book: real loadouts, which beacons physically reach, the netted bottleneck. |
-| `bun run bp --file=print.txt --rate=45` | The same print judged against a target rate: scale, spare machines, belt tier, inserter ceiling. |
-| `bun run gen electronic-circuit --rate=45` | Lay one recipe step out as a placeable row and print the blueprint string. |
+| `bun run bp --file=print.txt --rate=45/min` | The same print judged against a target rate: scale, spare machines, belt tier, inserter ceiling. |
+| `bun run gen electronic-circuit --rate=45/min` | Lay one recipe step out as a placeable row and print the blueprint string. |
 | `bun run bp --file=print.txt --draw` | Draw that print to scale under `.local/`: every entity at the footprint its prototype declares, belts arrowed by travel direction, the short-fed machines outlined from the audit's own flows. `--render` is the same flag; `--svg` writes the bare file; `--out=` places either. |
 | `bun run gen ... --draw` | The same drawing, straight off the row the generator built, with no round trip through the encoder. |
 
 ## Useful flags
 
-- `ratio`: `--machine=assembling-machine-2` to hold it to what he has, `--modules=`, `--beacons=`, `--recipe=<product>=<recipe>`, `--raw=iron-plate,copper-plate`.
+- Every `--rate=` takes a unit (`/s`, `/min` or `/m`, `/h`); **a bare number is per second**. `advise --spm=` is the exception, always per minute.
+- `ratio`: `--rate=` (default 1/s), `--machine=assembling-machine-2` to hold it to what he has, `--modules=`, `--beacons=`, `--beacon=`, `--beacon-modules=`, `--recipe=<product>=<recipe>` (comma-separated for several), `--raw=iron-plate,copper-plate`.
+- `search`: `--limit=` (default 40).
+- `tech`: `--path`.
+- `belt`: `--rate=`.
+- `next`: `--for=`, `--save=`, `--force=`, `--top=`.
+- `power`: `--save=`, `--force=`.
+- `bus`: `--save=`, `--map`, `--reuse`.
 - `advise`: `--spm=`, `--force=`, `--top=`.
 - `bottleneck`: `--save=`, `--force=`, `--top=` (how many tightness rows).
-- `state`: `--save=`, `--force=`, `--top=`, `--belts` (writes the belt survey too, which is large).
+- `state`: `--save=`, `--force=`, `--top=`. The belt survey is not a `state` flag: `bus` and the watcher collect it.
 - `report`: `--save=`, `--threshold=`, `--now` (one report and exit), `--page` (redraw `reports/index.html` from the state file on disk, no engine run).
+- `bp`: `--file=`, `--string=` (or a positional argument, or stdin), `--rate=`, `--item=`.
+- `gen`: `--rate=`, `--machines=<n>` to pin a count, `--machine=`, `--belt=`.
 - `bp` and `gen`: `--draw` or `--render`, `--svg`, `--out=<path>`.
 
 ## The dashboard
