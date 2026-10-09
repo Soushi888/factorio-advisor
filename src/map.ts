@@ -122,7 +122,7 @@ function pointsIn(map: SurfaceMap, names: string[], area: Omit<Area, "label" | "
 /** Every prototype the census gave positions for whose type matches. */
 export function pointsOfTypes(map: SurfaceMap, names: Iterable<string>): Array<[number, number]> {
   const out: Array<[number, number]> = [];
-  for (const name of names) out.push(...(map.points[name] ?? []));
+  for (const name of names) for (const [x, y] of map.points[name] ?? []) out.push([x, y]);
   return out;
 }
 

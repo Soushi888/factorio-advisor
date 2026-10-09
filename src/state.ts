@@ -328,6 +328,8 @@ export interface StoredMachine {
   recipe?: string | false;
   /** Modules in the machine, by prototype name, absent when it holds none. */
   modules?: Record<string, number>;
+  /** The module inventory's own index, the number a blueprint's module request names (C48). */
+  moduleInventory?: number;
 }
 
 /**
@@ -387,8 +389,13 @@ export interface SurfaceMap {
   bounds: { minX: number; minY: number; maxX: number; maxY: number } | null;
   cells: MapCell[];
   ore: OreCell[];
-  /** Exact tile positions, per prototype, for everything inside the point budget. */
-  points: Record<string, Array<[number, number]>>;
+  /**
+   * Exact tile positions, per prototype, for everything inside the point budget.
+   * From C48 each point also carries the engine's direction (sixteenths) and,
+   * for an underground belt or a loader, which end it is. A file read before
+   * that carries only the position.
+   */
+  points: Record<string, Array<[number, number, number?, ("input" | "output")?]>>;
   /** Prototypes whose positions did not fit the budget, with what they cost. */
   pointsDropped?: Array<{ name: string; count: number }>;
   /**
@@ -1076,7 +1083,20 @@ script.on_nth_tick(1, function()
         bound(pos.x, pos.y)
         local p = points[e.name]
         if not p then p = {}; points[e.name] = p end
-        p[#p + 1] = { pos.x, pos.y }
+        -- The direction rides every point (C48), because a blueprint of a
+        -- section has to say which way an inserter faces and the engine is the
+        -- only thing that knows. An underground or a loader also says which end
+        -- it is, which its direction alone does not.
+        local dir = 0
+        pcall(function() dir = e.direction or 0 end)
+        local ends = nil
+        if kind == "underground-belt" then
+          pcall(function() ends = e.belt_to_ground_type end)
+        elseif kind == "loader" or kind == "loader-1x1" then
+          pcall(function() ends = e.loader_type end)
+        end
+        if ends then p[#p + 1] = { pos.x, pos.y, dir, ends }
+        else p[#p + 1] = { pos.x, pos.y, dir } end
 
         if pipe_types[kind] then
           local okf, f = pcall(function() return e.fluidbox[1] end)
@@ -1096,6 +1116,9 @@ script.on_nth_tick(1, function()
           if okr then rec.recipe = (recipe and recipe.name) or false end
           local okm, inv = pcall(function() return e.get_module_inventory() end)
           if okm and inv then
+            -- The inventory's own index, which is the number a blueprint's
+            -- module request names; read, never typed (C48).
+            pcall(function() rec.moduleInventory = inv.index end)
             local okc, contents = pcall(function() return inv.get_contents() end)
             if okc and type(contents) == "table" then
               local mods, any = {}, false
