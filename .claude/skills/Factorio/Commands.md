@@ -66,6 +66,8 @@ The save is copied into `.factorio-runtime/saves/` and read there; his own save 
 
 `bun run report` writes `reports/index.html`: one zoomable, layered map drawn tile by tile in the save's own coordinates, the written plan from `data/plans/<save>.json` when there is one, the derived advice, and six sections. `bun run report --page` redraws it from the last read without launching the engine, which is the loop for working on the page.
 
+Right-click on the map opens a context menu built from what is under the cursor: GPS ping and coordinates, same kind, same recipe, find an item, follow a belt lane, the `recipe`, `ratio` and `gen` commands for a machine's recipe at the base's own rate, and, inside a shift-dragged selection, a blueprint string the game imports plus the `bp` commands that audit or draw it. Every entry copies or highlights; none runs a command. Shift+right-click is the browser's own menu.
+
 The map uses the game's own icons, resolved out of the installed game by `src/icons.ts`. **They are never copied into this repository**: that is Wube's art and the repo is public.
 
 ## What they refuse, on purpose

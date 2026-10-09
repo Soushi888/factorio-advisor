@@ -61,8 +61,11 @@ One entry per surface. Two resolutions, because one does not fit:
 | `bounds` | Tile bounds of everything below, so a renderer needs no second pass. |
 | `cells[]` | Per chunk: `byType` counts of the force's placed entities, `total`, and the surface's `pollution` at that chunk. |
 | `ore[]` | Per chunk: remaining `amount` per resource name, summed. |
-| `points[]` | Exact tile positions, per prototype, for everything inside `MAP_POINT_BUDGET`. This save spends 66467 of 400000, so nothing is dropped; what would be dropped is named in `pointsDropped` rather than quietly missing. |
+| `points[]` | Exact tile positions, per prototype, for everything inside `MAP_POINT_BUDGET`, as `[x, y, direction, end?]`. The direction is the engine's own, in sixteenths; `end` is `input` or `output` on an underground belt or a loader and absent elsewhere (C48). A file read before 2026-10-09 carries `[x, y]` only. This save spends 68979 of 400000, so nothing is dropped; what would be dropped is named in `pointsDropped` rather than quietly missing. |
 | `pointsDropped[]` | Prototypes whose positions did not fit the budget, with what they cost. Absent on a save that fits. |
+| `machines[]` | Every crafting machine: `name`, `x`, `y`, `direction`, `recipe` (`false` when the engine answered with none), `modules` by name, and `moduleInventory`, the module inventory's own index, which is the number a blueprint's module request names (C48). 4 on every machine type in game 4. |
+| `containers[]` | What every chest, wagon and tank holds: `items` by name, or the one `fluid` with its amount. |
+| `pipes[]` | `[x, y, fluid, amount]` for every pipe, underground pipe and pump holding fluid. |
 | `water[]` | Water, tile by tile, as horizontal runs `[x, y, length]`. Runs because a lake is mostly long rows of the same thing; tiles because a coastline at chunk resolution is a staircase that matches no shoreline in the game. 8739 runs on this save. |
 | `oreRuns{}` | The same runs per resource name. The chunk sums above answer "how much is left"; the runs answer "what shape is the patch", which is what decides whether a drill array fits. |
 | `terrain[]` | One entry per charted chunk, with its water tile count. Charted, because the map is meant to be comparable to the one Soushi opens in game and that one shows what he has charted. |
