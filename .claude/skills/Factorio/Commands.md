@@ -9,9 +9,9 @@ Run them from `~/Projets/factorio-advisor`. **bun always, never npm.**
 | Command | Answers | Launches the engine |
 |---|---|---|
 | `bun run sync` | Refresh the prototype snapshot from the installed game. | yes, ~3 s |
-| `bun run state --save="game 4"` | Research, production and consumption rates, machine census, power delivered, evolution, pollution, logistic contents, and the map geometry, from a **copy** of the save. | yes |
+| `bun run state --save="game 4"` | Research, production and consumption rates, machine census, power delivered (reported by `power`), evolution, pollution, logistic contents, and the map geometry, from a **copy** of the save. | yes |
 | `bun run report --save="game 4"` | The same read, plus a diff against the previous report of that save, plus `reports/index.html`. | yes |
-| `bun run bus --save="game 4"` | The belt survey: belt runs grouped into buses, each lane with what it carries and how saturated it is against the item's own rate. Collected by the same save copy a state read uses. `--map` writes the corridors onto the base map; `--reuse` answers from the last survey on disk without launching the engine. | yes, unless `--reuse` |
+| `bun run bus --save="game 4"` | The belt survey: belt runs grouped into buses, each lane with what it carries and how saturated it is against the item's own rate. Collected by the same save copy a state read uses. `--map` also writes `.local/bus-map-<save>-<tick>.html`, the corridors over the base; `--reuse` answers from the last survey on disk without launching the engine. | yes, unless `--reuse` |
 | `bun run watch` | Leave it running. A save in game becomes a report and refreshes the page, and the open page reloads itself. Also serves the page's "Read latest save" button on `127.0.0.1:8737` (`FACTORIO_ADVISOR_PORT` overrides). **Main tree only.** | on each save |
 
 The save is copied into `.factorio-runtime/saves/` and read there; his own save is never opened in place. A modded save still loads, because the collector is appended to the copy's own `control.lua` rather than shipped as a mod.
@@ -25,7 +25,7 @@ The save is copied into `.factorio-runtime/saves/` and read there; his own save 
 | `bun run next` | What is researchable right now, cheapest first, with lab-seconds at his actual lab speed. |
 | `bun run next --for=carbon-fiber` | The unresearched path from here to what unlocks an item or a technology. |
 | `bun run power` | Generation against draw, priced from the census: nameplate, solar averaged, steam limited, and the shortfall. |
-| `bun run bottleneck` | Three readings. Machine classes by how much of their time the output accounts for; items and fluids by what is left over against their own demand; and a `sinks` column saying how full the belts and chests carrying each product are, as `backed-up`, `flowing`, `starved` or `no sink read`. **The sinks column is what says whether a spare figure is a capacity or a demand**, so quote it whenever quoting spare: a backed-up line makes exactly what its consumers take and more of it changes no number. The first two readings are never blended: machine classes by how much of their time the output accounts for, and items and fluids by what is left over against their own demand. Each row names the recipe it charged and the split it used. Lines that are behind come first, biggest hole first; the ratio stays as a column because it answers whether a line is healthy, which is a different question from what is holding the base back. When the two readings agree on one story, the first sentence is that story: a class at the wall means short of machines, no class near it plus a raw input as the biggest hole means short of that input, and anything else gets no such sentence. |
+| `bun run bottleneck` | Three readings. Machine classes by how much of their time the output accounts for; items and fluids by what is left over against their own demand; and a `sinks` column saying how full the belts and chests carrying each product are, as `backed-up`, `flowing`, `starved` or `no sink read`. **The sinks column is what says whether a spare figure is a capacity or a demand**, so quote it whenever quoting spare: a backed-up line makes exactly what its consumers take and more of it changes no number. Each row names the recipe it charged and the split it used. Lines that are behind come first, biggest hole first; the ratio stays as a column because it answers whether a line is healthy, which is a different question from what is holding the base back. When the two readings agree on one story, the first sentence is that story: a class at the wall means short of machines, no class near it plus a raw input as the biggest hole means short of that input, and anything else gets no such sentence. |
 
 ## Answering a question
 
@@ -44,20 +44,22 @@ The save is copied into `.factorio-runtime/saves/` and read there; his own save 
 
 ## Useful flags
 
+- `--save` takes an equals sign everywhere; only `state`, `bus` and `report` also accept it space-separated.
 - Every `--rate=` takes a unit (`/s`, `/min` or `/m`, `/h`); **a bare number is per second**. `advise --spm=` is the exception, always per minute.
-- `ratio`: `--rate=` (default 1/s), `--machine=assembling-machine-2` to hold it to what he has, `--modules=`, `--beacons=`, `--beacon=`, `--beacon-modules=`, `--recipe=<product>=<recipe>` (comma-separated for several), `--raw=iron-plate,copper-plate`.
+- `ratio`: `--rate=` (default 1/s), `--machine=assembling-machine-2` to hold it to what he has, `--modules=`, `--beacons=`, `--beacon=`, `--beacon-modules=` (every slot `speed-module-3` when omitted), `--recipe=<product>=<recipe>` (comma-separated for several), `--raw=iron-plate,copper-plate`.
 - `search`: `--limit=` (default 40).
 - `tech`: `--path`.
 - `belt`: `--rate=`.
-- `next`: `--for=`, `--save=`, `--force=`, `--top=`.
+- `next`: `--for=`, `--save=`, `--force=`, `--top=` (default 25).
 - `power`: `--save=`, `--force=`.
 - `bus`: `--save=`, `--map`, `--reuse`.
-- `advise`: `--spm=`, `--force=`, `--top=`.
+- `advise`: `--spm=`, `--save=`, `--force=`, `--top=`.
 - `bottleneck`: `--save=`, `--force=`, `--top=` (how many tightness rows).
-- `state`: `--save=`, `--force=`, `--top=`. The belt survey is not a `state` flag: `bus` and the watcher collect it.
+- `state`: `--save=`, `--force=`, `--top=`. **`state` does not collect the belt survey; `bus`, `report` and `watch` do.** They all write the same `data/state/<save>.json`, so a `state` read after a `report` leaves no belts behind: the `bottleneck` sinks column falls back to containers, `bus --reuse` has nothing, and `report --page` draws no lanes or corridors. Read with `report` when those matter.
+- `watch`: `--threshold=` (default 60/min); it follows whichever save changes and ignores `--save`.
 - `report`: `--save=`, `--threshold=`, `--now` (one report and exit), `--page` (redraw `reports/index.html` from the state file on disk, no engine run).
 - `bp`: `--file=`, `--string=` (or a positional argument, or stdin), `--rate=`, `--item=`.
-- `gen`: `--rate=`, `--machines=<n>` to pin a count, `--machine=`, `--belt=`.
+- `gen`: `--rate=` (required), `--machines=<n>` to pin a count, `--machine=`, `--belt=`, and the loadout flags `ratio` takes: `--modules=`, `--beacons=`, `--beacon=`, `--beacon-modules=`.
 - `bp` and `gen`: `--draw` or `--render`, `--svg`, `--out=<path>`.
 
 ## The dashboard

@@ -15,9 +15,9 @@ bun run watch                    # leave it running: every save becomes a report
 
 ![The dashboard: a header tile per section, the layered map of the base on the left, the written plan and the section tabs on the right](docs/dashboard.png)
 
-`report` writes `reports/index.html`. Across the top, one tile per section (science, energy, defence, production, logistics, mining) with its headline figure and how many pieces of advice it holds. On the left, one zoomable, layered map of your base. On the right, tabs: the written plan, what is holding the base back, the to-do list the advice adds up to, each section in full, and the raw state. Each section carries its figures, its tables, the advice that belongs to it, and the map layer its header turns on, so a step like "the steel block, 30 furnaces at x -274.5 to -223.5, y -102.5 to -96.5" is one click from the place it names. Advice that names a place names an area corner to corner, never a bare point.
+`report` writes `reports/index.html`. Across the top, one tile per section (science, energy, defence, production, logistics, mining) with its headline figure and how many pieces of advice it holds. On the left, one zoomable, layered map of your base. On the right, tabs: the written plan, what is holding the base back, the to-do list the advice adds up to, each section in full, a State card (tick, hours, research queue, what finished since the last report), and, once there is a previous report, what changed and what moved. Each section carries its figures, its tables, the advice that belongs to it, and the map layer its header turns on, so a step like "the steel block, 30 furnaces at x -274.5 to -223.5, y -102.5 to -96.5" is one click from the place it names. Advice that names a place names an area corner to corner, never a bare point.
 
-The map is drawn tile by tile in your save's own coordinates. Every entity is at the footprint its prototype declares and the position the engine reported, drawn with the game's own art and answering a click with what it is. Water and ore are at tile resolution; the charted extent and the enemy nests inside it are there for context; train stops carry the names you gave them. Close in, it shows what the game's alt mode shows: each machine's recipe and modules, what each chest or tank holds, the item riding each belt lane and the fluid in each pipe. The map keeps its controls on itself the way the game's map view does: fit, zoom, a layer panel, refresh, a `?` for the keys, and a full-window mode with an overview. Nothing on it is drawn that was not measured, and the footer says which is which. The art and icons are the game's own, read out of your installation at render time and never copied into this repository.
+The map is drawn tile by tile in your save's own coordinates. Every entity is at the footprint its prototype declares and the position the engine reported, drawn with the game's own art and answering a click with what it is. Water and ore are at tile resolution; the charted extent and the enemy nests inside it are there for context; train stops carry the names you gave them. Close in, it shows what the game's alt mode shows: each machine's recipe and modules, what each chest or tank holds, the item riding each belt lane and the fluid in each pipe. The map keeps its controls on itself the way the game's map view does: fit, zoom in and out, a layer panel, reset (every layer back to its default and the whole base in view), a `?` for the keys, and a full-window mode with an overview. Nothing on it is drawn that was not measured. The art and icons are the game's own, read out of your installation at render time and never copied into this repository.
 
 When a plan exists for the save at `data/plans/<save>.json`, the page shows it step by step: what each step costs, what it buys, whether it can be undone, where it is, and progress bars read from the save rather than ticked by hand. Every coordinate in the plan is a link that outlines its place on the map. An autosave picks up the plan of the game it belongs to by matching the map seed. The page also keeps a ledger of milestones per map (hours played, technologies, rockets launched, lifetime production) and marks only what a later read newly finds, never what was already true the first time.
 
@@ -75,14 +75,14 @@ bun run next --for=carbon-fiber               # the path from here to what unloc
 bun run power                                 # generation against draw, from your census
 bun run advise --spm=45                       # where the base stands and what the next step costs
 bun run bottleneck                            # machine classes by how busy they are, lines by what is spare
-bun run bus --save="game 4" --map             # buses, lanes, saturation, and the corridors on the map
+bun run bus --save="game 4" --map             # buses, lanes, saturation; --map also writes a page of the corridors
 bun run watch                                 # watch your saves; every save becomes a report
 bun run report                                # write one report for the newest save now
 bun run report --page                         # redraw the dashboard from the last read, no engine run
 bun run typecheck                             # tsc --noEmit
 ```
 
-Every command that answers about a save takes `--save=<name>`, the name as it appears in your save list. Without it, `state`, `bus` and `report` read the newest save on disk, and `next`, `power`, `advise` and `bottleneck` answer from the newest read already on file. `state`, `next`, `power`, `advise` and `bottleneck` also take `--force=<name>` (default `player`). `bun src/cli.ts help` prints the advisor's own usage.
+Every command that answers about a save takes `--save=<name>`, the name as it appears in your save list. Write it with an equals sign: `state`, `bus` and `report` also accept `--save "game 4"` with a space, and the others refuse it. Without it, `state`, `bus` and `report` read the newest save on disk, and `next`, `power`, `advise` and `bottleneck` answer from the newest read already on file. `state`, `next`, `power`, `advise` and `bottleneck` also take `--force=<name>` (default `player`). `bun src/cli.ts help` prints the advisor's own usage.
 
 ### ratio
 
@@ -97,8 +97,9 @@ bun run ratio electronic-circuit --rate=45/min --machine=assembling-machine-3 --
 | `--rate=90/min` / `1.5/s` / `5400/h` | target output rate; a bare number is per second, and the default is 1/s |
 | `--machine=<name>` | prefer this machine wherever it can run the category |
 | `--modules=<name>x<n>,...` | modules in every machine; what does not fit is reported |
-| `--beacons=<n>` `--beacon-modules=<spec>` | beacons reaching each machine, with the Space Age falloff profile applied |
+| `--beacons=<n>` | beacons reaching each machine, with the Space Age falloff profile applied |
 | `--beacon=<name>` | which beacon prototype; the first the snapshot declares otherwise |
+| `--beacon-modules=<spec>` | modules in each beacon; every slot holds `speed-module-3` when omitted |
 | `--recipe=<product>=<recipe>,...` | override a recipe choice; several pairs separated by commas |
 | `--raw=iron-plate,copper-plate` | treat these as bought in and stop expanding there |
 
@@ -111,7 +112,7 @@ bun run state --save "game 4"        # the save name as it appears in your save 
 bun run state --save "game 4" --top=20 --force=player
 ```
 
-Reports what your base has actually done: how many technologies are researched, what is being researched now and what is queued behind it, the items and fluids you make and use with their one-hour average rates and their lifetime totals, every machine you have placed counted by prototype, power delivered, evolution and pollution per surface, and what is sitting in your logistic network. `--top=<n>` sets how many production rows to print (default 10).
+Reports what your base has actually done: how many technologies are researched, what is being researched now and what is queued behind it, the items and fluids you make and use with their one-hour average rates and their lifetime totals, every machine you have placed counted by prototype, evolution and pollution per surface, and what is sitting in your logistic network. It also collects what the grid delivered, which `power` reports. `--top=<n>` sets how many production rows to print (default 10).
 
 The same read also collects what the dashboard draws: every placed entity's position, water and ore as tile runs, charted chunks and enemy nests, trains with their schedules and state, train stops by name, logistic networks with their robot fleets, the contents of chests and tanks, each machine's recipe and modules, and what each pipe carries.
 
@@ -127,7 +128,7 @@ Rates are the game's own one-hour average expressed per minute, recorded in both
 bun run next                         # everything researchable right now, cheapest first
 bun run next --for=carbon-fiber      # the path from where you are to that item
 bun run next --for=kovarex-enrichment-process   # a technology name works too
-bun run next --save "game 4" --top=40 --force=player
+bun run next --save="game 4" --top=40 --force=player   # --top defaults to 25
 ```
 
 Reads the state file `bun run state` wrote and intersects it with the technology tree. A technology is listed exactly when it is not researched and every one of its prerequisites is. Nothing is ranked by taste: the table is sorted by lab-seconds, and `opens` says how many further technologies each one unblocks, so a cheap tech that opens six others is visible as such.
@@ -153,7 +154,7 @@ Then the rest, from the census: Generation by source with the prototype fields e
 
 Every watt is derived, and the `derived from` column tells you how, so you can redo any of it by hand from `data/data-raw.json`. A steam engine, for instance, is `fluid_usage_per_tick 0.5 x 60 ticks x (maximum_temperature 165 minus steam's default_temperature 15) x steam heat_capacity 0.2kJ x effectivity 1`, which is 900 kW.
 
-Solar reports both peak and the average over a day-night cycle, and the average is not a remembered constant. The cycle length is a prototype field (`planet.surface_properties.day-night-cycle`, 25200 ticks on Nauvis) and the curve itself is read off the surface when `state` runs. Lit from dawn round to dusk, dark from evening to morning, linear between, which on Nauvis gives 0.7. If you are reading an older state file that predates the curve being collected, it says so and reports peak only rather than inventing a factor.
+Solar reports both peak and the average over a day-night cycle, and the average is not a remembered constant. The cycle length and the curve are both read off the surface when `state` runs (`ticks_per_day`, 25200 on Nauvis, which is also what the planet prototype's `day-night-cycle` declares). Lit from dawn round to dusk, dark from evening to morning, linear between, which on Nauvis gives 0.7. If you are reading an older state file that predates the curve being collected, it says so and reports peak only rather than inventing a factor.
 
 The census counts every entity class the game declares with an energy source of any kind, and that list is read off the running game rather than typed here. The first version listed twelve classes by hand and silently missed inserters, roboports, radars, lamps, pumps, turrets and accumulators, which understated the draw ceiling by 73 MW on a real base. A hand-written list cannot fail safely: nothing warns you about the class you forgot.
 
@@ -188,11 +189,13 @@ Which recipes are running is solved from the base's own rates rather than chosen
 
 ```bash
 bun run bus                          # the newest save, read fresh
-bun run bus --save="game 4" --map    # and write the corridors onto the base map
+bun run bus --save="game 4" --map    # and write .local/bus-map-<save>-<tick>.html, the corridors over the base
 bun run bus --save="game 4" --reuse  # answer from the last survey on disk, no engine run
 ```
 
 The belt survey: belt runs grouped into buses, each lane with what it carries and how saturated it is against the item's own rate. The survey is collected by the same save copy a state read uses, so the default launches the engine once and answers both.
+
+**`state` does not collect the belt survey; `bus`, `report` and `watch` do.** All of them write the same `data/state/<save>.json`, so a plain `bun run state` after a `report` leaves a read without belts: the `bottleneck` sinks column then reads containers only, `bus --reuse` has no survey, and `report --page` draws no belt lanes and no corridors. When you want those, read with `report` rather than `state`.
 
 ### watch and report
 
@@ -205,7 +208,7 @@ bun run watch --threshold=120     # only mention rate changes of 120/min or more
 
 `watch` polls your save directory and, when a save stops changing, reads it the same way `state` does: your save is copied into this project and the copy is read. It then writes `reports/<save>-<tick>.md` and regenerates `reports/index.html`. While it runs it also serves the page's live loop on `127.0.0.1:8737` (`FACTORIO_ADVISOR_PORT` overrides): an open page reloads itself after a new read, and its "Read latest save" button asks for one.
 
-`report` is the same read done once, now. `report --page` skips the read and redraws `reports/index.html` from the state file already on disk.
+`report` is the same read done once, now. `report --page` skips the read and redraws `reports/index.html` from the state file already on disk. Both take `--save=` and `--threshold=` (default 60/min); `watch` takes `--threshold=` and follows whichever save changes.
 
 A report is a diff, not a description. The first one for a save describes, because there is nothing to compare against; every later one names only what moved and says so when nothing did. You already know how many solar panels you have; what is worth telling you is that eleven appeared and that coal fell 61/min. The threshold for a production change is printed in the report rather than hidden, because a number that decides what you get told about should be arguable.
 
@@ -224,9 +227,10 @@ bun run gen electronic-circuit --rate=45/min
 bun run gen iron-plate --rate=100/min --belt=fast-transport-belt
 bun run gen electronic-circuit --rate=45/min --machines=8                 # pin the count instead
 bun run gen electronic-circuit --rate=45/min --machine=assembling-machine-2 --draw
+bun run gen electronic-circuit --rate=45/min --modules=productivity-module-3x4 --beacons=8
 ```
 
-Lays ONE recipe step out as a row and prints a blueprint string you can paste into the game: machines side by side, an input belt above, an output belt below, an inserter per machine per side. The string is printed last and alone, so it is easy to copy. `--machine=<name>` picks the machine, `--belt=<name>` the belt tier, and `--draw` draws the row it built (see `bp` below). A recipe with a fluid ingredient or product is refused, because a belt row cannot carry it.
+Lays ONE recipe step out as a row and prints a blueprint string you can paste into the game: machines side by side, an input belt above, an output belt below, an inserter per machine per side. The string is printed last and alone, so it is easy to copy. `--rate` is required. `--machine=<name>` picks the machine, `--belt=<name>` the belt tier, `--modules`, `--beacons`, `--beacon` and `--beacon-modules` the loadout exactly as for `ratio`, and `--draw` draws the row it built (see `bp` below). A recipe with a fluid ingredient or product is refused, because a belt row cannot carry it.
 
 Machine counts round up, so the row meets the target and the overcapacity is printed and written into the blueprint label, where it survives into your game. `--machines=<n>` pins a count instead and tells you the rate that gives, shortfall included. The belt tier is picked for the rounded-up rate, and a row that outruns its belt says so rather than quietly running at 140%.
 
@@ -345,7 +349,8 @@ What lives on disk, and whether it is versioned:
 | `data/` | the prototype snapshot and `manifest.json` | no |
 | `data/state/<save>.json` | each save read | no |
 | `data/plans/<save>.json` | the written plan the dashboard shows | no |
-| `data/milestones/<seed>.json` | the milestone ledger per map | no |
+| `data/milestones/<seed>.json` | the milestone ledger per map, named after the save when a read carries no seed | no |
+| `data/state/<save>-belts.json` | a belt survey from before it moved inside the state file; still read when present | no |
 | `.factorio-runtime/` | the engine's redirected write-data, config and save copies | no |
-| `reports/` | the diff reports and `index.html` | no |
+| `reports/` | the diff reports (`<save>-<tick>.md`), the state archived beside each (`<save>-<tick>.json`), and `index.html` | no |
 | `.local/` | drawings, cut sprites, scratch pages | no |

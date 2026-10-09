@@ -2384,7 +2384,7 @@ ${
     : `<div class="grid">\n${tabRail}\n${cards.join("\n")}\n</div>`
 }
 <footer>
-Every figure carries <code>data-source</code> and <code>data-field</code> naming the state file and the path inside it that produced it. Rates are the game's own one-hour average. The maps are drawn in the save's own tile coordinates from the entities and resources the collector counted chunk by chunk; there is no terrain on them, because terrain was never measured. Nothing here was written to your Factorio directories: the save was copied into this project and read from the copy.
+Every figure carries <code>data-source</code> and <code>data-field</code> naming the state file and the path inside it that produced it. Rates are the game's own one-hour average. The map is drawn in the save's own tile coordinates, every entity at the position the engine reported and the footprint its prototype declares; water and ore are drawn tile by tile, and no other terrain is, because no other terrain was measured. Nothing here was written to your Factorio directories: the save was copied into this project and read from the copy.
 </footer>
 </div>
 ${model ? `<script>${SCRIPT}</script>` : ""}
