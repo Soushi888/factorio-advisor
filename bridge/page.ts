@@ -1356,7 +1356,7 @@ const SCRIPT = `
   var pin = document.getElementById("pin");
 
   function tidy(name) { return name.replace(/-/g, " "); }
-  function commas(n) { return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, " "); }
+  function commas(n) { return String(Math.round(n)).replace(/\\B(?=(\\d{3})+(?!\\d))/g, " "); }
   function watts(w) {
     if (!w) return "0";
     if (w >= 1e6) return (w / 1e6).toFixed(1) + " MW";
@@ -1579,10 +1579,6 @@ const SCRIPT = `
   var selg = document.getElementById("selg");
   var sel = null;
   var pointTable = null, pointChunks = null, pointDir = null;
-  // Entities a blueprint cannot carry: things that move, things not built, and the player.
-  var NOT_BLUEPRINTABLE = { "entity-ghost": 1, "item-request-proxy": 1, "tile-ghost": 1, "construction-robot": 1, "logistic-robot": 1,
-    "combat-robot": 1, "car": 1, "spider-vehicle": 1, "spider-leg": 1, "locomotive": 1, "cargo-wagon": 1, "fluid-wagon": 1,
-    "artillery-wagon": 1, "character": 1, "character-corpse": 1, "corpse": 1, "deconstructible-tile-proxy": 1 };
 
   function pointIndex() {
     if (pointTable || !facts || !facts.points) return pointTable;
@@ -1717,11 +1713,37 @@ const SCRIPT = `
   // entrance jumps to its exit within the prototype's declared reach, a
   // splitter forks to both outputs, and the walk carries on wherever the next
   // tile holds the item on either lane. Upstream is the same graph reversed.
-  function beltRec(tx, ty) { var i = beltAt(tx, ty); return i; }
+  // Every tile a belt-like entity covers, to the point that covers it, built
+  // once: the walk asks this for every step, and scanning nine chunks of points
+  // per step was quadratic on a long bus.
+  var beltTiles = null;
+  var BELTISH = { "transport-belt": 1, "underground-belt": 1, "splitter": 1, "loader": 1, "loader-1x1": 1 };
+  function beltTileIndex() {
+    if (beltTiles || !pointIndex()) return beltTiles;
+    beltTiles = {};
+    for (var j = 0; j < pointTable.length; j += 5) {
+      var name = facts.pointNames[pointTable[j]];
+      if (!BELTISH[protoOf(name).type]) continue;
+      var r = rectOf(name, pointTable[j + 1] / 2, pointTable[j + 2] / 2, pointTable[j + 3]);
+      for (var x = Math.floor(r.x); x < r.x + r.w; x++) for (var y = Math.floor(r.y); y < r.y + r.h; y++) beltTiles[x + "," + y] = j;
+    }
+    return beltTiles;
+  }
+  // The belt row for a tile. The survey keeps one row per entity, at its centre,
+  // so the half of a splitter its centre does not fall in has no row of its own
+  // and answers with the splitter's.
+  function beltRec(tx, ty) {
+    var i = beltAt(tx, ty);
+    if (i >= 0) return i;
+    var e = entityOfTile(tx, ty);
+    if (!e || e.type !== "splitter") return -1;
+    return beltAt(Math.floor(e.x), Math.floor(e.y));
+  }
   function carries(i, idx) { return i >= 0 && (beltTable[i + 3] === idx || beltTable[i + 5] === idx); }
   function entityOfTile(tx, ty) {
-    var j = pointAt(tx + 0.5, ty + 0.5);
-    if (j < 0) return null;
+    var t = beltTileIndex();
+    var j = t ? t[tx + "," + ty] : undefined;
+    if (j === undefined) return null;
     var name = facts.pointNames[pointTable[j]];
     return { j: j, name: name, type: protoOf(name).type, x: pointTable[j + 1] / 2, y: pointTable[j + 2] / 2, dir: pointTable[j + 3], ends: pointTable[j + 4] };
   }
@@ -1730,62 +1752,65 @@ const SCRIPT = `
     for (var x = Math.floor(r.x); x < r.x + r.w; x++) for (var y = Math.floor(r.y); y < r.y + r.h; y++) out.push([x, y]);
     return out;
   }
-  function nextTiles(tx, ty, idx) {
-    var i = beltRec(tx, ty);
-    if (i < 0) return [];
+  // The rows a row's items move to next. Nodes are belt rows rather than tiles,
+  // because a splitter is one row covering two tiles: a walk that stepped onto
+  // its row-less half used to stop there.
+  function nextRows(i, idx) {
+    var tx = beltTable[i], ty = beltTable[i + 1];
     var f = FORWARD[Math.round(beltTable[i + 2] / 4) % 4];
     var e = entityOfTile(tx, ty);
-    var from = [[tx, ty]];
-    if (e && e.type === "splitter") from = splitterTiles(e);
+    var out = [];
+    function to(nx, ny) {
+      var r = beltRec(nx, ny);
+      if (carries(r, idx) && r !== i && out.indexOf(r) < 0) out.push(r);
+    }
     if (e && e.type === "underground-belt" && e.ends === 1) {
       var reach = protoOf(e.name).reach || 0;
       for (var k = 1; k <= reach; k++) {
-        var ox = tx + f[0] * k, oy = ty + f[1] * k;
-        var o = entityOfTile(ox, oy);
-        if (o && o.name === e.name && o.ends === 2 && o.dir === e.dir) return carries(beltRec(ox, oy), idx) ? [[ox, oy]] : [];
+        var ox = tx + f[0] * k, oy = ty + f[1] * k, o = entityOfTile(ox, oy);
+        if (o && o.name === e.name && o.ends === 2 && o.dir === e.dir) { to(ox, oy); break; }
       }
-      return [];
+      return out;
     }
-    var out = [];
-    from.forEach(function (t) {
-      var nx = t[0] + f[0], ny = t[1] + f[1];
-      if (!carries(beltRec(nx, ny), idx)) return;
-      var n = entityOfTile(nx, ny);
-      if (n && n.type === "splitter") splitterTiles(n).forEach(function (s) { if (carries(beltRec(s[0], s[1]), idx)) out.push(s); });
-      else out.push([nx, ny]);
-    });
-    if (e && e.type === "splitter") from.forEach(function (t) { if (t[0] !== tx || t[1] !== ty) if (carries(beltRec(t[0], t[1]), idx)) out.push(t); });
+    var from = e && e.type === "splitter" ? splitterTiles(e) : [[tx, ty]];
+    from.forEach(function (t) { to(t[0] + f[0], t[1] + f[1]); });
     return out;
+  }
+  // The tiles a row stands for on the map: both halves of a splitter, one tile otherwise.
+  function tilesOfRow(i) {
+    var e = entityOfTile(beltTable[i], beltTable[i + 1]);
+    return e && e.type === "splitter" ? splitterTiles(e) : [[beltTable[i], beltTable[i + 1]]];
   }
   function followLane(tx, ty, item) {
     var idx = facts.beltItems.indexOf(item);
     if (!beltIndex() || !pointIndex() || idx < 0) return;
-    // The graph over every tile that carries the item, built once per question.
+    var start = beltRec(tx, ty);
+    if (!carries(start, idx)) return;
+    // The graph over every row that carries the item, built once per question.
     var down = {}, up = {};
     for (var j = 0; j < beltTable.length; j += 7) {
       if (!carries(j, idx)) continue;
-      var k0 = beltTable[j] + "," + beltTable[j + 1];
-      var n = nextTiles(beltTable[j], beltTable[j + 1], idx);
-      down[k0] = n;
-      n.forEach(function (t) { var k1 = t[0] + "," + t[1]; (up[k1] || (up[k1] = [])).push([beltTable[j], beltTable[j + 1]]); });
+      var n = nextRows(j, idx);
+      down[j] = n;
+      n.forEach(function (r) { (up[r] || (up[r] = [])).push(j); });
     }
     function walk(graph) {
-      var seen = {}, queue = [[tx, ty]], count = 0, ends = 0;
-      seen[tx + "," + ty] = 1;
+      var seen = {}, queue = [start], count = 0;
+      seen[start] = 1;
       while (queue.length) {
-        var t = queue.shift(), nb = graph[t[0] + "," + t[1]] || [];
-        if (nb.length === 0) ends++;
-        nb.forEach(function (s) { var k = s[0] + "," + s[1]; if (!seen[k]) { seen[k] = 1; queue.push(s); count++; } });
+        var r = queue.shift();
+        (graph[r] || []).forEach(function (s) { if (!seen[s]) { seen[s] = 1; queue.push(s); count++; } });
       }
-      return { seen: seen, count: count, ends: ends };
+      return { seen: seen, count: count };
     }
     var dn = walk(down), un = walk(up);
-    var all = {};
-    Object.keys(dn.seen).forEach(function (k) { all[k] = 1; });
-    Object.keys(un.seen).forEach(function (k) { all[k] = 1; });
-    var rects = Object.keys(all).map(function (k) { var p = k.split(","); return { x: +p[0], y: +p[1], w: 1, h: 1 }; });
-    drawHits(rects, tidy(item) + " from " + tx + ", " + ty + ": " + plural(dn.count, "tile") + " downstream, " +
-      plural(un.count, "tile") + " upstream, " + plural(rects.length, "tile") + " in all");
+    var rows = {};
+    Object.keys(dn.seen).forEach(function (k) { rows[k] = 1; });
+    Object.keys(un.seen).forEach(function (k) { rows[k] = 1; });
+    var rects = [];
+    Object.keys(rows).forEach(function (k) { tilesOfRow(+k).forEach(function (t) { rects.push({ x: t[0], y: t[1], w: 1, h: 1 }); }); });
+    drawHits(rects, tidy(item) + " from " + tx + ", " + ty + ": " + plural(dn.count, "belt") + " downstream, " +
+      plural(un.count, "belt") + " upstream, " + plural(rects.length, "tile") + " in all");
     showAll(rects);
   }
 
@@ -1829,8 +1854,9 @@ const SCRIPT = `
     for (var j = 0; j < a.length; j += 5) {
       var x = a[j + 1] / 2, y = a[j + 2] / 2;
       if (x < r.x || x >= r.x + r.w || y < r.y || y >= r.y + r.h) continue;
-      var name = facts.pointNames[a[j]], type = protoOf(name).type;
-      if (!type || NOT_BLUEPRINTABLE[type] || NOT_BLUEPRINTABLE[name]) { skipped++; continue; }
+      // Whether a blueprint can carry it is the prototype's own flags, read in layers.ts.
+      var name = facts.pointNames[a[j]];
+      if (!protoOf(name).bp) { skipped++; continue; }
       var ent = { entity_number: list.length + 1, name: name, position: { x: x, y: y } };
       if (a[j + 3]) ent.direction = a[j + 3];
       if (a[j + 4] === 1) ent.type = "input";
@@ -1919,19 +1945,25 @@ const SCRIPT = `
             (facts.pointsDropped.length ? "; the read kept no positions for " + facts.pointsDropped.map(tidy).join(", ") : ""));
         });
       });
-      add("Selection", "Copy the command that audits it", function () {
-        blueprintOf(r).then(function (b) { copyText("bun run bp --string='" + b.text + "'", "bun run bp for this selection"); });
-      });
-      add("Selection", "Copy the command that draws it", function () {
-        blueprintOf(r).then(function (b) { copyText("bun run bp --string='" + b.text + "' --draw", "bun run bp --draw for this selection"); });
-      });
+      // One shell argument holds at most 128 KiB on Linux. Past that the string
+      // is copied on its own and the note says to put it in a file, which
+      // bun run bp reads with --file; a command that cannot run is not copied.
+      function bpCommand(flags, what) {
+        blueprintOf(r).then(function (b) {
+          if (b.text.length > ARG_LIMIT) {
+            copyText(b.text, "the blueprint string, " + Math.round(b.text.length / 1024) + " KB, too long for one command line: paste it into a file and run bun run bp --file=<that file>" + flags);
+          } else copyText("bun run bp --string='" + b.text + "'" + flags, what);
+        });
+      }
+      add("Selection", "Copy the command that audits it", function () { bpCommand("", "bun run bp for this selection"); });
+      add("Selection", "Copy the command that draws it", function () { bpCommand(" --draw", "bun run bp --draw for this selection"); });
       add("Selection", "Clear the selection", function () { setSel(null); });
     }
     var j = pointAt(ux, uy);
     var name = j >= 0 ? facts.pointNames[pointTable[j]] : hitEntity(clientX, clientY);
     if (name) {
       var p = protoOf(name), ex = j >= 0 ? pointTable[j + 1] / 2 : ux, ey = j >= 0 ? pointTable[j + 2] / 2 : uy;
-      head = tidy(name);
+      if (!inSel(ux, uy)) head = tidy(name);
       var count = 0;
       if (pointIndex()) { var n = facts.pointNames.indexOf(name); for (var q = 0; q < pointTable.length; q += 5) if (pointTable[q] === n) count++; }
       if (count) add("This " + tidy(p.type || "entity"), "Show every " + tidy(name) + " (" + commas(count) + ")", function () { sameKind(name); });
@@ -1956,7 +1988,7 @@ const SCRIPT = `
         });
       }
     }
-    var bi = beltAt(tx, ty);
+    var bi = beltRec(tx, ty);
     if (bi >= 0) {
       [["left", 3], ["right", 5]].forEach(function (lane) {
         var it = beltTable[bi + lane[1]];
@@ -1978,7 +2010,7 @@ const SCRIPT = `
       var fluid = facts.beltItems[pipeTable[pi + 2]];
       add("Find", "Find " + tidy(fluid) + " everywhere", function () { findItem(fluid); });
     }
-    [].slice.call(svg.querySelectorAll('g[data-layer="blocks"] g.area')).forEach(function (g) {
+    [].slice.call(svg.querySelectorAll('g[data-layer="blocks"].on g.area')).forEach(function (g) {
       var ax = +g.getAttribute("data-x"), ay = +g.getAttribute("data-y"), aw = +g.getAttribute("data-w"), ah = +g.getAttribute("data-h");
       if (ux < ax || ux > ax + aw || uy < ay || uy > ay + ah) return;
       var t = g.querySelector("title");
@@ -2000,6 +2032,8 @@ const SCRIPT = `
   }
 
   var ctxItems = [];
+  // Linux's MAX_ARG_STRLEN is 128 KiB for one argument; kept under it with room for the command around the string.
+  var ARG_LIMIT = 120000;
   function menuOpen() { return ctx && !ctx.hidden; }
   function closeMenu() { if (ctx) { ctx.hidden = true; ctx.innerHTML = ""; } ctxItems = []; }
   function openMenu(clientX, clientY) {

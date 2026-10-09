@@ -569,6 +569,13 @@ export interface MapFacts {
       volume?: number;
       /** An underground belt's declared `max_distance`, how far its entrance reaches. */
       reach?: number;
+      /**
+       * 1 when a blueprint can carry it, from the prototype's own flags: it
+       * declares `player-creation`, sits on the grid (robots, vehicles and
+       * rolling stock declare `placeable-off-grid`), and is not
+       * `not-blueprintable`. Ghosts declare no flags at all and stay out.
+       */
+      bp?: number;
     }
   >;
   /**
@@ -1324,6 +1331,12 @@ function factsOf(input: ModelInput, ctx: BuildContext): MapFacts {
     let n = pointIndex.get(name);
     if (n === undefined) { n = facts.pointNames.length; pointIndex.set(name, n); facts.pointNames.push(name); }
     for (const [x, y, dir, ends] of list) {
+      // Doubled into an Int16, so a position past 16383 tiles would wrap; it is
+      // left out and named with the dropped prototypes instead.
+      if (Math.abs(x * 2) > 32767 || Math.abs(y * 2) > 32767) {
+        if (!facts.pointsDropped.includes(name)) facts.pointsDropped.push(name);
+        continue;
+      }
       pts.push(n, Math.round(x * 2), Math.round(y * 2), dir ?? 0, ends === "input" ? 1 : ends === "output" ? 2 : 0);
     }
   }
@@ -1369,6 +1382,8 @@ function factsOf(input: ModelInput, ctx: BuildContext): MapFacts {
     if (slots > 0) row.slots = slots;
     const volume = Number((proto?.["fluid_box"] as Record<string, unknown> | undefined)?.["volume"] ?? 0);
     if (volume > 0) row.volume = volume;
+    const flags = Array.isArray(proto?.["flags"]) ? (proto["flags"] as unknown[]) : [];
+    if (flags.includes("player-creation") && !flags.includes("placeable-off-grid") && !flags.includes("not-blueprintable")) row.bp = 1;
     const reach = Number(proto?.["max_distance"] ?? 0);
     if (proto?.["type"] === "underground-belt" && reach > 0) row.reach = reach;
     const e = energy[name];
