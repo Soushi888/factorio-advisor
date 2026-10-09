@@ -355,6 +355,20 @@ body.panning{user-select:none;-webkit-user-select:none;cursor:grabbing}
 #mark .pulse{fill:none;stroke:currentColor;stroke-width:2;vector-effect:non-scaling-stroke;animation:markpulse 1.4s ease-out 3}
 @keyframes markpulse{from{stroke-opacity:1}to{stroke-opacity:0}}
 #mark .shade{fill:var(--void);fill-opacity:.62;fill-rule:evenodd}
+#mark .hits{fill:none;stroke:currentColor;stroke-width:1.6;vector-effect:non-scaling-stroke}
+#selg rect{fill:var(--accent);fill-opacity:.08;stroke:var(--accent);stroke-width:1.5;stroke-dasharray:6 4;vector-effect:non-scaling-stroke;pointer-events:none}
+/* The context menu, styled as the game's own: a dark panel, grouped entries, the target named in its title. */
+#ctxmenu{position:absolute;z-index:6;min-width:14rem;max-width:24rem;max-height:calc(100% - 1rem);overflow:auto;background:var(--panel);
+  border:1px solid var(--edge);border-radius:.2rem;box-shadow:var(--bevel),0 .4rem 1.2rem rgba(0,0,0,.6);padding:0 0 .25rem;font-size:.8rem}
+#ctxmenu[hidden],#ctxnote[hidden]{display:none}
+#ctxmenu .ctxhead{padding:.3rem .6rem;font-weight:700;color:var(--head);background:linear-gradient(var(--panel-hi),var(--panel));border-bottom:1px solid var(--edge)}
+#ctxmenu .ctxgroup{padding:.35rem .6rem .1rem;color:var(--dim);font-size:.68rem;text-transform:uppercase;letter-spacing:.04em}
+#ctxmenu button{display:block;width:100%;text-align:left;border:0;background:none;color:var(--fg);font:inherit;padding:.25rem .6rem .25rem .9rem;cursor:pointer}
+#ctxmenu button:hover,#ctxmenu button:focus-visible{background:var(--accent);color:#111;outline:none}
+#ctxnote{position:absolute;left:.5rem;bottom:2.2rem;z-index:6;max-width:calc(100% - 1rem);background:var(--panel);border:1px solid var(--edge);border-radius:.2rem;
+  box-shadow:var(--bevel),0 .3rem .9rem rgba(0,0,0,.5);padding:.35rem .6rem;font-size:.78rem;color:var(--fg)}
+#ctxnote textarea{display:block;width:min(32rem,80vw);margin:.3rem 0;font:inherit;font-size:.72rem;background:var(--deep);color:var(--fg);border:1px solid var(--edge)}
+#ctxnote button{font:inherit;font-size:.72rem;cursor:pointer}
 #mark .cross{fill:none;stroke:currentColor;stroke-width:1.5;vector-effect:non-scaling-stroke;stroke-dasharray:8 5;stroke-opacity:.9}
 #focusbadge{position:absolute;left:.5rem;top:.5rem;z-index:3;max-width:calc(100% - 1rem);background:var(--accent);color:#111;font-weight:700;font-size:.8rem;line-height:1.3;padding:.3rem .6rem;border-radius:.3rem;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.4)}
 #focusbadge[hidden]{display:none}
@@ -892,6 +906,10 @@ const SCRIPT = `
   var glide = null;
   function stopGlide() { if (glide !== null) { cancelAnimationFrame(glide); glide = null; } }
   svg.addEventListener("pointerdown", function (e) {
+    // The right button belongs to the context menu, and shift with the left one
+    // draws a selection rather than panning (C44, C49).
+    if (e.button === 2) return;
+    if (e.button === 0 && e.shiftKey) { e.preventDefault(); stopGlide(); startSelect(e); return; }
     // A press on the map starts a pan, never a text selection: without this the
     // browser selected the reading beside the map as the pointer crossed it.
     if (e.button === 0) e.preventDefault();
@@ -903,6 +921,7 @@ const SCRIPT = `
     try { svg.setPointerCapture(e.pointerId); } catch (err) { /* a synthetic pointer has nothing to capture */ }
   });
   svg.addEventListener("pointermove", function (e) {
+    if (selecting) { moveSelect(e); return; }
     if (!drag) return;
     var d = drawn();
     travelled += Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y);
@@ -915,6 +934,8 @@ const SCRIPT = `
     apply();
   });
   function endDrag(e) {
+    if (selecting && e) { endSelect(e); return; }
+    if (selecting) { selecting = null; return; }
     if (!drag) return;
     var t = drag.trail, now = performance.now();
     drag = null;
@@ -1278,6 +1299,9 @@ const SCRIPT = `
 
   document.addEventListener("keydown", function (e) {
     if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+    // The context menu is the innermost thing that can be open, so Esc closes it first.
+    if (e.key === "Escape" && menuOpen()) { closeMenu(); return; }
+    if (menuOpen()) return;
     if (e.key === "f") { doFit(); return; }
     // Esc peels one thing at a time: an open panel first, and only then the
     // highlight and the view. Closing a panel used to throw away the place you
@@ -1294,6 +1318,8 @@ const SCRIPT = `
       doFit();
       if (flashed) { flashed.classList.remove("flash"); flashed = null; }
       clearMark();
+      setSel(null);
+      if (note) note.hidden = true;
       return;
     }
     var n = parseInt(e.key, 10);
@@ -1539,6 +1565,491 @@ const SCRIPT = `
     openPin(e.clientX, e.clientY);
   });
 
+
+  // ---- The context menu (C44 to C50) -------------------------------------
+  //
+  // Right-click asks the map what can be done with what is under the cursor.
+  // Every entry reads data the page already carries: the packed points (every
+  // placed entity with its direction), the machines, the containers, the belt
+  // and pipe tables. Nothing is computed that the read did not measure, and an
+  // entry whose data is absent is not offered. Shift+right-click is left to the
+  // browser, so its own menu stays one modifier away.
+  var ctx = document.getElementById("ctxmenu");
+  var note = document.getElementById("ctxnote");
+  var selg = document.getElementById("selg");
+  var sel = null;
+  var pointTable = null, pointChunks = null, pointDir = null;
+  // Entities a blueprint cannot carry: things that move, things not built, and the player.
+  var NOT_BLUEPRINTABLE = { "entity-ghost": 1, "item-request-proxy": 1, "tile-ghost": 1, "construction-robot": 1, "logistic-robot": 1,
+    "combat-robot": 1, "car": 1, "spider-vehicle": 1, "spider-leg": 1, "locomotive": 1, "cargo-wagon": 1, "fluid-wagon": 1,
+    "artillery-wagon": 1, "character": 1, "character-corpse": 1, "corpse": 1, "deconstructible-tile-proxy": 1 };
+
+  function pointIndex() {
+    if (pointTable || !facts || !facts.points) return pointTable;
+    var bin = atob(facts.points), u8 = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    pointTable = new Int16Array(u8.buffer);
+    pointChunks = {};
+    pointDir = {};
+    for (var j = 0; j < pointTable.length; j += 5) {
+      var key = Math.floor(pointTable[j + 1] / 2 / chunk) + "," + Math.floor(pointTable[j + 2] / 2 / chunk);
+      (pointChunks[key] || (pointChunks[key] = [])).push(j);
+      pointDir[pointTable[j] + "@" + pointTable[j + 1] + "," + pointTable[j + 2]] = j;
+    }
+    return pointTable;
+  }
+  function protoOf(name) { return (facts && facts.protos[name]) || { w: 1, h: 1, type: "" }; }
+  // A footprint as tiles, turned when the entity faces east or west.
+  function rectOf(name, x, y, dir) {
+    var p = protoOf(name), w = p.w || 1, h = p.h || 1;
+    if (dir === 4 || dir === 12) { var t = w; w = h; h = t; }
+    return { x: x - w / 2, y: y - h / 2, w: w, h: h };
+  }
+  function dirOf(name, x, y) {
+    if (!pointIndex()) return 0;
+    var n = facts.pointNames.indexOf(name);
+    var j = pointDir[n + "@" + Math.round(x * 2) + "," + Math.round(y * 2)];
+    return j === undefined ? 0 : pointTable[j + 3];
+  }
+  // The placed entity whose footprint holds a point, smallest first, so a belt
+  // under an inserter's reach answers as the belt it is.
+  function pointAt(ux, uy) {
+    var a = pointIndex();
+    if (!a) return -1;
+    var best = -1, area = Infinity;
+    var cx = Math.floor(ux / chunk), cy = Math.floor(uy / chunk);
+    for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) {
+      var list = pointChunks[(cx + dx) + "," + (cy + dy)];
+      if (!list) continue;
+      for (var i = 0; i < list.length; i++) {
+        var j = list[i], name = facts.pointNames[a[j]];
+        var r = rectOf(name, a[j + 1] / 2, a[j + 2] / 2, a[j + 3]);
+        if (ux >= r.x && ux < r.x + r.w && uy >= r.y && uy < r.y + r.h && r.w * r.h < area) { best = j; area = r.w * r.h; }
+      }
+    }
+    return best;
+  }
+
+  // ---- Highlights: the rest goes dark, every hit is outlined -----------------
+  function drawHits(rects, label) {
+    if (!mark) return;
+    mark.innerHTML = "";
+    var big = Math.max(fit[2], fit[3]) * 4;
+    var holes = "", lines = "";
+    for (var i = 0; i < rects.length; i++) {
+      var r = rects[i];
+      var seg = "M" + r.x + " " + r.y + "h" + r.w + "v" + r.h + "h" + (-r.w) + "Z";
+      holes += seg; lines += seg;
+    }
+    var shade = document.createElementNS(NS, "path");
+    shade.setAttribute("class", "shade");
+    shade.setAttribute("d", "M" + (fit[0] - big) + " " + (fit[1] - big) + "h" + (fit[2] + 2 * big) + "v" + (fit[3] + 2 * big) + "h" + (-(fit[2] + 2 * big)) + "Z" + holes);
+    mark.appendChild(shade);
+    var out = document.createElementNS(NS, "path");
+    out.setAttribute("class", "hits");
+    out.setAttribute("d", lines);
+    mark.appendChild(out);
+    if (badge) { badge.textContent = label + "  ·  Esc clears"; badge.hidden = false; }
+  }
+  function boundsOf(rects) {
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    rects.forEach(function (r) { x0 = Math.min(x0, r.x); y0 = Math.min(y0, r.y); x1 = Math.max(x1, r.x + r.w); y1 = Math.max(y1, r.y + r.h); });
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  }
+  // Fly to the hits only when some are off screen, so a highlight never throws the view away for nothing.
+  function showAll(rects) {
+    if (!rects.length) return;
+    var b = boundsOf(rects);
+    var inView = b.x >= vb.x && b.y >= vb.y && b.x + b.w <= vb.x + vb.w && b.y + b.h <= vb.y + vb.h;
+    if (inView) return;
+    var pad = Math.max(b.w, b.h) * 0.08 + 8;
+    var side = Math.max(b.w + pad * 2, b.h + pad * 2, 40);
+    stopGlide();
+    vb = { x: b.x + b.w / 2 - side / 2, y: b.y + b.h / 2 - side / 2, w: side, h: side };
+    apply();
+  }
+  function plural(n, one, many) { return commas(n) + " " + (n === 1 ? one : (many || one + "s")); }
+
+  function sameKind(name) {
+    var a = pointIndex(), n = facts.pointNames.indexOf(name), rects = [];
+    if (a && n >= 0) for (var j = 0; j < a.length; j += 5) if (a[j] === n) rects.push(rectOf(name, a[j + 1] / 2, a[j + 2] / 2, a[j + 3]));
+    drawHits(rects, plural(rects.length, tidy(name)));
+    showAll(rects);
+  }
+  function sameRecipe(recipe) {
+    var rects = [], kinds = {};
+    facts.machines.forEach(function (m) {
+      if (m[3] !== recipe) return;
+      rects.push(rectOf(m[2], m[0], m[1], dirOf(m[2], m[0], m[1])));
+      kinds[m[2]] = (kinds[m[2]] || 0) + 1;
+    });
+    drawHits(rects, plural(rects.length, "machine") + " on " + tidy(recipe) +
+      (Object.keys(kinds).length > 1 ? " (" + Object.keys(kinds).map(function (k) { return kinds[k] + " " + tidy(k); }).join(", ") + ")" : ""));
+    showAll(rects);
+  }
+  function findItem(item) {
+    var rects = [], tiles = 0, holders = 0, pipes = 0;
+    var idx = facts.beltItems.indexOf(item);
+    var b = beltIndex();
+    if (b && idx >= 0) for (var j = 0; j < b.length; j += 7) {
+      if (b[j + 3] === idx || b[j + 5] === idx) { rects.push({ x: b[j], y: b[j + 1], w: 1, h: 1 }); tiles++; }
+    }
+    var p = pipeIndex();
+    if (p && idx >= 0) for (var q = 0; q < p.length; q += 4) {
+      if (p[q + 2] === idx) { rects.push({ x: p[q], y: p[q + 1], w: 1, h: 1 }); pipes++; }
+    }
+    facts.holds.forEach(function (c) {
+      if ((c[3] && c[3][item]) || (c[4] && c[4].name === item)) {
+        rects.push(rectOf(c[2], c[0], c[1], dirOf(c[2], c[0], c[1]))); holders++;
+      }
+    });
+    var parts = [];
+    if (tiles) parts.push(plural(tiles, "belt tile"));
+    if (pipes) parts.push(plural(pipes, "pipe"));
+    if (holders) parts.push(plural(holders, "container"));
+    drawHits(rects, tidy(item) + ": " + (parts.length ? parts.join(", ") : "on no belt, in no pipe or container this read saw"));
+    showAll(rects);
+  }
+
+  // ---- Follow one lane's item (C47) -------------------------------------------
+  //
+  // By item, not by belt: a step goes where the belt points, an underground
+  // entrance jumps to its exit within the prototype's declared reach, a
+  // splitter forks to both outputs, and the walk carries on wherever the next
+  // tile holds the item on either lane. Upstream is the same graph reversed.
+  function beltRec(tx, ty) { var i = beltAt(tx, ty); return i; }
+  function carries(i, idx) { return i >= 0 && (beltTable[i + 3] === idx || beltTable[i + 5] === idx); }
+  function entityOfTile(tx, ty) {
+    var j = pointAt(tx + 0.5, ty + 0.5);
+    if (j < 0) return null;
+    var name = facts.pointNames[pointTable[j]];
+    return { j: j, name: name, type: protoOf(name).type, x: pointTable[j + 1] / 2, y: pointTable[j + 2] / 2, dir: pointTable[j + 3], ends: pointTable[j + 4] };
+  }
+  function splitterTiles(e) {
+    var r = rectOf(e.name, e.x, e.y, e.dir), out = [];
+    for (var x = Math.floor(r.x); x < r.x + r.w; x++) for (var y = Math.floor(r.y); y < r.y + r.h; y++) out.push([x, y]);
+    return out;
+  }
+  function nextTiles(tx, ty, idx) {
+    var i = beltRec(tx, ty);
+    if (i < 0) return [];
+    var f = FORWARD[Math.round(beltTable[i + 2] / 4) % 4];
+    var e = entityOfTile(tx, ty);
+    var from = [[tx, ty]];
+    if (e && e.type === "splitter") from = splitterTiles(e);
+    if (e && e.type === "underground-belt" && e.ends === 1) {
+      var reach = protoOf(e.name).reach || 0;
+      for (var k = 1; k <= reach; k++) {
+        var ox = tx + f[0] * k, oy = ty + f[1] * k;
+        var o = entityOfTile(ox, oy);
+        if (o && o.name === e.name && o.ends === 2 && o.dir === e.dir) return carries(beltRec(ox, oy), idx) ? [[ox, oy]] : [];
+      }
+      return [];
+    }
+    var out = [];
+    from.forEach(function (t) {
+      var nx = t[0] + f[0], ny = t[1] + f[1];
+      if (!carries(beltRec(nx, ny), idx)) return;
+      var n = entityOfTile(nx, ny);
+      if (n && n.type === "splitter") splitterTiles(n).forEach(function (s) { if (carries(beltRec(s[0], s[1]), idx)) out.push(s); });
+      else out.push([nx, ny]);
+    });
+    if (e && e.type === "splitter") from.forEach(function (t) { if (t[0] !== tx || t[1] !== ty) if (carries(beltRec(t[0], t[1]), idx)) out.push(t); });
+    return out;
+  }
+  function followLane(tx, ty, item) {
+    var idx = facts.beltItems.indexOf(item);
+    if (!beltIndex() || !pointIndex() || idx < 0) return;
+    // The graph over every tile that carries the item, built once per question.
+    var down = {}, up = {};
+    for (var j = 0; j < beltTable.length; j += 7) {
+      if (!carries(j, idx)) continue;
+      var k0 = beltTable[j] + "," + beltTable[j + 1];
+      var n = nextTiles(beltTable[j], beltTable[j + 1], idx);
+      down[k0] = n;
+      n.forEach(function (t) { var k1 = t[0] + "," + t[1]; (up[k1] || (up[k1] = [])).push([beltTable[j], beltTable[j + 1]]); });
+    }
+    function walk(graph) {
+      var seen = {}, queue = [[tx, ty]], count = 0, ends = 0;
+      seen[tx + "," + ty] = 1;
+      while (queue.length) {
+        var t = queue.shift(), nb = graph[t[0] + "," + t[1]] || [];
+        if (nb.length === 0) ends++;
+        nb.forEach(function (s) { var k = s[0] + "," + s[1]; if (!seen[k]) { seen[k] = 1; queue.push(s); count++; } });
+      }
+      return { seen: seen, count: count, ends: ends };
+    }
+    var dn = walk(down), un = walk(up);
+    var all = {};
+    Object.keys(dn.seen).forEach(function (k) { all[k] = 1; });
+    Object.keys(un.seen).forEach(function (k) { all[k] = 1; });
+    var rects = Object.keys(all).map(function (k) { var p = k.split(","); return { x: +p[0], y: +p[1], w: 1, h: 1 }; });
+    drawHits(rects, tidy(item) + " from " + tx + ", " + ty + ": " + plural(dn.count, "tile") + " downstream, " +
+      plural(un.count, "tile") + " upstream, " + plural(rects.length, "tile") + " in all");
+    showAll(rects);
+  }
+
+  // ---- Selection: shift-drag a rectangle (C49) ----------------------------------
+  var selecting = null;
+  function tileAt(clientX, clientY) {
+    var d = drawn();
+    return [vb.x + (clientX - d.left) / d.s, vb.y + (clientY - d.top) / d.s];
+  }
+  function setSel(r) {
+    sel = r;
+    if (!selg) return;
+    selg.innerHTML = "";
+    if (!r) return;
+    var e = document.createElementNS(NS, "rect");
+    e.setAttribute("x", r.x); e.setAttribute("y", r.y); e.setAttribute("width", r.w); e.setAttribute("height", r.h);
+    selg.appendChild(e);
+  }
+  function snapRect(a, b) {
+    var x0 = Math.floor(Math.min(a[0], b[0])), y0 = Math.floor(Math.min(a[1], b[1]));
+    var x1 = Math.ceil(Math.max(a[0], b[0])), y1 = Math.ceil(Math.max(a[1], b[1]));
+    return { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
+  }
+  function startSelect(e) { selecting = tileAt(e.clientX, e.clientY); travelled = 0; try { svg.setPointerCapture(e.pointerId); } catch (err) { /* synthetic */ } }
+  function moveSelect(e) { travelled += 10; setSel(snapRect(selecting, tileAt(e.clientX, e.clientY))); }
+  function endSelect(e) {
+    var r = snapRect(selecting, tileAt(e.clientX, e.clientY));
+    selecting = null;
+    travelled = 999;
+    setSel(r);
+    say(selectionSummary(r) + ". Right-click inside it for its actions.");
+  }
+  function inSel(ux, uy) { return sel && ux >= sel.x && ux < sel.x + sel.w && uy >= sel.y && uy < sel.y + sel.h; }
+
+  // What a selection holds, as blueprint entities, with what was left out and why.
+  function selectionEntities(r) {
+    var a = pointIndex(), list = [], skipped = 0;
+    if (!a) return { list: list, skipped: 0 };
+    var machines = {};
+    facts.machines.forEach(function (m) { machines[m[2] + "@" + Math.round(m[0] * 2) + "," + Math.round(m[1] * 2)] = m; });
+    for (var j = 0; j < a.length; j += 5) {
+      var x = a[j + 1] / 2, y = a[j + 2] / 2;
+      if (x < r.x || x >= r.x + r.w || y < r.y || y >= r.y + r.h) continue;
+      var name = facts.pointNames[a[j]], type = protoOf(name).type;
+      if (!type || NOT_BLUEPRINTABLE[type] || NOT_BLUEPRINTABLE[name]) { skipped++; continue; }
+      var ent = { entity_number: list.length + 1, name: name, position: { x: x, y: y } };
+      if (a[j + 3]) ent.direction = a[j + 3];
+      if (a[j + 4] === 1) ent.type = "input";
+      if (a[j + 4] === 2) ent.type = "output";
+      var m = machines[name + "@" + a[j + 1] + "," + a[j + 2]];
+      if (m && m[3]) ent.recipe = m[3];
+      if (m && m[4] && m[5]) {
+        var stack = 0;
+        ent.items = Object.keys(m[4]).map(function (mod) {
+          var slots = [];
+          for (var s = 0; s < m[4][mod]; s++) slots.push({ inventory: m[5], stack: stack++ });
+          return { id: { name: mod }, items: { in_inventory: slots } };
+        });
+      }
+      list.push(ent);
+    }
+    return { list: list, skipped: skipped };
+  }
+  function selectionSummary(r) {
+    var s = selectionEntities(r);
+    return r.w + " x " + r.h + " tiles selected: " + plural(s.list.length, "entity", "entities") +
+      (s.skipped ? ", " + commas(s.skipped) + " left out (vehicles, robots, ghosts)" : "");
+  }
+  function b64(bytes) {
+    var out = "", CH = 0x8000;
+    for (var i = 0; i < bytes.length; i += CH) out += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    return btoa(out);
+  }
+  // The documented format, the same one src/blueprint.ts encodes: a version
+  // character, then base64 of the zlib-deflated JSON. CompressionStream's
+  // "deflate" is the zlib wrapping, which is what the game and decode() expect.
+  function blueprintOf(r) {
+    var s = selectionEntities(r);
+    var icon = null;
+    for (var i = 0; i < s.list.length && !icon; i++) if (s.list[i].recipe) icon = s.list[i].name;
+    var bp = { blueprint: { item: "blueprint",
+      label: facts.read.save + " x " + r.x + " to " + (r.x + r.w) + ", y " + r.y + " to " + (r.y + r.h) + " (read at tick " + facts.read.tick + ")",
+      entities: s.list, version: 562949955649536 } };
+    if (icon) bp.blueprint.icons = [{ signal: { name: icon }, index: 1 }];
+    var stream = new Blob([JSON.stringify(bp)]).stream().pipeThrough(new CompressionStream("deflate"));
+    return new Response(stream).arrayBuffer().then(function (buf) { return { text: "0" + b64(new Uint8Array(buf)), count: s.list.length, skipped: s.skipped }; });
+  }
+
+  // ---- Copy, with a manual fallback when the clipboard refuses (C45) -----------
+  var noteTimer = null;
+  function say(text, keep) {
+    if (!note) return;
+    note.innerHTML = "";
+    note.textContent = text;
+    note.hidden = false;
+    if (noteTimer !== null) clearTimeout(noteTimer);
+    noteTimer = keep ? null : setTimeout(function () { note.hidden = true; }, 4200);
+  }
+  function manualCopy(text, what) {
+    if (!note) return;
+    if (noteTimer !== null) clearTimeout(noteTimer);
+    note.innerHTML = "";
+    var p = document.createElement("div");
+    p.textContent = "The clipboard refused, so here is " + what + " to copy by hand:";
+    var t = document.createElement("textarea");
+    t.readOnly = true; t.value = text; t.rows = 3;
+    var x = document.createElement("button");
+    x.type = "button"; x.textContent = "close";
+    x.addEventListener("click", function () { note.hidden = true; });
+    note.appendChild(p); note.appendChild(t); note.appendChild(x);
+    note.hidden = false;
+    t.focus(); t.select();
+  }
+  function copyText(text, what) {
+    function done() { say("Copied " + what + "."); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { manualCopy(text, what); });
+    } else manualCopy(text, what);
+  }
+
+  // ---- The menu ---------------------------------------------------------------
+  function entryItems(ux, uy, clientX, clientY) {
+    var tx = Math.floor(ux), ty = Math.floor(uy), items = [], head = tx + ", " + ty;
+    function add(group, label, run) { items.push({ group: group, label: label, run: run }); }
+    if (inSel(ux, uy)) {
+      var r = sel;
+      head = r.w + " x " + r.h + " tiles";
+      add("Selection", "Copy as a blueprint string", function () {
+        blueprintOf(r).then(function (b) {
+          copyText(b.text, "a blueprint of " + plural(b.count, "entity", "entities") + (b.skipped ? " (" + b.skipped + " vehicles, robots or ghosts left out)" : "") +
+            (facts.pointsDropped.length ? "; the read kept no positions for " + facts.pointsDropped.map(tidy).join(", ") : ""));
+        });
+      });
+      add("Selection", "Copy the command that audits it", function () {
+        blueprintOf(r).then(function (b) { copyText("bun run bp --string='" + b.text + "'", "bun run bp for this selection"); });
+      });
+      add("Selection", "Copy the command that draws it", function () {
+        blueprintOf(r).then(function (b) { copyText("bun run bp --string='" + b.text + "' --draw", "bun run bp --draw for this selection"); });
+      });
+      add("Selection", "Clear the selection", function () { setSel(null); });
+    }
+    var j = pointAt(ux, uy);
+    var name = j >= 0 ? facts.pointNames[pointTable[j]] : hitEntity(clientX, clientY);
+    if (name) {
+      var p = protoOf(name), ex = j >= 0 ? pointTable[j + 1] / 2 : ux, ey = j >= 0 ? pointTable[j + 2] / 2 : uy;
+      head = tidy(name);
+      var count = 0;
+      if (pointIndex()) { var n = facts.pointNames.indexOf(name); for (var q = 0; q < pointTable.length; q += 5) if (pointTable[q] === n) count++; }
+      if (count) add("This " + tidy(p.type || "entity"), "Show every " + tidy(name) + " (" + commas(count) + ")", function () { sameKind(name); });
+      var m = thingAt(facts.machines, name, ex, ey, p);
+      if (m && m[3]) {
+        var recipe = m[3], ro = facts.recipes[recipe];
+        var on = facts.machines.filter(function (x) { return x[3] === recipe; }).length;
+        add("This " + tidy(p.type || "entity"), "Show every machine on " + tidy(recipe) + " (" + commas(on) + ")", function () { sameRecipe(recipe); });
+        if (ro) add("Find", "Find " + tidy(ro.product) + " on belts, in pipes and containers", function () { findItem(ro.product); });
+        add("Commands", "Copy bun run recipe " + recipe, function () { copyText("bun run recipe " + recipe, "bun run recipe " + recipe); });
+        if (ro && ro.made > 0) {
+          var rate = ro.made + "/min";
+          add("Commands", "Copy bun run ratio " + ro.product + " at " + rate, function () { copyText("bun run ratio " + ro.product + " --rate=" + rate, "the ratio command"); });
+          if (!ro.fluid) add("Commands", "Copy bun run gen " + ro.product + " at " + rate, function () { copyText("bun run gen " + ro.product + " --rate=" + rate, "the gen command"); });
+        }
+      }
+      var c = thingAt(facts.holds, name, ex, ey, p);
+      if (c) {
+        if (c[4]) add("Find", "Find " + tidy(c[4].name) + " everywhere", function () { findItem(c[4].name); });
+        if (c[3]) Object.keys(c[3]).sort(function (a, b) { return c[3][b] - c[3][a]; }).slice(0, 3).forEach(function (it) {
+          add("Find", "Find " + tidy(it) + " everywhere", function () { findItem(it); });
+        });
+      }
+    }
+    var bi = beltAt(tx, ty);
+    if (bi >= 0) {
+      [["left", 3], ["right", 5]].forEach(function (lane) {
+        var it = beltTable[bi + lane[1]];
+        if (it < 0) return;
+        var item = facts.beltItems[it];
+        add("This belt", "Follow the " + tidy(item) + " on the " + lane[0] + " lane", function () { followLane(tx, ty, item); });
+      });
+      var seenItems = {};
+      [3, 5].forEach(function (o) {
+        var it = beltTable[bi + o];
+        if (it < 0 || seenItems[it]) return;
+        seenItems[it] = 1;
+        var item = facts.beltItems[it];
+        add("Find", "Find " + tidy(item) + " everywhere", function () { findItem(item); });
+      });
+    }
+    var pi = pipeAt(tx, ty);
+    if (pi >= 0) {
+      var fluid = facts.beltItems[pipeTable[pi + 2]];
+      add("Find", "Find " + tidy(fluid) + " everywhere", function () { findItem(fluid); });
+    }
+    [].slice.call(svg.querySelectorAll('g[data-layer="blocks"] g.area')).forEach(function (g) {
+      var ax = +g.getAttribute("data-x"), ay = +g.getAttribute("data-y"), aw = +g.getAttribute("data-w"), ah = +g.getAttribute("data-h");
+      if (ux < ax || ux > ax + aw || uy < ay || uy > ay + ah) return;
+      var t = g.querySelector("title");
+      add("This block", "Select the " + (t ? tidy(t.textContent) + " block" : "block"), function () {
+        var r = { x: Math.floor(ax), y: Math.floor(ay), w: Math.ceil(ax + aw) - Math.floor(ax), h: Math.ceil(ay + ah) - Math.floor(ay) };
+        setSel(r);
+        say(selectionSummary(r) + ". Right-click inside it for its actions.");
+      });
+    });
+    var gps = "[gps=" + tx + "," + ty + "]";
+    add("Here", "Copy GPS ping " + gps, function () { copyText(gps, "the GPS ping " + gps + " (paste it into the game chat)"); });
+    add("Here", "Copy coordinates " + tx + ", " + ty, function () { copyText(tx + ", " + ty, "the coordinates " + tx + ", " + ty); });
+    add("Here", "Centre the map here", function () {
+      stopGlide();
+      vb.x = ux - vb.w / 2; vb.y = uy - vb.h / 2;
+      apply();
+    });
+    return { head: head, items: items };
+  }
+
+  var ctxItems = [];
+  function menuOpen() { return ctx && !ctx.hidden; }
+  function closeMenu() { if (ctx) { ctx.hidden = true; ctx.innerHTML = ""; } ctxItems = []; }
+  function openMenu(clientX, clientY) {
+    if (!ctx) return;
+    if (pin) pin.hidden = true;
+    var t = tileAt(clientX, clientY);
+    var built = entryItems(t[0], t[1], clientX, clientY);
+    var html = '<div class="ctxhead">' + built.head.replace(/</g, "&lt;") + "</div>", group = null;
+    built.items.forEach(function (it, i) {
+      if (it.group !== group) { group = it.group; html += '<div class="ctxgroup">' + group + "</div>"; }
+      html += '<button type="button" role="menuitem" data-i="' + i + '">' + it.label.replace(/</g, "&lt;") + "</button>";
+    });
+    ctx.innerHTML = html;
+    ctxItems = built.items;
+    ctx.hidden = false;
+    var r = box.getBoundingClientRect();
+    ctx.style.left = Math.min(Math.max(clientX - r.left + 4, 4), r.width - ctx.offsetWidth - 4) + "px";
+    ctx.style.top = Math.min(Math.max(clientY - r.top + 4, 4), r.height - ctx.offsetHeight - 4) + "px";
+    var first = ctx.querySelector("button");
+    if (first) first.focus({ preventScroll: true });
+  }
+  if (ctx) {
+    ctx.addEventListener("click", function (e) {
+      var b = e.target.closest && e.target.closest("button[data-i]");
+      if (!b) return;
+      var it = ctxItems[+b.getAttribute("data-i")];
+      closeMenu();
+      if (it) it.run();
+    });
+    ctx.addEventListener("keydown", function (e) {
+      var bs = [].slice.call(ctx.querySelectorAll("button")), i = bs.indexOf(document.activeElement);
+      if (e.key === "ArrowDown") { e.preventDefault(); bs[(i + 1) % bs.length].focus(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); bs[(i - 1 + bs.length) % bs.length].focus(); }
+      else if (e.key === "Home") { e.preventDefault(); bs[0].focus(); }
+      else if (e.key === "End") { e.preventDefault(); bs[bs.length - 1].focus(); }
+      else if (e.key === "Tab") { e.preventDefault(); }
+    });
+    ctx.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+  }
+  svg.addEventListener("contextmenu", function (e) {
+    // Shift keeps the browser's own menu: inspect, save image, and the rest.
+    if (e.shiftKey) return;
+    e.preventDefault();
+    openMenu(e.clientX, e.clientY);
+  });
+  document.addEventListener("pointerdown", function (e) {
+    if (menuOpen() && !(e.target.closest && e.target.closest("#ctxmenu"))) closeMenu();
+  }, true);
+  box.addEventListener("wheel", function (e) { if (menuOpen() && !onUi(e)) closeMenu(); }, { passive: true });
+
   new ResizeObserver(function () { commit(); }).observe(box);
   commit();
 })();
@@ -1727,7 +2238,10 @@ function mapPane(model: MapModel): string {
     `<g id="grid" stroke="currentColor" stroke-width="0.5" opacity="0.14"></g>` +
     groups +
     `<g id="mark"></g>` +
+    `<g id="selg"></g>` +
     `</svg><div id="focusbadge" hidden></div>` +
+    `<div class="mapui" id="ctxmenu" role="menu" aria-label="Actions for this place" hidden></div>` +
+    `<div class="mapui" id="ctxnote" role="status" hidden></div>` +
     // Overlays: anything inside .mapui is the map's own GUI, and a wheel or a drag on it never moves the map.
     `<div class="mapui" id="legend" role="region" aria-label="Map layers"><div class="uihead">Map layers<button type="button" class="x" id="legendclose" title="Close (l)" aria-label="Close the layer list">&times;</button></div>` +
     `<div class="legend-groups">${legend}</div></div>` +
@@ -1736,6 +2250,9 @@ function mapPane(model: MapModel): string {
     `<dt>drag</dt><dd>pan, with a glide on release</dd>` +
     `<dt>wheel, double-click</dt><dd>zoom about the pointer</dd>` +
     `<dt>click</dt><dd>what is here: recipe, modules, contents, belt lanes</dd>` +
+    `<dt>right-click</dt><dd>actions for what is here: GPS ping, same kind, same recipe, find an item, follow a lane, copy a command</dd>` +
+    `<dt>shift+drag</dt><dd>select an area; right-click inside it to copy it as a blueprint</dd>` +
+    `<dt>shift+right-click</dt><dd>the browser's own menu</dd>` +
     `<dt><kbd>1</kbd>-<kbd>9</kbd></dt><dd>toggle the numbered layers</dd>` +
     `<dt><kbd>l</kbd></dt><dd>the layer list</dd>` +
     `<dt><kbd>m</kbd></dt><dd>full view</dd>` +
