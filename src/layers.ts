@@ -32,7 +32,8 @@
  * quietly drawing three quarters of a base is worse than one that says so.
  */
 
-import type { GameState, SurfaceMap } from "./state.ts";
+import { flowOf, type GameState, type SurfaceMap } from "./state.ts";
+import { normalise } from "./recipes.ts";
 import { type Area } from "./map.ts";
 import type { RecipeBlock } from "./map.ts";
 import type { Data, Proto } from "./proto.ts";
@@ -449,7 +450,7 @@ function entityLayer(
   for (const [name, points] of Object.entries(ctx.map.points)) {
     const shape = ctx.shapes.get(name);
     if (!shape || !want.has(shape.type)) continue;
-    (THIN_TYPES.has(shape.type) ? thin : groups).push({ name, points, w: shape.w, h: shape.h });
+    (THIN_TYPES.has(shape.type) ? thin : groups).push({ name, points: points.map(([x, y]) => [x, y] as [number, number]), w: shape.w, h: shape.h });
     drawn += points.length;
     if (shape.guessed) guessed += points.length;
     census += Math.max(points.length, ctx.census[name] ?? 0);
@@ -566,10 +567,15 @@ export interface MapFacts {
       /** Slots for a chest, fluid volume for a tank, from the prototype. */
       slots?: number;
       volume?: number;
+      /** An underground belt's declared `max_distance`, how far its entrance reaches. */
+      reach?: number;
     }
   >;
-  /** Every machine the save read: x, y, prototype, recipe ("" for none), modules by name. */
-  machines: Array<[number, number, string, string, Record<string, number> | 0]>;
+  /**
+   * Every machine the save read: x, y, prototype, recipe ("" for none), modules
+   * by name, and the module inventory's own index (0 when the read predates it).
+   */
+  machines: Array<[number, number, string, string, Record<string, number> | 0, number]>;
   /** Every container the save read: x, y, prototype, items by name, fluid. */
   holds: Array<[number, number, string, Record<string, number> | 0, { name: string; amount: number } | 0]>;
   /** The game's own icon for every recipe, module, item and fluid the two lists name. */
@@ -588,6 +594,25 @@ export interface MapFacts {
    * the amount rounded to a whole unit.
    */
   pipes: string;
+  /**
+   * Every placed entity the read kept inside its point budget, packed as base64
+   * of an Int16Array of fives: prototype (an index into `pointNames`), x and y
+   * doubled so a half-tile centre stays whole, direction in sixteenths, and the
+   * end an underground or loader is (0 none, 1 input, 2 output). This is what a
+   * same-kind highlight and a section's blueprint read (C46, C49).
+   */
+  points: string;
+  pointNames: string[];
+  /** Prototypes whose positions the read dropped for its budget, which a section cannot contain. */
+  pointsDropped: string[];
+  /**
+   * Per recipe a machine is set to: its main product, what the base made of that
+   * product per minute over the last hour, and whether a fluid is involved, which
+   * is what `bun run gen` refuses (C50).
+   */
+  recipes: Record<string, { product: string; made: number; fluid: boolean }>;
+  /** The save and tick this read is, for a blueprint's label. */
+  read: { save: string; tick: number };
 }
 
 /**
@@ -1245,7 +1270,11 @@ function factsOf(input: ModelInput, ctx: BuildContext): MapFacts {
   const { map } = input;
   const force = input.state.forces[input.force ?? "player"];
   const energy = force?.energy ?? {};
-  const facts: MapFacts = { cell: map.cellTiles, chunks: {}, ore: {}, enemy: {}, protos: {}, machines: [], holds: [], icons: {}, belts: "", beltItems: [], pipes: "" };
+  const facts: MapFacts = {
+    cell: map.cellTiles, chunks: {}, ore: {}, enemy: {}, protos: {}, machines: [], holds: [], icons: {}, belts: "", beltItems: [], pipes: "",
+    points: "", pointNames: [], pointsDropped: (map.pointsDropped ?? []).map((d) => d.name), recipes: {},
+    read: { save: input.state.save.name, tick: input.state.save.tick },
+  };
   const itemIndex = new Map<string, number>();
   const idx = (item: string): number => {
     if (!item) return -1;
@@ -1270,12 +1299,35 @@ function factsOf(input: ModelInput, ctx: BuildContext): MapFacts {
   }
   facts.pipes = Buffer.from(new Int16Array(piped).buffer).toString("base64");
   const named = new Set<string>(facts.beltItems);
+  const items = force?.production?.item ?? {};
+  const fluids = force?.production?.fluid ?? {};
   for (const m of map.machines ?? []) {
     const recipe = typeof m.recipe === "string" ? m.recipe : "";
-    facts.machines.push([m.x, m.y, m.name, recipe, m.modules ?? 0]);
+    facts.machines.push([m.x, m.y, m.name, recipe, m.modules ?? 0, m.moduleInventory ?? 0]);
     if (recipe) named.add(recipe);
     for (const k of Object.keys(m.modules ?? {})) named.add(k);
+    if (recipe && !facts.recipes[recipe]) {
+      const proto = input.data?.all(recipe).find((p) => p["type"] === "recipe") ?? null;
+      if (proto) {
+        const r = normalise(proto);
+        const product = r.mainProduct ?? r.results[0]?.name ?? "";
+        const isFluid = r.results.find((x) => x.name === product)?.kind === "fluid";
+        const made = flowOf((isFluid ? fluids : items)[product]).producedPerMinute;
+        const fluid = [...r.ingredients, ...r.results].some((x) => x.kind === "fluid");
+        if (product) facts.recipes[recipe] = { product, made: Math.round(made * 10) / 10, fluid };
+      }
+    }
   }
+  const pointIndex = new Map<string, number>();
+  const pts: number[] = [];
+  for (const [name, list] of Object.entries(map.points)) {
+    let n = pointIndex.get(name);
+    if (n === undefined) { n = facts.pointNames.length; pointIndex.set(name, n); facts.pointNames.push(name); }
+    for (const [x, y, dir, ends] of list) {
+      pts.push(n, Math.round(x * 2), Math.round(y * 2), dir ?? 0, ends === "input" ? 1 : ends === "output" ? 2 : 0);
+    }
+  }
+  facts.points = Buffer.from(new Int16Array(pts).buffer).toString("base64");
   for (const c of map.containers ?? []) {
     facts.holds.push([c.x, c.y, c.name, c.items ?? 0, c.fluid ? { name: c.fluid.name, amount: Math.round(c.fluid.amount) } : 0]);
     for (const k of Object.keys(c.items ?? {})) named.add(k);
@@ -1317,6 +1369,8 @@ function factsOf(input: ModelInput, ctx: BuildContext): MapFacts {
     if (slots > 0) row.slots = slots;
     const volume = Number((proto?.["fluid_box"] as Record<string, unknown> | undefined)?.["volume"] ?? 0);
     if (volume > 0) row.volume = volume;
+    const reach = Number(proto?.["max_distance"] ?? 0);
+    if (proto?.["type"] === "underground-belt" && reach > 0) row.reach = reach;
     const e = energy[name];
     if (e) {
       // The collector copies the engine's own resolved values per tick; a watt
