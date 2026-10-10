@@ -343,6 +343,7 @@ Design rationale and the decisions behind it are in `DESIGN.md`; the architectur
 - `CLAUDE.md`: the architecture module by module, the constraints that must hold, and how work lands in this repo.
 - `.claude/skills/Factorio/`: how to use this toolkit and how to read a base, for an agent or a person.
 - [Issues](https://github.com/Soushi888/factorio-advisor/issues): one per open ISA claim, carrying its falsifiers.
+- [Official Factorio wiki](https://wiki.factorio.com/): mechanics, vocabulary and the context behind a question, covering 2.0 and Space Age (CC BY-NC-SA 3.0). It is a reference for understanding, never a source for a figure: every number the toolkit prints comes from the prototype snapshot or a save read.
 
 What lives on disk, and whether it is versioned:
 
