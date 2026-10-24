@@ -21,6 +21,7 @@ import { Icons } from "../src/icons.ts";
 import { bottlenecks, type BottleneckReport } from "../src/bottlenecks.ts";
 import { mapOf, recipeBlocks, type Area } from "../src/map.ts";
 import { busAreas, judge as judgeBus, readSurvey } from "../src/bus.ts";
+import { boardResponse, livePath, loadLive, saveEvent, BOARD } from "./live.ts";
 
 /**
  * The loop: Soushi saves, a report appears.
@@ -213,6 +214,8 @@ export async function reportOn(
   writeFileSync(jsonPath, JSON.stringify(archived, null, 2) + "\n");
   writeFileSync(mdPath, markdown);
   planned.commit();
+  // The tail a watching session holds wakes on this line (bridge/live.ts).
+  await saveEvent(REPORTS_DIR, { save, tick, report: `${base}.md`, quiet: report.quiet, first: previous === null });
 
   return {
     save,
@@ -530,6 +533,7 @@ function serveRefresh(threshold: number | undefined, say: (s: string) => void): 
   };
   const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: cors });
   let busy = false;
+  const lastSent = new Map<string, { text: string; at: string; t: number }>();
   try {
     Bun.serve({
       hostname: "127.0.0.1",
@@ -539,6 +543,8 @@ function serveRefresh(threshold: number | undefined, say: (s: string) => void): 
       async fetch(req) {
         const url = new URL(req.url);
         if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+        const board = await boardResponse(REPORTS_DIR, req, REFRESH_PORT, lastSent);
+        if (board) return board;
         const save = url.searchParams.get("save") ?? newestSave()?.name ?? null;
         if (url.pathname === "/status") {
           return json({ busy, save, tick: save ? lastReadTick(save) : null });
@@ -560,6 +566,13 @@ function serveRefresh(threshold: number | undefined, say: (s: string) => void): 
       },
     });
     say(`  button   the page's "Read latest save" calls http://127.0.0.1:${String(REFRESH_PORT)}`);
+    void loadLive().then((live) =>
+      say(
+        live
+          ? `  board    http://127.0.0.1:${String(REFRESH_PORT)}/${BOARD}  (live: SoushAI drawer, a SAVE event per report)`
+          : `  board    http://127.0.0.1:${String(REFRESH_PORT)}/${BOARD}  (served plain: no Niceboard Live.ts at ${livePath()})`,
+      ),
+    );
   } catch (err) {
     say(`  button   could not listen on ${String(REFRESH_PORT)}: ${err instanceof Error ? err.message : String(err)}`);
   }

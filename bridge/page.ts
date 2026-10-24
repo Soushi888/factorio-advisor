@@ -246,6 +246,7 @@ details.limits li{font-size:.8rem;margin:.2rem 0;color:var(--dim)}
 .step .bars{margin:.4rem 0 0 .75rem;display:grid;gap:.3rem}
 /* Progress the way the game draws research: a dark trough, an orange fill. */
 .bar{display:grid;grid-template-columns:12rem 1fr 10rem;gap:.6rem;align-items:center;font-size:.76rem;color:var(--dim)}
+header .bar.livebar{display:inline-flex;align-items:center;gap:.4rem;font-size:inherit;color:inherit}header .bar.livebar:empty{display:none}header .livebar #liveSend{display:inline-flex;align-items:center;white-space:nowrap}
 .bar>span:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bar .track{position:relative;display:block;height:.75rem;border-radius:.15rem;overflow:hidden;background:var(--deeper);box-shadow:var(--sunk)}
 .bar .fill{position:absolute;top:1px;bottom:1px;left:0;background:color-mix(in srgb,var(--accent) 55%,#000)}
@@ -2916,16 +2917,23 @@ export function renderPage(input: PageInput): string {
     `</nav>`;
 
   // The charset must be declared: without it the browser guesses, and a file:// page guessed latin-1, which turned the middle dot in "production · slowest" into two characters.
+  // The head and body tags are written out because Niceboard's live layer anchors on them when the
+  // loop serves this page (bridge/live.ts), and the board key is what tells it this page takes a drawer.
   return `<!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(r.save)} report</title>
 <style>${fontFaces()}${CSS}</style>
+<script>window.BRAINSTORM_KEY=${JSON.stringify(`factorio-advisor:${state.save.name}`).replace(/</g, "\\u003c")}</script>
+</head>
+<body>
 <div class="wrap">
 <header>
   <h1>${iconOnly("rocket-silo")}${esc(r.save)}</h1>
   <span class="meta"><span class="chip">tick <b>${r.tick}</b>${r.previousTick !== null ? ` (was ${r.previousTick})` : ""}</span><span class="chip"><b>${r.hoursPlayed.toFixed(1)} h</b> played</span><span class="chip">read <b>${esc(readAtLocal(state.save.readAt))}</b></span><span class="chip">Factorio ${esc(state.snapshot.gameVersion)} build ${esc(state.snapshot.build)}</span>${milestone?.chip ?? ""}</span>
-  <span class="refresh" data-save="${esc(state.save.name)}" data-tick="${String(r.tick)}"><span class="msg" aria-live="polite"></span><button type="button">Read latest save</button></span>
+  <span class="refresh" data-save="${esc(state.save.name)}" data-tick="${String(r.tick)}"><span class="msg" aria-live="polite"></span><button type="button">Read latest save</button></span><span class="bar livebar"></span>
   ${input.plan ? `<a class="planlink" href="#plan">the plan, step by step &darr;</a>` : ""}
 </header>
 ${overviewOf(views, src)}
@@ -2942,5 +2950,7 @@ ${model ? `<script>${SCRIPT}</script>` : ""}
 ${milestone?.overlay ?? ""}
 <script>${REFRESH_SCRIPT}</script>
 <script>${TABS_SCRIPT}</script>
+</body>
+</html>
 `;
 }

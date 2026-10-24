@@ -46,13 +46,15 @@ It does not see: which recipe a given machine is set to, what modules are in it,
 | "dashboard", "report", "how is my base", no argument mid-session | `Workflows/Dashboard.md` |
 | a specific question: a ratio, a tech, a blueprint, a bottleneck, "why is X slow" | `Workflows/Analysis.md` |
 | "what should I build next", "plan", "where do I expand" | `Workflows/Plan.md` |
+| "watch the board", "live session", "I am playing", "game session", follow the saves as he plays | `Workflows/LiveSession.md` |
 
 ## Quick reference
 
 - Refresh from a save: `bun run report --save="game 4"` from the **main tree** (worktrees share `data/state/` by symlink).
 - Redraw the page without re-reading the save: `bun run report --page`. This is the loop for working on the dashboard rather than on the base.
 - What is holding the factory back: `bun run bottleneck`.
-- The standing loop: `bun run watch`, which turns each save into a report and refreshes `reports/index.html`.
+- The standing loop: `bun run watch`, which turns each save into a report and serves the board live at `http://127.0.0.1:8737/index.html`.
+- Following the game as he plays: `bun run live`, the event tail a Monitor wakes on (`Workflows/LiveSession.md`).
 - The synthesis alone: `bun run advise --spm=45`.
 - Every command and what it refuses to answer: `Commands.md`.
 - How to read a base, in order: `Reading.md`.

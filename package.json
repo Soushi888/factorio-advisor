@@ -21,6 +21,7 @@
     "bus": "bun src/cli.ts bus",
     "watch": "bun bridge/cli.ts",
     "report": "bun bridge/cli.ts --now",
+    "live": "bun bridge/tail.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
