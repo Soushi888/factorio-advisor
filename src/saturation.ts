@@ -96,6 +96,8 @@ export interface Occupancy {
   /** Containers and tanks holding it, and how many have no room left. */
   holders: number;
   holdersFull: number;
+  /** The same holders by prototype class (container, storage-tank, ...), so a phrase can say tanks. */
+  holderKinds?: Record<string, { holders: number; full: number }>;
   /** Units held in containers, and the part of that in a full one. */
   stored: number;
   storedInFull: number;
@@ -137,6 +139,25 @@ export interface Occupancy {
 /** Every prototype of this name that declares how much it holds. */
 function holderProto(data: Data, name: string): Proto | null {
   return data.all(name).find((p) => typeof p["inventory_size"] === "number") ?? null;
+}
+
+/**
+ * The prototype class of a holder, from the prototype that declares what it
+ * holds: an inventory or a fluid box. The class is the engine's own word for
+ * the kind, which is what a phrase names it by.
+ */
+function holderKind(data: Data, name: string): string {
+  const p = data.all(name).find(
+    (q) => typeof q["inventory_size"] === "number" || (q["fluid_box"] !== undefined && q["fluid_box"] !== null),
+  );
+  return typeof p?.type === "string" ? p.type : "container";
+}
+
+/** The class as a plural a player says: a storage-tank is a tank, any container class a chest. */
+function kindWord(kind: string): string {
+  if (kind === "storage-tank") return "tanks";
+  if (kind.endsWith("container")) return "chests";
+  return `${kind.replace(/-/g, " ")}s`;
 }
 
 function tankVolume(data: Data, name: string): number {
@@ -275,6 +296,10 @@ export function occupancy(state: GameState, data: Data): Map<string, Occupancy> 
       for (const part of parts) {
         const r = row(part.name);
         r.holders += 1;
+        const kind = holderKind(data, c.name);
+        const k = ((r.holderKinds ??= {})[kind] ??= { holders: 0, full: 0 });
+        k.holders += 1;
+        if (full) k.full += 1;
         r.stored += part.held;
         r.room += part.room;
         if (full) {
@@ -340,7 +365,21 @@ export function occupancyPhrase(o: Occupancy): string {
   const pct = `${(o.fullShare * 100).toFixed(0)}%`;
   const parts: string[] = [];
   if (o.lanes > 0) parts.push(`${o.lanesFull}/${o.lanes} lanes full`);
-  if (o.holders > 0) parts.push(`${o.holdersFull}/${o.holders} chests full`);
+  if (o.holders > 0) {
+    // Several classes share one word (container and logistic-container are both
+    // chests), so the counts are summed by the word a player reads.
+    const byWord = new Map<string, { holders: number; full: number }>();
+    for (const [kind, k] of Object.entries(o.holderKinds ?? {})) {
+      const w = byWord.get(kindWord(kind)) ?? { holders: 0, full: 0 };
+      w.holders += k.holders;
+      w.full += k.full;
+      byWord.set(kindWord(kind), w);
+    }
+    if (byWord.size === 0) parts.push(`${o.holdersFull}/${o.holders} chests full`);
+    for (const [word, k] of [...byWord].sort((a, b) => b[1].holders - a[1].holders)) {
+      parts.push(`${k.full}/${k.holders} ${word} full`);
+    }
+  }
   return `${pct} of its sinks are full (${parts.join(", ")})`;
 }
 
