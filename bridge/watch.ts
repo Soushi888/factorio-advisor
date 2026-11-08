@@ -7,6 +7,7 @@ import { PROJECT_ROOT, findUserdata } from "../src/paths.ts";
 // (pm#108).
 import { newestSave, readState, readStateFile, slugify as slug, type GameState } from "../src/state.ts";
 import { buildReport, renderMarkdown, DEFAULT_RATE_THRESHOLD_PER_MIN } from "./report.ts";
+import { readSummaries, sessionTrend } from "./session.ts";
 import { advise, type Advisory } from "../src/advise.ts";
 import type { SectionView } from "../src/sections.ts";
 import { load } from "../src/proto.ts";
@@ -77,6 +78,20 @@ function historyFor(save: string): string[] {
   return readdirSync(REPORTS_DIR)
     .filter((f) => f.startsWith(prefix) && f.endsWith(".md"))
     .sort((a, b) => Number(b.slice(prefix.length, -3)) - Number(a.slice(prefix.length, -3)));
+}
+
+/**
+ * The session trend for a read (C4), across every slot of its map.
+ *
+ * The summaries are cached beside the reports, so only reads archived since the
+ * last report are parsed. A failure here costs the section, never the report.
+ */
+function sessionFor(state: GameState, threshold: number): ReturnType<typeof sessionTrend> {
+  try {
+    return sessionTrend(state, readSummaries(REPORTS_DIR, join(REPORTS_DIR, ".session-index.json")), threshold);
+  } catch {
+    return null;
+  }
 }
 
 /** The state a previous report was written from, if one exists. */
@@ -162,6 +177,7 @@ export async function reportOn(
     opts.threshold ?? DEFAULT_RATE_THRESHOLD_PER_MIN,
     derived?.advisory ?? null,
   );
+  report.session = sessionFor(state, report.threshold);
   const stateFile = `data/state/${slug(save)}.json`;
   const jsonPath = join(REPORTS_DIR, `${base}.json`);
   const pagePath = join(REPORTS_DIR, "index.html");
@@ -249,6 +265,7 @@ export function rerenderPage(save: string, opts: { threshold?: number } = {}): s
     opts.threshold ?? DEFAULT_RATE_THRESHOLD_PER_MIN,
     derived?.advisory ?? null,
   );
+  report.session = sessionFor(state, report.threshold);
   const pagePath = join(REPORTS_DIR, "index.html");
   mkdirSync(REPORTS_DIR, { recursive: true });
   writeFileSync(

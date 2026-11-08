@@ -1,5 +1,6 @@
 import { flowOf, isLegacyFlows, type GameState } from "../src/state.ts";
 import type { Advisory } from "../src/advise.ts";
+import { sessionLines, type SessionTrend } from "./session.ts";
 
 /**
  * What changed since the last time we looked.
@@ -64,6 +65,11 @@ export interface ReportData {
    * leaving running if it carries both.
    */
   advisory: Advisory | null;
+  /**
+   * The trend across every read of this session, all slots of one map (C4).
+   * Attached by the loop after the build, since it needs the archive on disk.
+   */
+  session?: SessionTrend | null;
 }
 
 /**
@@ -253,6 +259,7 @@ export function renderMarkdown(r: ReportData, stateFile: string): string {
     );
     lines.push("");
     lines.push(...adviceLines(r));
+    lines.push(...sessionLines(r.session ?? null));
     lines.push(`Source: \`${stateFile}\`.`);
     return lines.join("\n") + "\n";
   }
@@ -321,6 +328,7 @@ export function renderMarkdown(r: ReportData, stateFile: string): string {
     lines.push("");
   }
 
+  lines.push(...sessionLines(r.session ?? null));
   lines.push(`Source: \`${stateFile}\`. Rate threshold ${r.threshold}/min.`);
   return lines.join("\n") + "\n";
 }
