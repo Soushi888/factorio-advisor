@@ -23,8 +23,14 @@ import { mapOf } from "../src/map.ts";
  */
 const DEFENCE_CLASSES = ["wall", "gate", "ammo-turret", "electric-turret", "fluid-turret", "artillery-turret"];
 
-/** Two removed entities this many tiles apart or closer are one place. A choice, printed with the result. */
-export const LOSS_GAP_TILES = 2;
+/**
+ * Two removed entities this many tiles apart or closer, of any defence class,
+ * are one place. A choice, printed with the result. A player reads a wall and
+ * the turrets standing behind it as one breach; on game 4 a wall run and its
+ * turrets sat 2 to 6 tiles apart, so 2 split one breach into four boxes and 8
+ * keeps it whole while two separate gaps a chunk apart stay two.
+ */
+export const LOSS_GAP_TILES = 8;
 
 export interface LossCluster {
   x0: number;
@@ -192,7 +198,7 @@ export function defenceLines(d: DefenceReading | null | undefined): string[] {
   const lines = [
     `## Defence removed since ${l.previousSave} at tick ${l.previousTick}`,
     "",
-    `${l.removed} wall, gate or turret positions present then are empty now, and ${l.placed} new ones appeared. Removed says nothing about why: an attack and a pickup leave the same hole.`,
+    `${l.removed} wall, gate or turret positions present then are empty now, and ${l.placed} new ones appeared. Removed says nothing about why: an attack and a pickup leave the same hole. Positions within ${l.gapTiles} tiles of each other are one place.`,
     "",
   ];
   for (const c of l.clusters) {
