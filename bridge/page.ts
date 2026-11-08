@@ -2885,6 +2885,69 @@ export function renderPage(input: PageInput): string {
     );
   }
 
+  // The session trend (C4, C5), folded across every autosave slot of this map.
+  // Its numbers are the report's own, so the page and the markdown agree.
+  const t = r.session ?? null;
+  if (t) {
+    tabs.push({ id: "sec-session", label: "Session" });
+    const started = new Date(t.startReadAt);
+    const hhmm = `${String(started.getHours()).padStart(2, "0")}:${String(started.getMinutes()).padStart(2, "0")}`;
+    const box = (p: { x: number; y: number; w: number; h: number }): string =>
+      `x ${p.x} to ${p.x + p.w}, y ${p.y} to ${p.y + p.h}`;
+    const ore = (n: number): string =>
+      n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)}k` : String(Math.round(n));
+    const rates = t.rates.length
+      ? `<div class="tframe"><table><tr><th>item</th><th class="n">session/min</th><th class="n">now/min</th><th class="n">fell</th></tr>` +
+        t.rates
+          .map((p) => {
+            const d = p.now - p.start;
+            return (
+              `<tr data-source="${esc(src)}" data-field="forces.player.production.item.${esc(p.name)}.producedPerMinute">` +
+              `<td>${withIcon(p.name)}</td><td class="n ${d > 0 ? "up" : "down"}">${esc(signed(d, 1))}</td>` +
+              `<td class="n">${p.now.toFixed(1)}</td><td class="n">${p.fell} of ${p.fell + p.rose}</td></tr>`
+            );
+          })
+          .join("") +
+        `</table></div>`
+      : "";
+    const raw = t.raw
+      .map(
+        (f) =>
+          `<h3>${withIcon(f.resource)} fell ${f.start.toFixed(1)} to ${f.now.toFixed(1)}/min</h3><ul>` +
+          f.mined
+            .map((p) => `<li>${linkCoords(`mined at ${box(p)}`, "ore")}: ${ore(p.amount)} left under ${p.extractors} drills</li>`)
+            .join("") +
+          (f.unmined
+            ? `<li>${linkCoords(`largest unmined field at ${box(f.unmined)}`, "ore")}: ${ore(f.unmined.amount)}</li>`
+            : `<li>every field of it on the map already has a drill</li>`) +
+          `</ul>`,
+      )
+      .join("");
+    const machines = t.machines.length
+      ? `<div class="tframe"><table><tr><th>prototype</th><th class="n">since start</th><th class="n">now</th></tr>` +
+        t.machines
+          .map((m) => {
+            const d = m.now - m.start;
+            return (
+              `<tr data-source="${esc(src)}" data-field="forces.player.machines.${esc(m.name)}">` +
+              `<td>${withIcon(m.name)}${m.newThisRead ? " *" : ""}</td><td class="n ${d > 0 ? "up" : "down"}">${esc(signed(d, 0))}</td>` +
+              `<td class="n">${m.now}</td></tr>`
+            );
+          })
+          .join("") +
+        `</table></div><p class="quiet">* moved since the read before this one.</p>`
+      : "";
+    cards.push(
+      `<section id="sec-session"><h2>This session<span class="count">${t.reads} reads since ${esc(hhmm)}</span></h2>` +
+        `<p class="quiet">Since tick ${t.startTick} (${esc(t.startSave)}), across ${esc(t.slots.join(", "))}. ` +
+        `Rates that moved ${t.threshold}/min or more; a session ends where the wall clock outran game time by more than ${t.breakMinutes} min.</p>` +
+        rates +
+        raw +
+        machines +
+        `</section>`,
+    );
+  }
+
   if (r.rateBasisChanged) {
     cards.push(
       `<section><h2>Production</h2><p class="quiet">No comparison this time: the previous report measured consumption and this one measures production, so a delta between them would be an artefact. The next report compares like with like.</p></section>`,
