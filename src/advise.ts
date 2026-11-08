@@ -555,6 +555,51 @@ export function advise(
     .filter((r) => !isBackedUp(r.sinks))
     .sort((a, b) => a.slack - b.slack);
 
+  // ---- the co-product rule ----------------------------------------------
+  //
+  // A machine crafting several fluid products crafts them all at once, so it
+  // stops when the fullest one has nowhere to go. On game 4 at tick 21980421
+  // heavy oil ran 222.0 made against 586.9 used while 108 of 108 petroleum gas
+  // tanks were full, and the advice pointed at crude oil, 94% banked. The
+  // recipes are the ones the base runs (machines set to them on the map), and a
+  // recipe qualifies by declaring two or more fluid results; no name is typed.
+  const coproduct: CoproductBlock[] = [];
+  if (surfaceMap) {
+    const running = new Map<string, number>();
+    for (const m of machinesOf(surfaceMap)) {
+      if (typeof m.recipe === "string") running.set(m.recipe, (running.get(m.recipe) ?? 0) + 1);
+    }
+    for (const [name, machines] of running) {
+      const recipe = index.get(name);
+      if (!recipe) continue;
+      const fluids = recipe.results.filter((r) => r.kind === "fluid").map((r) => r.name);
+      if (fluids.length < 2) continue;
+      for (const shortName of fluids) {
+        const short = rateOf(shortName);
+        if (short.consumedPerMinute - short.producedPerMinute <= SHORT_SHARE * short.consumedPerMinute) continue;
+        const blockers = fluids
+          .filter((f) => f !== shortName)
+          .map((f) => ({ name: f, sinks: occupancyOf(sinks, f), rates: rateOf(f) }))
+          .filter((b) => isBackedUp(b.sinks));
+        if (blockers.length === 0) continue;
+        coproduct.push({
+          recipe: name,
+          machines,
+          short: shortName,
+          made: short.producedPerMinute,
+          used: short.consumedPerMinute,
+          blockers: blockers.map((b) => ({
+            name: b.name,
+            sinks: b.sinks,
+            made: b.rates.producedPerMinute,
+            used: b.rates.consumedPerMinute,
+          })),
+          inputs: recipe.ingredients.map((i) => i.name),
+        });
+      }
+    }
+  }
+
   return {
     save: state.save.name,
     tick: state.save.tick,
@@ -589,8 +634,29 @@ export function advise(
       shortResources,
       stalled,
       pavingMeasured: paving !== null,
+      coproduct,
     }),
   };
+}
+
+/**
+ * How far use must exceed production, as a share of use, before a fluid counts
+ * as short for the co-product rule. A choice, not a game fact: a line at
+ * equilibrium reads used a hair above made (light oil 399.7 against 399.7 on
+ * game 4), and calling that short would blame its sibling for nothing.
+ */
+const SHORT_SHARE = 0.05;
+
+/** A fluid short because a sibling output of the same recipe has nowhere to go. */
+export interface CoproductBlock {
+  recipe: string;
+  machines: number;
+  short: string;
+  made: number;
+  used: number;
+  blockers: Array<{ name: string; sinks: Occupancy; made: number; used: number }>;
+  /** The recipe's ingredients: more of any of them cannot help while a blocker is full. */
+  inputs: string[];
 }
 
 interface AdviceInput {
@@ -619,6 +685,7 @@ interface AdviceInput {
   stalled: StalledStage[];
   /** False when no previous read was available, so paving could not be measured. */
   pavingMeasured: boolean;
+  coproduct: CoproductBlock[];
 }
 
 /**
@@ -847,8 +914,28 @@ function buildAdvice(a: AdviceInput): Advice[] {
     });
   }
 
+  // Inputs of a chain stopped by a full sibling: building for them is wasted
+  // until the sibling drains, so no target line may recommend them.
+  const blockedInputs = new Set(a.coproduct.flatMap((c) => c.inputs));
+  for (const c of a.coproduct) {
+    const b = c.blockers.map((x) => x.name).join(" and ");
+    out.push({
+      section: "production",
+      text: `${c.short} cannot recover until ${b} has somewhere to go.`,
+      because:
+        `${c.short} runs ${n(c.made)}/min made against ${n(c.used)}/min used. The ${c.machines} machines on ` +
+        `${c.recipe} make it together with ${b}, and ` +
+        c.blockers.map((x) => `${x.name} is backed up: ${occupancyPhrase(x.sinks)} (${n(x.made)} made, ${n(x.used)} used)`).join("; ") +
+        `. A craft is atomic, so the machine stops when its fullest output does, and more ${c.inputs.join(" or ")} ` +
+        `cannot help until ${b} is drawn down.`,
+    });
+  }
+
   if (a.target) {
-    const top = a.target.requirements.filter((r) => r.deficitPerMinute > 0).slice(0, 5);
+    const top = a.target.requirements
+      .filter((r) => r.deficitPerMinute > 0)
+      .filter((r) => !blockedInputs.has(r.item))
+      .slice(0, 5);
     if (top.length > 0) {
       const worst = top[0]!;
       out.push({
