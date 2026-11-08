@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flowOf, isLegacyFlows, type GameState } from "../src/state.ts";
+import { mapOf, patches, type Patch } from "../src/map.ts";
 
 /**
  * The session trend (C4): what moved across every read of tonight's play, not
@@ -58,6 +59,16 @@ export interface MachineTrend {
   newThisRead: boolean;
 }
 
+/** Where a raw resource that fell across the session is mined, and where it is not (C5). */
+export interface RawFinding {
+  resource: string;
+  start: number;
+  now: number;
+  mined: Patch[];
+  /** The largest field of this resource nothing stands on, or null when every field is mined. */
+  unmined: Patch | null;
+}
+
 export interface SessionTrend {
   startTick: number;
   startSave: string;
@@ -70,6 +81,39 @@ export interface SessionTrend {
   machines: MachineTrend[];
   power: { start: number; now: number } | null;
   evolution: { start: number; now: number } | null;
+  raw: RawFinding[];
+}
+
+/**
+ * The same extractor list `advise.ts` and `sections.ts` hand to `patches()`, so
+ * the three readings agree on which fields are mined.
+ */
+const EXTRACTORS = ["electric-mining-drill", "burner-mining-drill", "big-mining-drill", "pumpjack"];
+
+/**
+ * For every resource whose made rate fell across the session, the fields it is
+ * mined from and the largest one nothing stands on. A resource is raw here when
+ * the map holds a field of it, which is the save's own answer and needs no list.
+ * The finding names places and amounts; it never says why the rate fell.
+ */
+function rawFindings(now: GameState, rates: RateTrend[]): RawFinding[] {
+  const map = mapOf(now);
+  if (!map) return [];
+  const fields = patches(map, EXTRACTORS);
+  const out: RawFinding[] = [];
+  for (const r of rates) {
+    if (r.now >= r.start) continue;
+    const mine = fields.filter((f) => f.resource === r.name);
+    if (mine.length === 0) continue;
+    out.push({
+      resource: r.name,
+      start: r.start,
+      now: r.now,
+      mined: mine.filter((f) => f.extractors > 0),
+      unmined: mine.find((f) => f.extractors === 0) ?? null,
+    });
+  }
+  return out;
 }
 
 // The engine runs 60 ticks a second at normal speed (the same constant belts.ts
@@ -232,11 +276,22 @@ export function sessionTrend(
         : null,
     evolution:
       first.evolution !== null && cur.evolution !== null ? { start: first.evolution, now: cur.evolution } : null,
+    raw: rawFindings(now, rates),
   };
 }
 
 function signed(v: number, places = 1): string {
   return `${v >= 0 ? "+" : ""}${v.toFixed(places)}`;
+}
+
+function area(p: Patch): string {
+  return `${p.x}..${p.x + p.w},${p.y}..${p.y + p.h} (${p.w} by ${p.h} tiles)`;
+}
+
+function amount(n: number): string {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}k`;
+  return String(Math.round(n));
 }
 
 function localTime(ms: number): string {
@@ -262,6 +317,20 @@ export function sessionLines(t: SessionTrend | null): string[] {
       lines.push(
         `- ${r.name}: ${signed(r.now - r.start)}/min (${r.start.toFixed(1)} to ${r.now.toFixed(1)}), fell in ${r.fell} of ${steps} steps`,
       );
+    }
+    lines.push("");
+  }
+  if (t.raw.length > 0) {
+    lines.push(`Raw resources that fell, and where they are mined:`);
+    lines.push("");
+    for (const f of t.raw) {
+      lines.push(`- ${f.resource}, ${f.start.toFixed(1)} to ${f.now.toFixed(1)}/min:`);
+      if (f.mined.length === 0) lines.push(`  - no field of it has a drill standing on it`);
+      for (const p of f.mined) {
+        lines.push(`  - mined at ${area(p)}, ${amount(p.amount)} left under ${p.extractors} drills`);
+      }
+      if (f.unmined) lines.push(`  - largest unmined field ${area(f.unmined)}, ${amount(f.unmined.amount)}`);
+      else lines.push(`  - every field of it on the map already has a drill`);
     }
     lines.push("");
   }
