@@ -1099,7 +1099,13 @@ script.on_nth_tick(1, function()
         else p[#p + 1] = { pos.x, pos.y, dir } end
 
         if pipe_types[kind] then
+          -- 2.0 reads LuaEntity::fluidbox; 2.1.7 removed it in favour of
+          -- get_fluid(index), so the old field is tried first and the new
+          -- method answers when it reads nothing.
           local okf, f = pcall(function() return e.fluidbox[1] end)
+          if not (okf and f) then
+            okf, f = pcall(function() return e.get_fluid(1) end)
+          end
           if okf and f and f.name and (f.amount or 0) > 0 then
             pipes[#pipes + 1] = { pos.x, pos.y, f.name, math.floor(f.amount * 10 + 0.5) / 10 }
           end
@@ -1165,6 +1171,20 @@ script.on_nth_tick(1, function()
               read_ok = read_ok or n >= 0
               for i = 1, n do
                 local okb, f = pcall(function() return box[i] end)
+                if okb and f and f.name and (f.amount or 0) > 0 then
+                  rec.fluid = { name = f.name, amount = f.amount }
+                  break
+                end
+              end
+            end
+          else
+            -- 2.1 has no fluidbox: fluids_count and get_fluid(index) replace
+            -- it, indexed 1..fluids_count, nil for an empty storage.
+            local okn, n = pcall(function() return e.fluids_count end)
+            if okn and type(n) == "number" then
+              read_ok = true
+              for i = 1, n do
+                local okb, f = pcall(function() return e.get_fluid(i) end)
                 if okb and f and f.name and (f.amount or 0) > 0 then
                   rec.fluid = { name = f.name, amount = f.amount }
                   break
