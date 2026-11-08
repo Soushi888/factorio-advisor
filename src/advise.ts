@@ -4,6 +4,7 @@ import { mapOf, patches, powerBlocks, type Patch, type PowerBlock } from "./map.
 import { effectiveGeneration, powerReport } from "./power.ts";
 import { isBackedUp, occupancy, occupancyOf, occupancyPhrase, type Occupancy } from "./saturation.ts";
 import { solve } from "./solve.ts";
+import { costOf } from "./tech.ts";
 import { flowOf, isLegacyFlows, machinesOf, pavingPerMinute, type GameState, type Rates } from "./state.ts";
 
 /**
@@ -555,6 +556,55 @@ export function advise(
     .filter((r) => !isBackedUp(r.sinks))
     .sort((a, b) => a.slack - b.slack);
 
+  // ---- what a missing pack's chain has and has not got (U9) --------------
+  //
+  // "The census says the chain is stopped rather than missing" was true of the
+  // steps that have machines and false of the last two: no machine anywhere is
+  // set to utility-science-pack or low-density-structure. A step is stopped or
+  // running when some machine on the map is set to a recipe that makes it, and
+  // missing when none is; the missing ones are sized by the ratio solver at the
+  // same per-pack rate the target lines use.
+  const running = new Map<string, number>();
+  if (surfaceMap) {
+    for (const m of machinesOf(surfaceMap)) {
+      if (typeof m.recipe === "string") running.set(m.recipe, (running.get(m.recipe) ?? 0) + 1);
+    }
+  }
+  const missingChains: MissingChain[] = [];
+  if (surfaceMap) {
+    for (const m of missingPacks) {
+      const machinesFor = (item: string): number => {
+        let n = 0;
+        for (const [recipe, count] of running) {
+          if (index.get(recipe)?.results.some((r) => r.name === item)) n += count;
+        }
+        return n;
+      };
+      const sol = solve(data, index, m.pack, spm / 60);
+      const steps: MissingChain["steps"] = [];
+      for (const item of chainItems(index, [m.pack])) {
+        if (index.isRaw(item)) continue;
+        const machines = machinesFor(item);
+        const made = rateOf(item).producedPerMinute;
+        const sized = sol.steps.find((st) => st.product === item);
+        steps.push({
+          item,
+          state: machines === 0 ? "missing" : made > 0 ? "running" : "stopped",
+          machines,
+          size: machines === 0 && sized
+            ? { machines: Math.ceil(sized.machineCount), machine: sized.machine?.name ?? null, recipe: sized.recipe.name }
+            : null,
+        });
+      }
+      missingChains.push({ pack: m.pack, perMinute: spm, steps });
+    }
+  }
+  // Research that moves with no lab at all: the only progress while a pack is missing.
+  const triggers = researchableTechs
+    .map((t) => ({ name: t.name, cost: costOf(t) }))
+    .filter((t) => t.cost.trigger !== null && t.cost.packs.size === 0)
+    .map((t) => ({ name: t.name, trigger: t.cost.trigger! }));
+
   // ---- the co-product rule ----------------------------------------------
   //
   // A machine crafting several fluid products crafts them all at once, so it
@@ -565,10 +615,6 @@ export function advise(
   // recipe qualifies by declaring two or more fluid results; no name is typed.
   const coproduct: CoproductBlock[] = [];
   if (surfaceMap) {
-    const running = new Map<string, number>();
-    for (const m of machinesOf(surfaceMap)) {
-      if (typeof m.recipe === "string") running.set(m.recipe, (running.get(m.recipe) ?? 0) + 1);
-    }
     for (const [name, machines] of running) {
       const recipe = index.get(name);
       if (!recipe) continue;
@@ -635,6 +681,8 @@ export function advise(
       stalled,
       pavingMeasured: paving !== null,
       coproduct,
+      missingChains,
+      triggers,
     }),
   };
 }
@@ -686,6 +734,22 @@ interface AdviceInput {
   /** False when no previous read was available, so paving could not be measured. */
   pavingMeasured: boolean;
   coproduct: CoproductBlock[];
+  missingChains: MissingChain[];
+  triggers: Array<{ name: string; trigger: string }>;
+}
+
+/** A pack research needs and the base never made, step by step. */
+export interface MissingChain {
+  pack: string;
+  perMinute: number;
+  steps: Array<{
+    item: string;
+    /** missing: no machine is set to a recipe that makes it. */
+    state: "missing" | "stopped" | "running";
+    machines: number;
+    /** For a missing step, what the ratio solver places at `perMinute` of the pack. */
+    size: { machines: number; machine: string | null; recipe: string } | null;
+  }>;
 }
 
 /**
@@ -784,6 +848,35 @@ function buildAdvice(a: AdviceInput): Advice[] {
     // the first is what made this section read as stale to somebody looking at
     // 47 battery machines standing still.
     const chain = a.stalled.filter((x) => x.wanted).slice(0, 3);
+    const mc = a.missingChains.find((c) => c.pack === m.pack);
+    const absent = mc ? mc.steps.filter((s) => s.state === "missing") : [];
+    if (mc && absent.length > 0) {
+      const stopped = mc.steps.filter((s) => s.state === "stopped");
+      out.push({
+        section: "science",
+        text: `You have never made a ${m.pack}, and ${absent.map((s) => s.item).join(" and ")} ${absent.length === 1 ? "has" : "have"} no machine at all.`,
+        because:
+          `${m.gatedTechs} of the technologies you could start right now need it. Missing, with what ` +
+          `${n(mc.perMinute, 0)}/min of ${m.pack} needs: ` +
+          absent
+            .map((s) =>
+              s.size
+                ? `${s.item}, ${String(s.size.machines)} ${s.size.machine ?? "machines"} on ${s.size.recipe}`
+                : `${s.item}, which the solver could not size`,
+            )
+            .join("; ") +
+          "." +
+          (stopped.length > 0
+            ? ` Built but stopped: ${stopped.map((s) => `${s.item} (${String(s.machines)} machines)`).join(", ")}.`
+            : "") +
+          (a.triggers.length > 0
+            ? ` Until it exists, the research that can move needs no lab: ` +
+              a.triggers.map((t) => `${t.name} (${t.trigger})`).join(", ") +
+              "."
+            : ""),
+      });
+      continue;
+    }
     out.push({
       section: "science",
       text: `You have never made a ${m.pack}.`,
