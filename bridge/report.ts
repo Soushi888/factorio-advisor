@@ -1,6 +1,7 @@
 import { flowOf, isLegacyFlows, type GameState } from "../src/state.ts";
 import type { Advisory } from "../src/advise.ts";
 import { sessionLines, type SessionTrend } from "./session.ts";
+import { defenceLines, type DefenceReading } from "./defence.ts";
 
 /**
  * What changed since the last time we looked.
@@ -70,6 +71,8 @@ export interface ReportData {
    * Attached by the loop after the build, since it needs the archive on disk.
    */
   session?: SessionTrend | null;
+  /** Walls and turrets removed since the earlier full read of this map (C6). */
+  defence?: DefenceReading | null;
 }
 
 /**
@@ -259,6 +262,7 @@ export function renderMarkdown(r: ReportData, stateFile: string): string {
     );
     lines.push("");
     lines.push(...adviceLines(r));
+    lines.push(...defenceLines(r.defence));
     lines.push(...sessionLines(r.session ?? null));
     lines.push(`Source: \`${stateFile}\`.`);
     return lines.join("\n") + "\n";
@@ -328,6 +332,7 @@ export function renderMarkdown(r: ReportData, stateFile: string): string {
     lines.push("");
   }
 
+  lines.push(...defenceLines(r.defence));
   lines.push(...sessionLines(r.session ?? null));
   lines.push(`Source: \`${stateFile}\`. Rate threshold ${r.threshold}/min.`);
   return lines.join("\n") + "\n";

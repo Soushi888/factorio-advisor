@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { findCore } from "../src/paths.ts";
 import { milestoneOverlay, type Earned } from "./milestone.ts";
+import { describeCounts } from "./defence.ts";
 
 /**
  * The dashboard.
@@ -2882,6 +2883,27 @@ export function renderPage(input: PageInput): string {
         `<div class="tframe"><table><tr><th>item</th><th class="n">delta/min</th><th class="n">now/min</th></tr>` +
         r.production.map((p) => deltaRow(p.name, p.before, p.after)).join("") +
         `</table></div></section>`,
+    );
+  }
+
+  // Defence removed since the earlier full read (C6): positions, never a cause.
+  const dl = r.defence && r.defence.ok && r.defence.losses.removed > 0 ? r.defence.losses : null;
+  if (dl) {
+    tabs.push({ id: "sec-defence-lost", label: "Removed", tone: "warn" });
+    cards.push(
+      `<section id="sec-defence-lost"><h2>Defence removed<span class="count">${dl.removed} since tick ${dl.previousTick}</span></h2>` +
+        `<p class="quiet">Wall, gate and turret positions present in ${esc(dl.previousSave)} and empty now; ${dl.placed} new ones appeared. An attack and a pickup leave the same hole, so this says where, not why.</p><ul>` +
+        dl.clusters
+          .map(
+            (c) =>
+              `<li>${linkCoords(`x ${c.x0} to ${c.x1}, y ${c.y0} to ${c.y1}`, "defence")}: ${esc(describeCounts(c.counts))}` +
+              (c.nests.length
+                ? `; nearest nests ${c.nests.map((n) => `${n.nests} ${linkCoords(`at ${n.x}, ${n.y}`, "enemy")} (${n.distance} tiles)`).join(", ")}`
+                : "; no nest charted") +
+              `</li>`,
+          )
+          .join("") +
+        `</ul></section>`,
     );
   }
 
