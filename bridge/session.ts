@@ -2,6 +2,8 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { join } from "node:path";
 import { flowOf, isLegacyFlows, type GameState } from "../src/state.ts";
 import { mapOf, patches, type Patch } from "../src/map.ts";
+import { occupancy } from "../src/saturation.ts";
+import type { Data } from "../src/proto.ts";
 
 /**
  * The session trend (C4): what moved across every read of tonight's play, not
@@ -40,6 +42,33 @@ export interface ReadSummary {
   machines: Record<string, number>;
   powerProduced: number | null;
   evolution: number | null;
+  /** Fluid made and used per minute, from production.fluid. */
+  fluids?: Record<string, { made: number; used: number }>;
+  /**
+   * What the tanks held, per fluid. Null when this read carries no fluid
+   * reading at all: an archive written before U7 keeps no containers, and a 2.1
+   * read before U1 has every tank unread. Null is "not read", never zero.
+   */
+  stock?: Record<string, FluidStock> | null;
+}
+
+/** Stored volume of one fluid across the tanks that hold it, by saturation.ts's own reading. */
+export interface FluidStock {
+  stored: number;
+  capacity: number;
+  tanks: number;
+  full: number;
+}
+
+export interface FluidTrend {
+  name: string;
+  startMade: number;
+  nowMade: number;
+  nowUsed: number;
+  fell: number;
+  rose: number;
+  stockStart: FluidStock | null;
+  stockNow: FluidStock | null;
 }
 
 export interface RateTrend {
@@ -82,6 +111,27 @@ export interface SessionTrend {
   power: { start: number; now: number } | null;
   evolution: { start: number; now: number } | null;
   raw: RawFinding[];
+  fluids: FluidTrend[];
+}
+
+/**
+ * Stored fluid per fluid name, through `occupancy()` so the session and the
+ * bottleneck reading agree on what a full tank is. Null when no tank in the
+ * read answered, which is a read that cannot speak about stock.
+ */
+export function fluidStockOf(state: GameState, data: Data | null): Record<string, FluidStock> | null {
+  if (!data) return null;
+  const tanks = (state.map ?? []).flatMap((m) => m.containers ?? []);
+  const fluidNames = new Set(tanks.filter((c) => c.fluid).map((c) => c.fluid!.name));
+  if (fluidNames.size === 0) return null;
+  const rows = occupancy(state, data);
+  const out: Record<string, FluidStock> = {};
+  for (const name of fluidNames) {
+    const r = rows.get(name);
+    if (!r || r.holders === 0) continue;
+    out[name] = { stored: r.stored, capacity: r.stored + r.room, tanks: r.holders, full: r.holdersFull };
+  }
+  return out;
 }
 
 /**
@@ -96,7 +146,7 @@ const EXTRACTORS = ["electric-mining-drill", "burner-mining-drill", "big-mining-
  * the map holds a field of it, which is the save's own answer and needs no list.
  * The finding names places and amounts; it never says why the rate fell.
  */
-function rawFindings(now: GameState, rates: RateTrend[]): RawFinding[] {
+function rawFindings(now: GameState, rates: Array<{ name: string; start: number; now: number }>): RawFinding[] {
   const map = mapOf(now);
   if (!map) return [];
   const fields = patches(map, EXTRACTORS);
@@ -120,7 +170,7 @@ function rawFindings(now: GameState, rates: RateTrend[]): RawFinding[] {
 // declares); a session compares game time against the wall clock in minutes.
 const TICKS_PER_MINUTE = 3600;
 
-export function summarise(state: GameState, file: string, force = "player"): ReadSummary | null {
+export function summarise(state: GameState, file: string, force = "player", data: Data | null = null): ReadSummary | null {
   const f = state.forces[force];
   const seed = state.save.seed;
   const readAt = Date.parse(state.save.readAt ?? "");
@@ -143,10 +193,22 @@ export function summarise(state: GameState, file: string, force = "player"): Rea
     machines: { ...(f.machines ?? {}) },
     powerProduced: el ? Object.values(el.production).reduce((n, w) => n + w, 0) : null,
     evolution: state.save.surfaceState?.[0]?.evolution ?? null,
+    fluids: Object.fromEntries(
+      Object.entries(f.production.fluid ?? {}).map(([name, flow]) => {
+        const r = flowOf(flow);
+        return [name, { made: r.producedPerMinute, used: r.consumedPerMinute }];
+      }),
+    ),
+    // An archive carries the stock it was written with; a full read is priced here.
+    stock: (state as GameState & { fluidStock?: Record<string, FluidStock> }).fluidStock ?? fluidStockOf(state, data),
   };
 }
 
+/** Bumped when ReadSummary gains a field, so a cached summary without it is read again. */
+const INDEX_VERSION = 2;
+
 interface IndexFile {
+  version?: number;
   /** file name to its mtime and summary; a null summary is a file that cannot carry one. */
   entries: Record<string, { mtimeMs: number; summary: ReadSummary | null }>;
 }
@@ -167,8 +229,9 @@ export function readSummaries(reportsDir: string, indexPath: string): ReadSummar
   } catch {
     index = { entries: {} };
   }
+  if (index.version !== INDEX_VERSION) index = { entries: {} };
   const files = readdirSync(reportsDir).filter((f) => /-\d+\.json$/.test(f));
-  const next: IndexFile = { entries: {} };
+  const next: IndexFile = { version: INDEX_VERSION, entries: {} };
   let changed = false;
   for (const file of files) {
     const mtimeMs = statSync(join(reportsDir, file)).mtimeMs;
@@ -214,8 +277,9 @@ export function sessionTrend(
   history: ReadSummary[],
   threshold: number,
   breakMinutes = SESSION_BREAK_MINUTES,
+  data: Data | null = null,
 ): SessionTrend | null {
-  const cur = summarise(now, "(this read)");
+  const cur = summarise(now, "(this read)", "player", data);
   if (!cur) return null;
   const series = history
     .filter((s) => s.seed === cur.seed && s.tick < cur.tick && s.legacy === cur.legacy)
@@ -250,6 +314,27 @@ export function sessionTrend(
   }
   rates.sort((a, b) => Math.abs(b.now - b.start) - Math.abs(a.now - a.start));
 
+  const fnames = new Set([...Object.keys(first.fluids ?? {}), ...Object.keys(cur.fluids ?? {})]);
+  const fluids: FluidTrend[] = [];
+  for (const name of fnames) {
+    const s = first.fluids?.[name]?.made ?? 0;
+    const n = cur.fluids?.[name]?.made ?? 0;
+    const used = cur.fluids?.[name]?.used ?? 0;
+    // Moved across the session, or drawing on stock now: heavy oil made at 253
+    // against 528 used is the case no made-only trend shows.
+    if (Math.abs(n - s) < threshold && used - n < threshold) continue;
+    let fell = 0;
+    let rose = 0;
+    for (let i = 1; i < session.length; i++) {
+      const d = (session[i]!.fluids?.[name]?.made ?? 0) - (session[i - 1]!.fluids?.[name]?.made ?? 0);
+      if (d < 0) fell++;
+      else if (d > 0) rose++;
+    }
+    const stockAt = (r: ReadSummary): FluidStock | null => (r.stock ? (r.stock[name] ?? null) : null);
+    fluids.push({ name, startMade: s, nowMade: n, nowUsed: used, fell, rose, stockStart: stockAt(first), stockNow: stockAt(cur) });
+  }
+  fluids.sort((a, b) => b.nowUsed - b.nowMade - (a.nowUsed - a.nowMade));
+
   const mnames = new Set([...Object.keys(first.machines), ...Object.keys(cur.machines)]);
   const machines: MachineTrend[] = [];
   for (const name of mnames) {
@@ -276,12 +361,24 @@ export function sessionTrend(
         : null,
     evolution:
       first.evolution !== null && cur.evolution !== null ? { start: first.evolution, now: cur.evolution } : null,
-    raw: rawFindings(now, rates),
+    raw: rawFindings(now, [...rates, ...fluids.map((f) => ({ name: f.name, start: f.startMade, now: f.nowMade }))]),
+    fluids,
   };
 }
 
 function signed(v: number, places = 1): string {
   return `${v >= 0 ? "+" : ""}${v.toFixed(places)}`;
+}
+
+/** Pumpjacks stand on a fluid field and drills on an ore field. */
+export function extractorWord(resource: string, t: SessionTrend): string {
+  return t.fluids.some((f) => f.name === resource) ? "pumpjacks" : "drills";
+}
+
+export function stockText(s: FluidStock | null): string {
+  if (!s) return "not read";
+  const pct = s.capacity > 0 ? ` (${((s.stored / s.capacity) * 100).toFixed(0)}% of ${amount(s.capacity)})` : "";
+  return `${amount(s.stored)}${pct}, ${s.full} of ${s.tanks} tanks full`;
 }
 
 function area(p: Patch): string {
@@ -320,6 +417,17 @@ export function sessionLines(t: SessionTrend | null): string[] {
     }
     lines.push("");
   }
+  if (t.fluids.length > 0) {
+    lines.push(`Fluids, moved ${t.threshold}/min or used faster than made (stock is what the tanks hold; not read means that read carries no tank reading):`);
+    lines.push("");
+    for (const f of t.fluids) {
+      lines.push(
+        `- ${f.name}: made ${f.startMade.toFixed(1)} to ${f.nowMade.toFixed(1)}/min, used ${f.nowUsed.toFixed(1)}/min now, fell in ${f.fell} of ${f.fell + f.rose} steps; ` +
+          `stock ${stockText(f.stockStart)} at start, ${stockText(f.stockNow)} now`,
+      );
+    }
+    lines.push("");
+  }
   if (t.raw.length > 0) {
     lines.push(`Raw resources that fell, and where they are mined:`);
     lines.push("");
@@ -327,7 +435,7 @@ export function sessionLines(t: SessionTrend | null): string[] {
       lines.push(`- ${f.resource}, ${f.start.toFixed(1)} to ${f.now.toFixed(1)}/min:`);
       if (f.mined.length === 0) lines.push(`  - no field of it has a drill standing on it`);
       for (const p of f.mined) {
-        lines.push(`  - mined at ${area(p)}, ${amount(p.amount)} left under ${p.extractors} drills`);
+        lines.push(`  - mined at ${area(p)}, ${amount(p.amount)} left under ${p.extractors} ${extractorWord(f.resource, t)}`);
       }
       if (f.unmined) lines.push(`  - largest unmined field ${area(f.unmined)}, ${amount(f.unmined.amount)}`);
       else lines.push(`  - every field of it on the map already has a drill`);

@@ -7,7 +7,7 @@ import { PROJECT_ROOT, findUserdata } from "../src/paths.ts";
 // (pm#108).
 import { newestSave, readState, readStateFile, slugify as slug, type GameState } from "../src/state.ts";
 import { buildReport, renderMarkdown, DEFAULT_RATE_THRESHOLD_PER_MIN } from "./report.ts";
-import { readSummaries, sessionTrend } from "./session.ts";
+import { fluidStockOf, readSummaries, sessionTrend, SESSION_BREAK_MINUTES } from "./session.ts";
 import { defenceLosses, defenceNames, earlierFullRead } from "./defence.ts";
 import { advise, type Advisory } from "../src/advise.ts";
 import type { SectionView } from "../src/sections.ts";
@@ -89,7 +89,7 @@ function historyFor(save: string): string[] {
  */
 function sessionFor(state: GameState, threshold: number): ReturnType<typeof sessionTrend> {
   try {
-    return sessionTrend(state, readSummaries(REPORTS_DIR, join(REPORTS_DIR, ".session-index.json")), threshold);
+    return sessionTrend(state, readSummaries(REPORTS_DIR, join(REPORTS_DIR, ".session-index.json")), threshold, SESSION_BREAK_MINUTES, protoData());
   } catch {
     return null;
   }
@@ -236,8 +236,12 @@ export async function reportOn(
   // whole map put that delta permanently out of reach, which is how refined
   // concrete kept reading as 155.7/min of spare on a base laying 130 a minute.
   const { map: fullMap, ...rest } = state;
-  const archived: GameState = {
+  // The tanks go with the map, so their totals are kept beside it: a later
+  // session trend reads this read's stock from here (U7).
+  const fluidStock = fluidStockOf(state, protoData());
+  const archived: GameState & { fluidStock?: NonNullable<typeof fluidStock> } = {
     ...rest,
+    ...(fluidStock ? { fluidStock } : {}),
     ...(fullMap
       ? { map: fullMap.map((s) => ({ name: s.name, cellTiles: s.cellTiles, bounds: s.bounds, cells: [], ore: [], points: {}, ...(s.paved ? { paved: s.paved } : {}) })) }
       : {}),

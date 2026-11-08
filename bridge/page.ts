@@ -13,6 +13,7 @@ import { pathToFileURL } from "node:url";
 import { findCore } from "../src/paths.ts";
 import { milestoneOverlay, type Earned } from "./milestone.ts";
 import { describeCounts } from "./defence.ts";
+import { extractorWord, stockText } from "./session.ts";
 
 /**
  * The dashboard.
@@ -2932,12 +2933,25 @@ export function renderPage(input: PageInput): string {
           .join("") +
         `</table></div>`
       : "";
+    const fluidRows = t.fluids.length
+      ? `<h3>Fluids</h3><div class="tframe"><table><tr><th>fluid</th><th class="n">made/min</th><th class="n">used/min</th><th class="n">fell</th><th>stock at start</th><th>stock now</th></tr>` +
+        t.fluids
+          .map(
+            (f) =>
+              `<tr data-source="${esc(src)}" data-field="forces.player.production.fluid.${esc(f.name)}.producedPerMinute">` +
+              `<td>${withIcon(f.name)}</td><td class="n">${f.startMade.toFixed(1)} to ${f.nowMade.toFixed(1)}</td>` +
+              `<td class="n ${f.nowUsed > f.nowMade ? "down" : ""}">${f.nowUsed.toFixed(1)}</td><td class="n">${f.fell} of ${f.fell + f.rose}</td>` +
+              `<td>${esc(stockText(f.stockStart))}</td><td>${esc(stockText(f.stockNow))}</td></tr>`,
+          )
+          .join("") +
+        `</table></div>`
+      : "";
     const raw = t.raw
       .map(
         (f) =>
           `<h3>${withIcon(f.resource)} fell ${f.start.toFixed(1)} to ${f.now.toFixed(1)}/min</h3><ul>` +
           f.mined
-            .map((p) => `<li>${linkCoords(`mined at ${box(p)}`, "ore")}: ${ore(p.amount)} left under ${p.extractors} drills</li>`)
+            .map((p) => `<li>${linkCoords(`mined at ${box(p)}`, "ore")}: ${ore(p.amount)} left under ${p.extractors} ${extractorWord(f.resource, t)}</li>`)
             .join("") +
           (f.unmined
             ? `<li>${linkCoords(`largest unmined field at ${box(f.unmined)}`, "ore")}: ${ore(f.unmined.amount)}</li>`
@@ -2964,6 +2978,7 @@ export function renderPage(input: PageInput): string {
         `<p class="quiet">Since tick ${t.startTick} (${esc(t.startSave)}), across ${esc(t.slots.join(", "))}. ` +
         `Rates that moved ${t.threshold}/min or more; a session ends where the wall clock outran game time by more than ${t.breakMinutes} min.</p>` +
         rates +
+        fluidRows +
         raw +
         machines +
         `</section>`,
